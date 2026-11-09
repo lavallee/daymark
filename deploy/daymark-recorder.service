@@ -1,0 +1,20 @@
+# Generic user service: install the package and adjust executable location first.
+[Unit]
+Description=Daymark synthetic reminder recorder
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/daymark --db %S/daymark/daymark.sqlite3 worker --interval 10 --lease-seconds 60
+StateDirectory=daymark
+UMask=0077
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%S/daymark
+
+[Install]
+WantedBy=default.target

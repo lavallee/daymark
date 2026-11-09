@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --frozen --dev
+      - run: uv run ruff check src tests --output-format=github
+      - run: uv run pytest -q
+      - run: uv build
+      - name: Verify clean core wheel and source installs
+        shell: bash
+        run: |
+          for artifact in "$GITHUB_WORKSPACE"/dist/*.whl "$GITHUB_WORKSPACE"/dist/*.tar.gz; do
+            smoke_env="$RUNNER_TEMP/daymark-smoke-${artifact##*.}"
+            uv venv "$smoke_env"
+            uv pip install --python "$smoke_env/bin/python" "$artifact"
+            (
+              cd "$RUNNER_TEMP"
+              "$smoke_env/bin/python" -I -c 'import importlib.util; assert all(importlib.util.find_spec(name) is None for name in ("fastapi", "httpx", "uvicorn"))'
+              "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_install.py"
+            )
+          done
+      - name: Verify installed HTTP service
+        shell: bash
+        run: |
+          wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
+          service_env="$RUNNER_TEMP/daymark-service-smoke"
+          uv venv "$service_env"
+          uv pip install --python "$service_env/bin/python" "${wheels[0]}[service]"
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH -u PYTHONHOME "$service_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_http.py"
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.13"
+      - name: Export third-party runtime dependencies
+        run: uv export --all-extras --no-dev --no-emit-project --frozen --output-file requirements-audit.txt
+      - name: Audit dependencies
+        run: uvx --from pip-audit pip-audit -r requirements-audit.txt --strict --no-deps --disable-pip
+      - name: Audit workflow
+        run: uvx --from zizmor zizmor .github/workflows --offline --min-severity high --min-confidence high --format github
