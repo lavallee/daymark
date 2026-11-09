@@ -481,3 +481,88 @@ def test_unexpected_engine_failure_is_redacted_server_error():
         response = client.get("/v1/health", headers=auth())
         assert response.status_code == 500
         assert response.json() == {"detail": "Engine failure"}
+
+
+def test_duplicate_authorization_headers_are_rejected(boundary):
+    _, client = boundary
+    response = client.get(
+        "/v1/health",
+        headers=[("Authorization", "Bearer secret-token"), ("Authorization", "Bearer other-token")],
+    )
+    assert response.status_code == 401
+
+
+def test_cli_serve_and_client_live_loopback(tmp_path):
+    import os
+    import queue
+    import re
+    import subprocess
+    import sys
+    import threading
+    import time
+    from pathlib import Path
+
+    credentials = tmp_path / "auth.json"
+    credentials.write_text(
+        json.dumps({"synthetic-live-token": {"workspace": "synthetic", "principal": "operator"}})
+    )
+    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "daymark.cli",
+            "--db",
+            str(tmp_path / "live.db"),
+            "serve",
+            "--auth-file",
+            str(credentials),
+            "--port",
+            "0",
+        ],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    messages, logs = queue.Queue(), []
+
+    def read_logs():
+        for line in process.stderr:
+            logs.append(line)
+            messages.put(line)
+
+    reader = threading.Thread(target=read_logs, daemon=True)
+    reader.start()
+    try:
+        deadline, url = time.monotonic() + 15, None
+        while url is None:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "Loopback server did not become ready"
+            line = messages.get(timeout=remaining)
+            match = re.search(r"http://127\.0\.0\.1:(\d+)", line)
+            if match:
+                url = match.group(0)
+        assert httpx.get(f"{url}/v1/schema").status_code == 401
+        with Client(url, "synthetic-live-token") as client:
+            created = client.create(
+                "live-create",
+                {"id": "live-canary-id", "kind": "task", "title": "live-private-canary"},
+            )
+            assert client.get("live-canary-id") == created
+            assert client.schema()["security"] == [{"BearerAuth": []}]
+            assert client.health()["status"] == "ok"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        reader.join(timeout=2)
+        if process.stderr:
+            process.stderr.close()
+    assert not any(
+        "synthetic-live-token" in line or "live-private-canary" in line or "live-canary-id" in line
+        for line in logs
+    )

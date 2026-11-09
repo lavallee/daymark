@@ -133,3 +133,11 @@ including prior operation hashes/results so identical write retries remain
 replays after restore. Conflicting duplicate event/operation identities must be
 rejected atomically. This is distinct from a complete SQLite backup. Compare synthetic snapshot readback
 before considering a restore verified. Do not use real household data in examples.
+
+## Boundary review rationale
+
+The [implementation review](implementation-review.md) records pinned upstream
+source observations and independently derived regression designs. Daymark's own
+barrier, subprocess, transaction, and restore tests establish its behavior; static
+upstream inspection and upstream test assertions are not Daymark pass results.
+No additional scheduler or task engine is required for the core.

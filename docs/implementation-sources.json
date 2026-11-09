@@ -1,0 +1,2638 @@
+{
+  "schema_version": 1,
+  "title": "Daymark pinned implementation mechanism assessment",
+  "evidence_date_utc": "2026-11-09",
+  "status": "finalized_bounded_static_assessment",
+  "counts": {
+    "inspected_repositories": 8,
+    "inspected_files": 56,
+    "source_files": 21,
+    "test_files": 23,
+    "license_files": 8,
+    "metadata_files": 4,
+    "coordinate_spans": 111,
+    "mechanism_decisions": 12,
+    "independent_regression_designs": 22,
+    "repository_acquisition_failures": 0,
+    "assessed_repositories_executed": 0,
+    "upstream_tests_executed": 0
+  },
+  "method": {
+    "selection": "Eight bounded original repositories selected for recurrence, persistence, task-state, scheduler and harness mechanisms.",
+    "retrieval": "Read-only shallow bare Git snapshots, pinned by full commit; static source/test/license reads.",
+    "execution_boundary": "No assessed code installed, imported, built or executed. Validation scripts only parse this inventory and its static files.",
+    "content_boundary": "No source bodies, full test fixtures, private application data, environment identifiers or delivery endpoints are published.",
+    "evidence_boundary": "Observed code paths and test assertions are not passing test runs or end-to-end guarantees.",
+    "path_resolution": "Repository-local path discovery corrected outdated path guesses; all eight requested snapshots were acquired successfully.",
+    "local_context": "Changing general-purpose Python engine with existing dateutil dependency, temporal policy, workspace isolation, versioned operations and durable-delivery requirements. Research writes only two implementation-review documents.",
+    "snapshot_boundary": "Default branch snapshots can include unreleased work; installed dependency/release parity not established."
+  },
+  "evidence_state_legend": {
+    "static_source_observed": "Listed operations and predicates are visible in the pinned code spans.",
+    "test_assertions_observed_not_executed": "Fixture and assertions inspected; no pass result claimed.",
+    "license_or_metadata_observed": "Pinned notices/configuration observed; not a legal determination.",
+    "analyst_inference": "Independent transfer proposal; no upstream guarantee of the resulting Daymark behavior.",
+    "unknown": "Not established in the inspected scope, never treated as unsupported.",
+    "expected_failure": "An upstream test explicitly expects failure; useful test idea, not working behavior evidence."
+  },
+  "repositories": [
+    {
+      "id": "apscheduler",
+      "repository": "agronholm/apscheduler",
+      "commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "commit_time": "2026-10-26T21:55:38+02:00",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "display_name": "APScheduler",
+      "primary_repository_url": "https://github.com/agronholm/apscheduler",
+      "commit_url": "https://github.com/agronholm/apscheduler/commit/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "snapshot_scope": "Exact default-branch commit; version history explicitly contains UNRELEASED changes. No released-version qualification.",
+      "license_observation": "MIT (repository license).",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "dateutil",
+      "repository": "dateutil/dateutil",
+      "commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "commit_time": "2026-11-01T01:25:00-04:00",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "display_name": "python-dateutil",
+      "primary_repository_url": "https://github.com/dateutil/dateutil",
+      "commit_url": "https://github.com/dateutil/dateutil/commit/a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "Metadata BSD-3-Clause; LICENSE retains historical Apache-2.0 and BSD notices; file-level review required for copying.",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "hypothesis",
+      "repository": "HypothesisWorks/hypothesis",
+      "commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "commit_time": "2026-11-06T09:52:49Z",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "display_name": "Hypothesis",
+      "primary_repository_url": "https://github.com/HypothesisWorks/hypothesis",
+      "commit_url": "https://github.com/HypothesisWorks/hypothesis/commit/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "MPL-2.0 (package license, source headers and metadata).",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "org",
+      "repository": "bzg/org-mode",
+      "commit": "cf41132d0b21081c999fa31dbda9ef8b7cb20208",
+      "commit_time": "2026-11-08T19:21:16+01:00",
+      "retrieved_at_utc": "2026-11-09T22:37:33.790783+00:00",
+      "display_name": "Org",
+      "primary_repository_url": "https://github.com/bzg/org-mode",
+      "commit_url": "https://github.com/bzg/org-mode/commit/cf41132d0b21081c999fa31dbda9ef8b7cb20208",
+      "snapshot_scope": "Exact default-branch commit; inspected source header identifies a prerelease. No stable-release qualification.",
+      "license_observation": "GPLv3 text; org.el header permits version 3 or later.",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "recurring_ical_events",
+      "repository": "niccokunzmann/python-recurring-ical-events",
+      "commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "commit_time": "2026-11-02T10:53:48Z",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "display_name": "recurring-ical-events",
+      "primary_repository_url": "https://github.com/niccokunzmann/python-recurring-ical-events",
+      "commit_url": "https://github.com/niccokunzmann/python-recurring-ical-events/commit/7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "LGPL-3.0-or-later (project metadata and license text).",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "tasks",
+      "repository": "tasks/tasks",
+      "commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "commit_time": "2026-11-09T16:07:32-06:00",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "display_name": "Tasks.org",
+      "primary_repository_url": "https://github.com/tasks/tasks",
+      "commit_url": "https://github.com/tasks/tasks/commit/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "GPLv3 (repository license).",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "taskwarrior",
+      "repository": "GothenburgBitFactory/taskwarrior",
+      "commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "commit_time": "2026-11-09T06:10:47Z",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "display_name": "Taskwarrior",
+      "primary_repository_url": "https://github.com/GothenburgBitFactory/taskwarrior",
+      "commit_url": "https://github.com/GothenburgBitFactory/taskwarrior/commit/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "MIT (repository license).",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    },
+    {
+      "id": "vikunja",
+      "repository": "go-vikunja/vikunja",
+      "commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "commit_time": "2026-11-09T18:57:29+01:00",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "display_name": "Vikunja",
+      "primary_repository_url": "https://github.com/go-vikunja/vikunja",
+      "commit_url": "https://github.com/go-vikunja/vikunja/commit/55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "snapshot_scope": "Default-branch commit pinned at retrieval, not an asserted stable release.",
+      "license_observation": "AGPLv3 text; inspected source headers permit version 3 or later.",
+      "maintenance_observation": "Commit timestamp recorded only; no popularity, activity-rate or maintenance-quality score inferred.",
+      "source_and_test_inspection": "static_only",
+      "artifact_executed": false
+    }
+  ],
+  "sources": [
+    {
+      "id": "DU-RRULE",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "src/dateutil/rrule.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/rrule.py",
+      "raw_file_sha256": "15f608745f7f037d6cc6420b8ed195550556d2b7118f52a3abdda8d31b0d9466",
+      "file_bytes": 67080,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "rrule.__init__",
+          "line_start": 443,
+          "line_end": 496,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/rrule.py#L443-L496"
+        },
+        {
+          "symbol_or_scope": "rrule._iter",
+          "line_start": 791,
+          "line_end": 812,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/rrule.py#L791-L812"
+        },
+        {
+          "symbol_or_scope": "rrule._iter COUNT/UNTIL emission",
+          "line_start": 878,
+          "line_end": 912,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/rrule.py#L878-L912"
+        }
+      ],
+      "observation_summary": "Parser/default normalization and finite emission are distinct from application recurrence policy.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "DU-TZ",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "src/dateutil/tz/tz.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/tz/tz.py",
+      "raw_file_sha256": "6f508587b218f1abeedc50610f305732e431e679838b0976523402fa315cac3c",
+      "file_bytes": 48204,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "datetime_exists",
+          "line_start": 1258,
+          "line_end": 1289,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/tz/tz.py#L1258-L1289"
+        },
+        {
+          "symbol_or_scope": "datetime_ambiguous",
+          "line_start": 1292,
+          "line_end": 1335,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/tz/tz.py#L1292-L1335"
+        },
+        {
+          "symbol_or_scope": "resolve_imaginary",
+          "line_start": 1338,
+          "line_end": 1382,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/tz/tz.py#L1338-L1382"
+        }
+      ],
+      "observation_summary": "UTC round-trip existence check, fold comparison and offset-delta forward resolution.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "DU-RRULE-TEST",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "tests/test_rrule.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_rrule.py",
+      "raw_file_sha256": "94d5e92ba2f1c741977fa96f9ead77771d33aeee3df681071d7b7759c962c0bf",
+      "file_bytes": 222995,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "testBadUntilCountRRule; testUntilMatching; testUntilEmpty",
+          "line_start": 2359,
+          "line_end": 2408,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_rrule.py#L2359-L2408"
+        },
+        {
+          "symbol_or_scope": "test_rrule_roundtrip",
+          "line_start": 4919,
+          "line_end": 4962,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_rrule.py#L4919-L4962"
+        },
+        {
+          "symbol_or_scope": "test_restored_rruleset_can_invalidate_cache",
+          "line_start": 4966,
+          "line_end": 4986,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_rrule.py#L4966-L4986"
+        }
+      ],
+      "observation_summary": "Inclusive UNTIL and COUNT-plus-UNTIL warning assertions; restored continuation/cache assertions.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "DU-TZ-TEST",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "tests/test_tz.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_tz.py",
+      "raw_file_sha256": "690290693e0e41279647d6c1dad6aadf27075b8dcc91928196ada70cc94bd755",
+      "file_bytes": 101306,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_resolve_imaginary_ambiguous",
+          "line_start": 2822,
+          "line_end": 2837,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_tz.py#L2822-L2837"
+        },
+        {
+          "symbol_or_scope": "resolve_imaginary_tests; test_resolve_imaginary",
+          "line_start": 2865,
+          "line_end": 2909,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_tz.py#L2865-L2909"
+        }
+      ],
+      "observation_summary": "Both folds preserved by resolver; full-day and historical fractional-hour gap fixtures.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "DU-PROPERTY",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "tests/property/test_rrule_prop.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/property/test_rrule_prop.py",
+      "raw_file_sha256": "c6a2597cd2a08493c490bfe107adf3e43545816176e5de00e192a21bc2ac0fca",
+      "file_bytes": 3693,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "recurrence_options",
+          "line_start": 15,
+          "line_end": 37,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/property/test_rrule_prop.py#L15-L37"
+        },
+        {
+          "symbol_or_scope": "test_rrule_roundtrip",
+          "line_start": 45,
+          "line_end": 77,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/property/test_rrule_prop.py#L45-L77"
+        },
+        {
+          "symbol_or_scope": "test_rruleset_roundtrip",
+          "line_start": 80,
+          "line_end": 117,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/property/test_rrule_prop.py#L80-L117"
+        }
+      ],
+      "observation_summary": "Bounded generated rules, cache states and copy/serialization continuation invariants.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment.",
+        "Generated timezone choices in this file are naive, UTC and fixed-offset, not a full DST-zone generator."
+      ]
+    },
+    {
+      "id": "DU-LICENSE",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "LICENSE",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/LICENSE",
+      "raw_file_sha256": "ba00f51a0d92823b5a1cde27d8b5b9d2321e67ed8da9bc163eff96d5e17e577e",
+      "file_bytes": 2889,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Apache licensing notice and historical applicability",
+          "line_start": 1,
+          "line_end": 18,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/LICENSE#L1-L18"
+        },
+        {
+          "symbol_or_scope": "Historical BSD-style terms",
+          "line_start": 20,
+          "line_end": 48,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/LICENSE#L20-L48"
+        }
+      ],
+      "observation_summary": "License retains historical Apache/BSD text; do not substitute one metadata label for file review.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit.",
+        "Metadata label and historical license text differ in scope; both observations retained."
+      ]
+    },
+    {
+      "id": "DU-METADATA",
+      "repository_id": "dateutil",
+      "repository_commit": "a78cbd81d5d03b5f126eb36edb92bca78972c804",
+      "path": "pyproject.toml",
+      "kind": "metadata",
+      "retrieved_at_utc": "2026-11-09T22:37:33.079650+00:00",
+      "primary_file_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/pyproject.toml",
+      "raw_file_sha256": "1f7c5faf5af851f05aa4324686d383f16491701a1acacb8b622774a94202675c",
+      "file_bytes": 3735,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "project license and Python/dependency metadata",
+          "line_start": 5,
+          "line_end": 12,
+          "primary_url": "https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/pyproject.toml#L5-L12"
+        }
+      ],
+      "observation_summary": "Snapshot metadata labels BSD-3-Clause; distinguishes snapshot from installed dependency release.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "dateutil",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit.",
+        "Metadata label and historical license text differ in scope; both observations retained."
+      ]
+    },
+    {
+      "id": "RI-SERIES",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/series/rrule.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/series/rrule.py",
+      "raw_file_sha256": "eba4dfbae544d70285478e6e156c5e80197a00564f67f5decb57e06a8ea72b64",
+      "file_bytes": 21955,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Series.RecurrenceRules.create_rule_with_start; rrulestr",
+          "line_start": 153,
+          "line_end": 207,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/series/rrule.py#L153-L207"
+        },
+        {
+          "symbol_or_scope": "Series.__init__ modification identity and sequence mapping",
+          "line_start": 316,
+          "line_end": 352,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/series/rrule.py#L316-L352"
+        }
+      ],
+      "observation_summary": "Compatibility repair of UNTIL and mapping modifications by recurrence identity/sequence.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "RI-UTIL",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/util.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/util.py",
+      "raw_file_sha256": "b47dbba51dc2425c7099e496b20b8f1a092f1ec749b5338e71fa8277c44a5519",
+      "file_bytes": 8093,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "to_recurrence_ids; with_highest_sequence",
+          "line_start": 209,
+          "line_end": 237,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/util.py#L209-L237"
+        }
+      ],
+      "observation_summary": "Recurrence identity normalization and highest-sequence selector; not content-hash conflict detection.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "RI-OCCURRENCE",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/occurrence.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/occurrence.py",
+      "raw_file_sha256": "50bc543867b850051e9e1dccf3b4ea83f6c309cace57639c62a07727cb59bf42",
+      "file_bytes": 6908,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Occurrence.as_component",
+          "line_start": 85,
+          "line_end": 126,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/occurrence.py#L85-L126"
+        },
+        {
+          "symbol_or_scope": "Occurrence.id and equality",
+          "line_start": 142,
+          "line_end": 159,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/occurrence.py#L142-L159"
+        }
+      ],
+      "observation_summary": "Occurrence export and identity representation; original slot and displayed start are separate concepts.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "RI-ID-TEST",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/test/test_issue_243_recurrence_id_is_not_identical_to_dtstart.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_243_recurrence_id_is_not_identical_to_dtstart.py",
+      "raw_file_sha256": "c405260a6ff5d9c7296d542718279bdf52327b6323f71bf56e9090b020561438",
+      "file_bytes": 1127,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_recurrence_id_is_not_identical_to_dtstart",
+          "line_start": 10,
+          "line_end": 35,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_243_recurrence_id_is_not_identical_to_dtstart.py#L10-L35"
+        }
+      ],
+      "observation_summary": "Editing exported DTSTART must not alias/mutate original RECURRENCE-ID.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "RI-RANGE-TEST",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/test/test_issue_222_range_recurrence_id.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_222_range_recurrence_id.py",
+      "raw_file_sha256": "d6fb375eaa760348db51de66f464e311b64a1a796fa41d5e17fa132a324a43d4",
+      "file_bytes": 2410,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_range_recurrence_ids",
+          "line_start": 12,
+          "line_end": 54,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_222_range_recurrence_id.py#L12-L54"
+        },
+        {
+          "symbol_or_scope": "test_edit_one_event_after_range_move",
+          "line_start": 57,
+          "line_end": 72,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_222_range_recurrence_id.py#L57-L72"
+        }
+      ],
+      "observation_summary": "Moved ranges retain original slots and expansion leaves source calendar unchanged.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "RI-COUNT-TEST",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "recurring_ical_events/test/test_count.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_count.py",
+      "raw_file_sha256": "11034f7190a70cc6561804d2be843e8366fbe7d8060b3f96bbee37213945b72e",
+      "file_bytes": 460,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_check_count_of_calendars",
+          "line_start": 9,
+          "line_end": 19,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_count.py#L9-L19"
+        }
+      ],
+      "observation_summary": "Count fixtures include exclusions and an UNTIL before DTSTART producing zero.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "RI-LICENSE",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "LICENSE",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/LICENSE",
+      "raw_file_sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+      "file_bytes": 7652,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "LGPL version declaration",
+          "line_start": 1,
+          "line_end": 17,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/LICENSE#L1-L17"
+        }
+      ],
+      "observation_summary": "Repository LGPLv3 license text.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "RI-METADATA",
+      "repository_id": "recurring_ical_events",
+      "repository_commit": "7a0bd1d637e4afec389f9b9f32b336020e98634d",
+      "path": "pyproject.toml",
+      "kind": "metadata",
+      "retrieved_at_utc": "2026-11-09T22:37:33.055494+00:00",
+      "primary_file_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/pyproject.toml",
+      "raw_file_sha256": "a9b104d7af8ccdefa558f2abe7444f8aa882cb4c4ec7ec0c601ad1d13dab130f",
+      "file_bytes": 5535,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Project SPDX and Python metadata",
+          "line_start": 5,
+          "line_end": 19,
+          "primary_url": "https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/pyproject.toml#L5-L19"
+        }
+      ],
+      "observation_summary": "Snapshot declares LGPL-3.0-or-later.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "recurring_ical_events",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "TW-RECURRENCE",
+      "repository_id": "taskwarrior",
+      "repository_commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "path": "src/recur.cpp",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "primary_file_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp",
+      "raw_file_sha256": "db669d542c5c995fc26cfcee2d1203b63aa1a8e2c7d1146baeacd005fb8b6988",
+      "file_bytes": 13052,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "checked_add_datetime",
+          "line_start": 49,
+          "line_end": 60,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp#L49-L60"
+        },
+        {
+          "symbol_or_scope": "handleRecurrence",
+          "line_start": 65,
+          "line_end": 149,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp#L65-L149"
+        },
+        {
+          "symbol_or_scope": "generateDueDates",
+          "line_start": 160,
+          "line_end": 200,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp#L160-L200"
+        },
+        {
+          "symbol_or_scope": "getNextRecurrence monthly and weekday branches",
+          "line_start": 210,
+          "line_end": 241,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp#L210-L241"
+        }
+      ],
+      "observation_summary": "Template mask/index materialization and future lookahead counter; no total catch-up bound inferred; monthly clamp differs from RRULE skipping.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "taskwarrior",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee.",
+        "Future lookahead counter does not establish a bound on historical catch-up work."
+      ]
+    },
+    {
+      "id": "TW-IMPORT",
+      "repository_id": "taskwarrior",
+      "repository_commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "path": "src/commands/CmdImport.cpp",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "primary_file_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/commands/CmdImport.cpp",
+      "raw_file_sha256": "a6e4dce48bef553a13078389ba3ffbc686ab3f090370da4a81ae528628092232",
+      "file_bytes": 7622,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "CmdImport task validation and UUID merge path",
+          "line_start": 175,
+          "line_end": 225,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/commands/CmdImport.cpp#L175-L225"
+        }
+      ],
+      "observation_summary": "Import compares normalized existing task state rather than implementing command replay identity.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "taskwarrior",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "TW-RECUR-TEST",
+      "repository_id": "taskwarrior",
+      "repository_commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "path": "test/recurrence.test.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "primary_file_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/recurrence.test.py",
+      "raw_file_sha256": "8b840a4cfc74f8373554616d2c4e8d9a9ad35f48206ca72ee082ba166d9fb6e2",
+      "file_bytes": 24172,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestRecurrenceUntil.test_recurrence_until",
+          "line_start": 135,
+          "line_end": 163,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/recurrence.test.py#L135-L163"
+        }
+      ],
+      "observation_summary": "UNTIL propagates to instances and tests eventual expiration/deletion; not merely a series horizon.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "taskwarrior",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TW-IMPORT-TEST",
+      "repository_id": "taskwarrior",
+      "repository_commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "path": "test/import.test.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "primary_file_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/import.test.py",
+      "raw_file_sha256": "8eabf8e30f0b71f54c33064de79d339d41dbe9cda2cd8675e153fc36000ced56",
+      "file_bytes": 13396,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_import_same_task_twice; test_import_duplicate_uuid_in_input",
+          "line_start": 220,
+          "line_end": 242,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/import.test.py#L220-L242"
+        },
+        {
+          "symbol_or_scope": "TestImportExportRoundtrip.test_import_export",
+          "line_start": 266,
+          "line_end": 280,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/import.test.py#L266-L280"
+        }
+      ],
+      "observation_summary": "Repeated identical import, duplicate-UUID warning and byte-equal export/import fixture.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "taskwarrior",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TW-LICENSE",
+      "repository_id": "taskwarrior",
+      "repository_commit": "efa603a5d60d95adb5b6994ae1907e5bfd20c9e9",
+      "path": "LICENSE",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.061249+00:00",
+      "primary_file_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/LICENSE",
+      "raw_file_sha256": "3b52a09894e0773c9cae0958fd30e3b42cf6b365d8860737324dbad61739803b",
+      "file_bytes": 1167,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "MIT license",
+          "line_start": 1,
+          "line_end": 23,
+          "primary_url": "https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/LICENSE#L1-L23"
+        }
+      ],
+      "observation_summary": "Repository MIT license text.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "taskwarrior",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "VK-REPEAT",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/models/tasks.go",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go",
+      "raw_file_sha256": "498050486c0b0b0b8fecddf8b36783e8bd00e9c6dcde37497341764e82f479c9",
+      "file_bytes": 80077,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "addRepeatIntervalToTime",
+          "line_start": 1928,
+          "line_end": 1956,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go#L1928-L1956"
+        },
+        {
+          "symbol_or_scope": "setTaskDatesDefault",
+          "line_start": 1958,
+          "line_end": 1990,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go#L1958-L1990"
+        },
+        {
+          "symbol_or_scope": "setTaskDatesMonthRepeat",
+          "line_start": 1992,
+          "line_end": 2019,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go#L1992-L2019"
+        },
+        {
+          "symbol_or_scope": "AGPL version 3 or later source header",
+          "line_start": 1,
+          "line_end": 16,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go#L1-L16"
+        }
+      ],
+      "observation_summary": "Quotient-based elapsed catch-up, overflow guards and distinct monthly date movement.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "VK-TASK-TEST",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/models/tasks_test.go",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go",
+      "raw_file_sha256": "726a919235a9445d97fd65f982794a9fb1174964530b304d917ace59a03eef19",
+      "file_bytes": 56646,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestHardDeleteTask_RollbackKeepsAttachmentBlobs",
+          "line_start": 1013,
+          "line_end": 1030,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go#L1013-L1030"
+        },
+        {
+          "symbol_or_scope": "TestTask_RepeatAfterCap",
+          "line_start": 1467,
+          "line_end": 1515,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go#L1467-L1515"
+        },
+        {
+          "symbol_or_scope": "TestUpdateDone_DoSRegression_AncientDueDate",
+          "line_start": 1530,
+          "line_end": 1552,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go#L1530-L1552"
+        },
+        {
+          "symbol_or_scope": "TestAddRepeatIntervalToTime",
+          "line_start": 1554,
+          "line_end": 1636,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go#L1554-L1636"
+        }
+      ],
+      "observation_summary": "Rollback preserves attachment effects; interval cap and ancient-date/overflow regression fixtures.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "VK-EVENTS",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/events/events.go",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events.go",
+      "raw_file_sha256": "68ba0f65e84c590a013c5c6cf7910ea583b276d733ee4e859a2a410d60f0a1a2",
+      "file_bytes": 10267,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Pending event queue storage",
+          "line_start": 273,
+          "line_end": 289,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events.go#L273-L289"
+        },
+        {
+          "symbol_or_scope": "DispatchOnCommit; OnCommit; DispatchPending; CleanupPending",
+          "line_start": 290,
+          "line_end": 339,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events.go#L290-L339"
+        }
+      ],
+      "observation_summary": "Process-memory post-commit callbacks can avoid rollback effects but are not a durable outbox.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee.",
+        "Process-memory pending callbacks are not a durable outbox."
+      ]
+    },
+    {
+      "id": "VK-EVENT-TEST",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/events/events_test.go",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events_test.go",
+      "raw_file_sha256": "bedbae515ee9cf6ea96c1032db3391e14b9754a0a3ca951a2704eafbe455b4bf",
+      "file_bytes": 5120,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestDispatchOnCommit; TestCleanupPending",
+          "line_start": 38,
+          "line_end": 99,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events_test.go#L38-L99"
+        },
+        {
+          "symbol_or_scope": "TestOnCommit",
+          "line_start": 101,
+          "line_end": 147,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events_test.go#L101-L147"
+        }
+      ],
+      "observation_summary": "Order, one-shot dispatch and rollback cleanup asserted without process-crash durability.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "VK-RELATION",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/models/task_relation.go",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation.go",
+      "raw_file_sha256": "1ed2378c158abd1e1b0e567b98b4e3f3fac0a27692f52b18970e6cf2a3fa8cf5",
+      "file_bytes": 16253,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TaskRelation.Create access checks",
+          "line_start": 211,
+          "line_end": 246,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation.go#L211-L246"
+        },
+        {
+          "symbol_or_scope": "CreateTaskRelationsForImport; checkImportedTaskRelationCycles",
+          "line_start": 323,
+          "line_end": 405,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation.go#L323-L405"
+        }
+      ],
+      "observation_summary": "Validate relation endpoints/import batch before materialization and perform batch-wide cycle check.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "VK-RELATION-TEST",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/models/task_relation_test.go",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation_test.go",
+      "raw_file_sha256": "35f04c53cdffd031681fb7d8d73089d66fca88190a20d3a1c9f9d84502f00fea",
+      "file_bytes": 17040,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestCreateTaskRelationsForImport",
+          "line_start": 326,
+          "line_end": 406,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation_test.go#L326-L406"
+        }
+      ],
+      "observation_summary": "Long valid chain, cycle and outside-batch relation cases assert no partial relation insertion.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "VK-ROUNDTRIP-TEST",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/modules/migration/vikunja-file/roundtrip_test.go",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/roundtrip_test.go",
+      "raw_file_sha256": "4d5acb073318c7a9f11ce4a10e97d454b4221abe166dfc9becd32691b3ba479b",
+      "file_bytes": 5255,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestExportImportRoundTripRelations",
+          "line_start": 39,
+          "line_end": 143,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/roundtrip_test.go#L39-L143"
+        }
+      ],
+      "observation_summary": "Export uses relation references; import reconstructs both inverse links without duplicating large content.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "VK-IMPORT",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "pkg/modules/migration/vikunja-file/vikunja.go",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/vikunja.go",
+      "raw_file_sha256": "7f992801cc1da29fdd65ed38aa781571d3ac7aa37f442083645f290715c1679b",
+      "file_bytes": 18417,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "maxZipEntrySize; readZipEntry",
+          "line_start": 52,
+          "line_end": 94,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/vikunja.go#L52-L94"
+        },
+        {
+          "symbol_or_scope": "Export version validation",
+          "line_start": 437,
+          "line_end": 465,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/vikunja.go#L437-L465"
+        },
+        {
+          "symbol_or_scope": "Separate saved-filter transaction",
+          "line_start": 525,
+          "line_end": 549,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/vikunja.go#L525-L549"
+        }
+      ],
+      "observation_summary": "Import byte/version bounds and visible multiple transaction stages; no whole-import atomicity guarantee inferred.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "VK-LICENSE",
+      "repository_id": "vikunja",
+      "repository_commit": "55f5418b0e4f581fed8b6701e6c961e27148fd68",
+      "path": "LICENSE",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.068009+00:00",
+      "primary_file_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/LICENSE",
+      "raw_file_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "file_bytes": 34523,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "AGPLv3 license declaration",
+          "line_start": 1,
+          "line_end": 16,
+          "primary_url": "https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/LICENSE#L1-L16"
+        }
+      ],
+      "observation_summary": "Repository AGPLv3 text; inspected source headers allow version 3 or later.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "vikunja",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "TO-RECUR",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/commonMain/kotlin/org/tasks/repeats/Recur.kt",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonMain/kotlin/org/tasks/repeats/Recur.kt",
+      "raw_file_sha256": "7df8b09099b0b27762d77f2839d189edac9c2d12cec755b56726012fa0a262f7",
+      "file_bytes": 5158,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Recur; parse; unknownParts",
+          "line_start": 34,
+          "line_end": 83,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonMain/kotlin/org/tasks/repeats/Recur.kt#L34-L83"
+        },
+        {
+          "symbol_or_scope": "serializeRecur",
+          "line_start": 90,
+          "line_end": 121,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonMain/kotlin/org/tasks/repeats/Recur.kt#L90-L121"
+        }
+      ],
+      "observation_summary": "Typed recurrence plus retention/serialization of unmodeled rule parts.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "TO-JVM",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/jvmCommonMain/kotlin/org/tasks/repeats/Recur.jvm.kt",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/jvmCommonMain/kotlin/org/tasks/repeats/Recur.jvm.kt",
+      "raw_file_sha256": "8bf7516638345711ca1d86c4b566c93fd42b42aed1436e30f4a2e9f755f6bf15",
+      "file_bytes": 4077,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "parseRecur; Recur.nextOccurrence",
+          "line_start": 15,
+          "line_end": 34,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/jvmCommonMain/kotlin/org/tasks/repeats/Recur.jvm.kt#L15-L34"
+        }
+      ],
+      "observation_summary": "Delegates to ical4j then restores local hour/minute; wrapper behavior differs from library raw return.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "TO-DIRTY",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "data/src/commonMain/kotlin/org/tasks/data/dao/DirtyDao.kt",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/commonMain/kotlin/org/tasks/data/dao/DirtyDao.kt",
+      "raw_file_sha256": "f5328cea1c13cbeb7566ba01d7078de67caebb6cbf6b6f22f3ba81e7bafa1be2",
+      "file_bytes": 7446,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "setDirty; version increment",
+          "line_start": 67,
+          "line_end": 82,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/commonMain/kotlin/org/tasks/data/dao/DirtyDao.kt#L67-L82"
+        },
+        {
+          "symbol_or_scope": "markPushed; withDirtyVersion; markSynced",
+          "line_start": 126,
+          "line_end": 141,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/commonMain/kotlin/org/tasks/data/dao/DirtyDao.kt#L126-L141"
+        }
+      ],
+      "observation_summary": "Acknowledgment records supplied captured version without clearing newer dirty revisions.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "TO-DIRTY-TEST",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "data/src/nonAndroidTest/kotlin/org/tasks/data/dao/TaskDaoDirtyVersionTest.kt",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/nonAndroidTest/kotlin/org/tasks/data/dao/TaskDaoDirtyVersionTest.kt",
+      "raw_file_sha256": "2c603f8c5d539f10e913a3464076ff7f913cdd4bcd1fef2d132a94b5440034db",
+      "file_bytes": 16360,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "syncableDirtyVersionsChangeWhenRedirtied; syncableDirtyVersionsSurviveStalePush",
+          "line_start": 122,
+          "line_end": 149,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/nonAndroidTest/kotlin/org/tasks/data/dao/TaskDaoDirtyVersionTest.kt#L122-L149"
+        },
+        {
+          "symbol_or_scope": "markSyncedSkipsEditAfterInsert; markSyncedSkipsMultipleEditsBeforeFirstSync",
+          "line_start": 218,
+          "line_end": 242,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/nonAndroidTest/kotlin/org/tasks/data/dao/TaskDaoDirtyVersionTest.kt#L218-L242"
+        }
+      ],
+      "observation_summary": "Stale push must leave newer edit dirty; unqualified first-sync cleanup cannot acknowledge newer edits.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TO-PARITY-TEST",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/commonTest/kotlin/org/tasks/repeats/RecurEngineParityTest.kt",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/repeats/RecurEngineParityTest.kt",
+      "raw_file_sha256": "7c2fd4ea7d0ea064db6650fa31c2e57043a25d8e4bc5743d1fbe186d97504d44",
+      "file_bytes": 3944,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "canonicalizesRulePartsTheSameWay; rejectsRulesNeitherEngineAccepts",
+          "line_start": 9,
+          "line_end": 54,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/repeats/RecurEngineParityTest.kt#L9-L54"
+        },
+        {
+          "symbol_or_scope": "computesTheSameNextOccurrence; agreesWhenARuleHasNoFurtherOccurrence",
+          "line_start": 59,
+          "line_end": 86,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/repeats/RecurEngineParityTest.kt#L59-L86"
+        }
+      ],
+      "observation_summary": "Fixed expected-vector harness covers month ends, leap years and impossible rules; COUNT zero normalization differs from strict validation.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment.",
+        "Expected-vector test is not evidence that all recurrence engines agree on every rule."
+      ]
+    },
+    {
+      "id": "TO-SYNC-TEST",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceSyncLoopTest.kt",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceSyncLoopTest.kt",
+      "raw_file_sha256": "c743378d53637a05bc793107aceebe553300f36cbab96f262c88ecbf9a3c3e7d",
+      "file_bytes": 1888,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Read/push loop and intentional recurrence edit cases",
+          "line_start": 11,
+          "line_end": 32,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceSyncLoopTest.kt#L11-L32"
+        }
+      ],
+      "observation_summary": "Untouched unknown recurrence parts survive; deliberate edits replace old unmodeled parts.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TO-ROUNDTRIP-TEST",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/commonTest/kotlin/org/tasks/icalendar/RecurrenceRoundTripTest.kt",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/icalendar/RecurrenceRoundTripTest.kt",
+      "raw_file_sha256": "f2d96d6dcc070b699c9ab62d51498007df09062984ceddd71f2abb1323cd33f1",
+      "file_bytes": 1467,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Unknown-rule and ordinary-rule round trips",
+          "line_start": 9,
+          "line_end": 35,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/icalendar/RecurrenceRoundTripTest.kt#L9-L35"
+        }
+      ],
+      "observation_summary": "Unknown extension parts and semantic recurrence roundtrip assertions.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TO-MERGE-TEST",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceMergeTest.kt",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceMergeTest.kt",
+      "raw_file_sha256": "3a91669303cd4002a1758c3439e0a2e7edef43f30c0a61b1df3d018ec00253f7",
+      "file_bytes": 2054,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Cached/local/remote recurrence merge cases",
+          "line_start": 11,
+          "line_end": 49,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceMergeTest.kt#L11-L49"
+        }
+      ],
+      "observation_summary": "Remote updates, local edits and local removal are distinct merge cases.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "TO-LICENSE",
+      "repository_id": "tasks",
+      "repository_commit": "3f57c2ae6cc36eeb7e742360b01cf78d971a28bb",
+      "path": "LICENSE",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:34.028047+00:00",
+      "primary_file_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/LICENSE",
+      "raw_file_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "file_bytes": 35147,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "GPLv3 license declaration",
+          "line_start": 1,
+          "line_end": 16,
+          "primary_url": "https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/LICENSE#L1-L16"
+        }
+      ],
+      "observation_summary": "Repository GPLv3 license text.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "tasks",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "ORG-REPEAT",
+      "repository_id": "org",
+      "repository_commit": "cf41132d0b21081c999fa31dbda9ef8b7cb20208",
+      "path": "lisp/org.el",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.790783+00:00",
+      "primary_file_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el",
+      "raw_file_sha256": "374c00debdfa10de03f55954da248c074f831636eff7f7e26da021acb2a859f6",
+      "file_bytes": 881620,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "org-auto-repeat-maybe state/history",
+          "line_start": 10340,
+          "line_end": 10395,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el#L10340-L10395"
+        },
+        {
+          "symbol_or_scope": "org-auto-repeat-maybe restart/catch-up",
+          "line_start": 10445,
+          "line_end": 10500,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el#L10445-L10500"
+        },
+        {
+          "symbol_or_scope": "org-timestamp-change",
+          "line_start": 15565,
+          "line_end": 15632,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el#L15565-L15632"
+        },
+        {
+          "symbol_or_scope": "org.el license and prerelease version header",
+          "line_start": 1,
+          "line_end": 30,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el#L1-L30"
+        }
+      ],
+      "observation_summary": "Separate restart/catch-up repeat paths, timestamp transformation and interactive catch-up prompt.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "org",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "ORG-TEST",
+      "repository_id": "org",
+      "repository_commit": "cf41132d0b21081c999fa31dbda9ef8b7cb20208",
+      "path": "testing/lisp/test-org.el",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.790783+00:00",
+      "primary_file_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el",
+      "raw_file_sha256": "a5cf8a4a20d4b09335b22b02a4824b4d3e99ac759bcfe44ddba0eff0e485f38b",
+      "file_bytes": 380034,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test-org/auto-repeat-maybe",
+          "line_start": 8971,
+          "line_end": 9090,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el#L8971-L9090"
+        },
+        {
+          "symbol_or_scope": "test-org/org-timestamp-change month-end cases",
+          "line_start": 9854,
+          "line_end": 9865,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el#L9854-L9865"
+        },
+        {
+          "symbol_or_scope": "test-org/org-timestamp-change/bad expected failure",
+          "line_start": 9880,
+          "line_end": 9908,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el#L9880-L9908"
+        },
+        {
+          "symbol_or_scope": "test-org/org-timestamp-change-dst",
+          "line_start": 9910,
+          "line_end": 9940,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el#L9910-L9940"
+        }
+      ],
+      "observation_summary": "Controlled-clock repeat fixtures, month clamping, explicit DST error policy and known expected failures.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "org",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment.",
+        "Includes explicitly expected-failing cases; those are not passing behavior evidence."
+      ]
+    },
+    {
+      "id": "ORG-LICENSE",
+      "repository_id": "org",
+      "repository_commit": "cf41132d0b21081c999fa31dbda9ef8b7cb20208",
+      "path": "COPYING",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.790783+00:00",
+      "primary_file_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/COPYING",
+      "raw_file_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "file_bytes": 35149,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "GPLv3 license declaration",
+          "line_start": 1,
+          "line_end": 16,
+          "primary_url": "https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/COPYING#L1-L16"
+        }
+      ],
+      "observation_summary": "Repository GPLv3 text; org.el header identifies version 3 or later.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "org",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "APS-STORE",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "src/apscheduler/datastores/sqlalchemy.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py",
+      "raw_file_sha256": "866258216d72304d516924ad2a3b451898a19f8f226e93eed8fca98e05c35255",
+      "file_bytes": 54191,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "_begin_transaction",
+          "line_start": 230,
+          "line_end": 252,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L230-L252"
+        },
+        {
+          "symbol_or_scope": "acquire_schedules",
+          "line_start": 647,
+          "line_end": 698,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L647-L698"
+        },
+        {
+          "symbol_or_scope": "release_schedules",
+          "line_start": 701,
+          "line_end": 790,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L701-L790"
+        },
+        {
+          "symbol_or_scope": "acquire_jobs selection",
+          "line_start": 871,
+          "line_end": 902,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L871-L902"
+        },
+        {
+          "symbol_or_scope": "_release_job; release_job",
+          "line_start": 1033,
+          "line_end": 1084,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L1033-L1084"
+        },
+        {
+          "symbol_or_scope": "Lease extension",
+          "line_start": 1104,
+          "line_end": 1136,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L1104-L1136"
+        }
+      ],
+      "observation_summary": "Transaction/lease predicates and postcommit event boundary observed; no per-acquisition generation in inspected paths.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee.",
+        "Inspected release predicates do not establish per-acquisition ABA fencing; no upstream exploit or failure reproduced."
+      ]
+    },
+    {
+      "id": "APS-RUNNER",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "src/apscheduler/_schedulers/async_.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_schedulers/async_.py",
+      "raw_file_sha256": "d44dfe1c833f0b6f768294d7ee5984c3cceba12f31ce49ca2db40fd0533d604e",
+      "file_bytes": 50547,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Scheduled fire-time/deadline job creation",
+          "line_start": 1029,
+          "line_end": 1048,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_schedulers/async_.py#L1029-L1048"
+        },
+        {
+          "symbol_or_scope": "_run_job",
+          "line_start": 1174,
+          "line_end": 1228,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_schedulers/async_.py#L1174-L1228"
+        }
+      ],
+      "observation_summary": "Executor effects precede result persistence; cancellation shields cleanup, not external rollback.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "APS-STATE",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "src/apscheduler/_utils.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_utils.py",
+      "raw_file_sha256": "5d549a0d768299582c2196f5b3a81640dd0fe19eea70d586672076482dd55bf7",
+      "file_bytes": 3651,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "require_state_version",
+          "line_start": 64,
+          "line_end": 79,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_utils.py#L64-L79"
+        }
+      ],
+      "observation_summary": "Missing/future serialized state versions produce deserialization errors.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "APS-CALENDAR",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "src/apscheduler/triggers/calendarinterval.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/triggers/calendarinterval.py",
+      "raw_file_sha256": "de02f6c81e9d9ea4274be005c3b0df449ea6359cbe32d9e7ce7766a50d5f8ee1",
+      "file_bytes": 6880,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "CalendarIntervalTrigger.next",
+          "line_start": 95,
+          "line_end": 131,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/triggers/calendarinterval.py#L95-L131"
+        },
+        {
+          "symbol_or_scope": "CalendarIntervalTrigger state serialization",
+          "line_start": 133,
+          "line_end": 153,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/triggers/calendarinterval.py#L133-L153"
+        }
+      ],
+      "observation_summary": "Keep nominal calendar cursor across gap rejection; versioned resumable state.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "APS-STORE-TEST",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "tests/test_datastores.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py",
+      "raw_file_sha256": "fc5ffe586b928193400aa02a705a65f56818ef490e0b43db2173ff7f08878962",
+      "file_bytes": 33788,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_acquire_schedules_lock_timeout",
+          "line_start": 373,
+          "line_end": 413,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L373-L413"
+        },
+        {
+          "symbol_or_scope": "test_acquire_multiple_workers",
+          "line_start": 416,
+          "line_end": 437,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L416-L437"
+        },
+        {
+          "symbol_or_scope": "test_acquire_jobs_lock_timeout",
+          "line_start": 571,
+          "line_end": 603,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L571-L603"
+        },
+        {
+          "symbol_or_scope": "test_cleanup_expired_schedule_leases",
+          "line_start": 725,
+          "line_end": 759,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L725-L759"
+        },
+        {
+          "symbol_or_scope": "test_reap_abandoned_jobs",
+          "line_start": 902,
+          "line_end": 927,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L902-L927"
+        }
+      ],
+      "observation_summary": "Exact lease-boundary, multiple-worker, dead-holder cleanup and abandoned-job result tests.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "APS-SCHEDULE-TEST",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "tests/test_schedulers.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_schedulers.py",
+      "raw_file_sha256": "1b97e50c9d9999f6f01ac776440193f814efbc4db498ba4d779585b700417808",
+      "file_bytes": 65632,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "TestAsyncScheduler.test_coalesce_policy",
+          "line_start": 570,
+          "line_end": 644,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_schedulers.py#L570-L644"
+        }
+      ],
+      "observation_summary": "Controlled missed-run fixture distinguishes all, earliest and latest scheduled slots.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "APS-CALENDAR-TEST",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "tests/triggers/test_calendarinterval.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/triggers/test_calendarinterval.py",
+      "raw_file_sha256": "e19605d5e2896e48d82c31112488d6a2179a023432c0c2cfd6a099af0ccf8549",
+      "file_bytes": 5680,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_end_date; test_missing_time",
+          "line_start": 27,
+          "line_end": 51,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/triggers/test_calendarinterval.py#L27-L51"
+        },
+        {
+          "symbol_or_scope": "test_missing_time_crossing_midnight",
+          "line_start": 54,
+          "line_end": 145,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/triggers/test_calendarinterval.py#L54-L145"
+        }
+      ],
+      "observation_summary": "End-date, skipped DST gap and cross-midnight nominal-cursor assertions with serialization variants.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "APS-VERSION",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "docs/versionhistory.rst",
+      "kind": "metadata",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/docs/versionhistory.rst",
+      "raw_file_sha256": "7217fe55ab68e375fe6314441284d5f5ae240bbe0f7587c5c8088a800d659d93",
+      "file_bytes": 31042,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "UNRELEASED snapshot section",
+          "line_start": 1,
+          "line_end": 34,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/docs/versionhistory.rst#L1-L34"
+        }
+      ],
+      "observation_summary": "Inspected branch includes unreleased changes; no stable-release qualification inferred.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "APS-LICENSE",
+      "repository_id": "apscheduler",
+      "repository_commit": "05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec",
+      "path": "LICENSE.txt",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:33.780483+00:00",
+      "primary_file_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/LICENSE.txt",
+      "raw_file_sha256": "35ed0eb40a2f7c262156ccab94b731a697808fcdc1c69f9491c991af204c2eb6",
+      "file_bytes": 1081,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "MIT license",
+          "line_start": 1,
+          "line_end": 20,
+          "primary_url": "https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/LICENSE.txt#L1-L20"
+        }
+      ],
+      "observation_summary": "Repository MIT license text.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "apscheduler",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "HY-STATEFUL",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/src/hypothesis/stateful.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/stateful.py",
+      "raw_file_sha256": "f40930d9a9f132f90af7968716f5928cb4bcd4872135118418dd6d8eea991b64",
+      "file_bytes": 54056,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "run_state_machine_as_test",
+          "line_start": 287,
+          "line_end": 317,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/stateful.py#L287-L317"
+        },
+        {
+          "symbol_or_scope": "precondition",
+          "line_start": 1126,
+          "line_end": 1158,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/stateful.py#L1126-L1158"
+        },
+        {
+          "symbol_or_scope": "invariant",
+          "line_start": 1203,
+          "line_end": 1244,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/stateful.py#L1203-L1244"
+        }
+      ],
+      "observation_summary": "Rule-based generated action traces, preconditions and after-step invariants.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "HY-DATETIME",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/src/hypothesis/strategies/_internal/datetime.py",
+      "kind": "source",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/strategies/_internal/datetime.py",
+      "raw_file_sha256": "0ddd5aba32fb2ae42d2afcb3dda339775763134bccea61fdc882b842fde27adf",
+      "file_bytes": 53614,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "_instant; datetime_does_not_exist",
+          "line_start": 139,
+          "line_end": 189,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/strategies/_internal/datetime.py#L139-L189"
+        },
+        {
+          "symbol_or_scope": "DatetimeStrategy initialization and draw",
+          "line_start": 440,
+          "line_end": 508,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/strategies/_internal/datetime.py#L440-L508"
+        }
+      ],
+      "observation_summary": "Fold-aware instant ordering, UTC existence check and optional imaginary-value rejection.",
+      "evidence_state": "static_source_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Observed implementation path is not a deployed or end-to-end guarantee."
+      ]
+    },
+    {
+      "id": "HY-STATEFUL-TEST",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/tests/cover/test_stateful.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_stateful.py",
+      "raw_file_sha256": "2f629626e1b23d1b22414c9641ad9affd092b583e2bb1337eb6ab3429c1c144c",
+      "file_bytes": 52440,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "test_invariant",
+          "line_start": 543,
+          "line_end": 560,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_stateful.py#L543-L560"
+        },
+        {
+          "symbol_or_scope": "test_removes_needless_steps",
+          "line_start": 817,
+          "line_end": 866,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_stateful.py#L817-L866"
+        }
+      ],
+      "observation_summary": "Invariant propagation and shrinking redundant setup from a database-like failure sequence.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "HY-DATETIME-TEST",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/tests/cover/test_datetimes.py",
+      "kind": "test",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_datetimes.py",
+      "raw_file_sha256": "e92793470387e912fe4684a891128e3f30d149687283fdcc40bb84f7fc9582b2",
+      "file_bytes": 17108,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Fold-one generation and imaginary option smoke cases",
+          "line_start": 163,
+          "line_end": 173,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_datetimes.py#L163-L173"
+        },
+        {
+          "symbol_or_scope": "test_tricky_draw_rejects_out_of_bounds_fold",
+          "line_start": 508,
+          "line_end": 519,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_datetimes.py#L508-L519"
+        }
+      ],
+      "observation_summary": "Generated folds and rejection of an out-of-bound ambiguous instant.",
+      "evidence_state": "test_assertions_observed_not_executed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "Test fixture/assertions observed statically; test not executed by this assessment."
+      ]
+    },
+    {
+      "id": "HY-LICENSE",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/LICENSE.txt",
+      "kind": "license",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/LICENSE.txt",
+      "raw_file_sha256": "ac89037bac63550644dce8cf32c6765e5fab9dc1a1ce94b89f8a805f341a6750",
+      "file_bytes": 17141,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "MPL-2.0 license declaration",
+          "line_start": 1,
+          "line_end": 17,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/LICENSE.txt#L1-L17"
+        }
+      ],
+      "observation_summary": "Package license is MPL-2.0 in this snapshot; no reliance on remembered older license labels.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    },
+    {
+      "id": "HY-METADATA",
+      "repository_id": "hypothesis",
+      "repository_commit": "9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2",
+      "path": "hypothesis/pyproject.toml",
+      "kind": "metadata",
+      "retrieved_at_utc": "2026-11-09T22:37:34.041172+00:00",
+      "primary_file_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/pyproject.toml",
+      "raw_file_sha256": "1d1d2070337260b07dd80d374103def36523b00559554718ac00f6b14653e7c6",
+      "file_bytes": 7801,
+      "evidence_coordinates": [
+        {
+          "symbol_or_scope": "Project license and Python requirement",
+          "line_start": 5,
+          "line_end": 18,
+          "primary_url": "https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/pyproject.toml#L5-L18"
+        }
+      ],
+      "observation_summary": "Snapshot package metadata confirms MPL-2.0 and Python 3.11 minimum.",
+      "evidence_state": "license_or_metadata_observed",
+      "claim_authority": "Pinned upstream artifact for this code/assertion/notice; no independent execution evidence.",
+      "shared_lineage": "hypothesis",
+      "limits": [
+        "Only listed spans were reviewed; no whole-file/repository correctness claim.",
+        "No legal compliance determination or transitive/asset license audit."
+      ]
+    }
+  ],
+  "mechanism_decisions": [
+    {
+      "id": "M01",
+      "mechanism": "Retain bounded dateutil calculation beneath explicit domain policy",
+      "verdict": "borrow",
+      "transfer_type": "existing_dependency",
+      "repository_id": "dateutil",
+      "source_ids": [
+        "DU-RRULE",
+        "DU-TZ",
+        "DU-RRULE-TEST",
+        "DU-TZ-TEST"
+      ],
+      "regression_ids": [
+        "R01",
+        "R02",
+        "R03",
+        "R04",
+        "R05"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M02",
+      "mechanism": "Original recurrence identity independent of edited display time",
+      "verdict": "borrow",
+      "transfer_type": "independent_mechanism_and_tests",
+      "repository_id": "recurring_ical_events",
+      "source_ids": [
+        "RI-ID-TEST",
+        "RI-RANGE-TEST",
+        "RI-UTIL"
+      ],
+      "regression_ids": [
+        "R06",
+        "R07"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M03",
+      "mechanism": "Calendar compatibility repair as core command validation",
+      "verdict": "reject",
+      "transfer_type": "no_new_core_dependency",
+      "repository_id": "recurring_ical_events",
+      "source_ids": [
+        "RI-SERIES"
+      ],
+      "regression_ids": [
+        "R04",
+        "R15",
+        "R16"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M04",
+      "mechanism": "Template slot/index and task import equality",
+      "verdict": "borrow",
+      "transfer_type": "concept_and_tests_only",
+      "repository_id": "taskwarrior",
+      "source_ids": [
+        "TW-RECURRENCE",
+        "TW-IMPORT",
+        "TW-IMPORT-TEST"
+      ],
+      "regression_ids": [
+        "R06",
+        "R16",
+        "R17"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M05",
+      "mechanism": "Future lookahead or expiration copied as domain guarantee",
+      "verdict": "reject",
+      "transfer_type": "no_dependency",
+      "repository_id": "taskwarrior",
+      "source_ids": [
+        "TW-RECURRENCE",
+        "TW-RECUR-TEST"
+      ],
+      "regression_ids": [
+        "R03",
+        "R05",
+        "R20"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M06",
+      "mechanism": "Arithmetic catch-up bounds and batch graph prevalidation",
+      "verdict": "borrow",
+      "transfer_type": "independent_mechanism_and_tests",
+      "repository_id": "vikunja",
+      "source_ids": [
+        "VK-REPEAT",
+        "VK-TASK-TEST",
+        "VK-RELATION",
+        "VK-RELATION-TEST"
+      ],
+      "regression_ids": [
+        "R05",
+        "R14",
+        "R22"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M07",
+      "mechanism": "Process-memory postcommit callback as durable outbox",
+      "verdict": "reject",
+      "transfer_type": "test_boundary_only",
+      "repository_id": "vikunja",
+      "source_ids": [
+        "VK-EVENTS",
+        "VK-EVENT-TEST"
+      ],
+      "regression_ids": [
+        "R12",
+        "R13"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M08",
+      "mechanism": "Captured-revision acknowledgment and untouched-extension preservation",
+      "verdict": "borrow",
+      "transfer_type": "independent_contract_and_tests",
+      "repository_id": "tasks",
+      "source_ids": [
+        "TO-DIRTY",
+        "TO-DIRTY-TEST",
+        "TO-RECUR",
+        "TO-SYNC-TEST"
+      ],
+      "regression_ids": [
+        "R08",
+        "R11",
+        "R16",
+        "R17"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M09",
+      "mechanism": "Controlled-clock transformation fixtures and explicit expected failures",
+      "verdict": "borrow",
+      "transfer_type": "test_ideas_only",
+      "repository_id": "org",
+      "source_ids": [
+        "ORG-REPEAT",
+        "ORG-TEST"
+      ],
+      "regression_ids": [
+        "R03",
+        "R20",
+        "R22"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M10",
+      "mechanism": "Lease/recovery/coalescing/state-version harness patterns",
+      "verdict": "borrow",
+      "transfer_type": "defer_scheduler_dependency",
+      "repository_id": "apscheduler",
+      "source_ids": [
+        "APS-STORE-TEST",
+        "APS-SCHEDULE-TEST",
+        "APS-STATE",
+        "APS-CALENDAR-TEST"
+      ],
+      "regression_ids": [
+        "R08",
+        "R09",
+        "R10",
+        "R11",
+        "R13",
+        "R15",
+        "R20"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M11",
+      "mechanism": "Inspected scheduler owner field as sufficient ABA or delivery guarantee",
+      "verdict": "reject",
+      "transfer_type": "not_a_guarantee",
+      "repository_id": "apscheduler",
+      "source_ids": [
+        "APS-STORE",
+        "APS-RUNNER"
+      ],
+      "regression_ids": [
+        "R08",
+        "R10",
+        "R11"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    },
+    {
+      "id": "M12",
+      "mechanism": "Bounded generated reference-model histories",
+      "verdict": "try",
+      "transfer_type": "development_only_dependency_trial",
+      "repository_id": "hypothesis",
+      "source_ids": [
+        "HY-STATEFUL",
+        "HY-STATEFUL-TEST",
+        "HY-DATETIME",
+        "HY-DATETIME-TEST"
+      ],
+      "regression_ids": [
+        "R01",
+        "R21"
+      ],
+      "evidence_status": "Static observations plus explicitly independent adaptation; not runtime qualification."
+    }
+  ],
+  "regression_designs": [
+    {
+      "id": "R01",
+      "title": "fold policy and UTC ordering",
+      "owner_role": "temporal",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "DU-TZ",
+        "DU-TZ-TEST",
+        "HY-DATETIME"
+      ],
+      "basis": "upstream_test_pattern_adapted",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R02",
+      "title": "non-hour and cross-midnight gaps retain nominal cadence",
+      "owner_role": "temporal",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "DU-TZ-TEST",
+        "APS-CALENDAR-TEST"
+      ],
+      "basis": "policy_difference_with_shared_invariant",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R03",
+      "title": "month ends, leap days, ordinals and impossible rules",
+      "owner_role": "temporal",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "TO-PARITY-TEST",
+        "TW-RECURRENCE",
+        "ORG-TEST"
+      ],
+      "basis": "policy_difference_with_shared_invariant",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R04",
+      "title": "finite COUNT and inclusive UNTIL with strict validation",
+      "owner_role": "temporal",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "DU-RRULE",
+        "DU-RRULE-TEST",
+        "RI-COUNT-TEST"
+      ],
+      "basis": "upstream_test_pattern_adapted",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R05",
+      "title": "ancient origins and impossible-rule resource bounds",
+      "owner_role": "temporal_and_core",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "VK-REPEAT",
+        "VK-TASK-TEST",
+        "TW-RECURRENCE"
+      ],
+      "basis": "mechanism_and_independent_budget_test",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R06",
+      "title": "pure previews and partially materialized continuation",
+      "owner_role": "temporal_and_core",
+      "priority": "P1",
+      "evidence_source_ids": [
+        "DU-PROPERTY",
+        "RI-RANGE-TEST"
+      ],
+      "basis": "upstream_test_pattern_adapted",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R07",
+      "title": "moved occurrence retains nominal identity and replay behavior",
+      "owner_role": "core",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "RI-ID-TEST",
+        "RI-RANGE-TEST"
+      ],
+      "basis": "identity_invariant_adapted_to_delivery",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R08",
+      "title": "same-owner ABA rejects stale success and stale failure",
+      "owner_role": "store_and_api",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "APS-STORE",
+        "APS-STORE-TEST",
+        "TO-DIRTY-TEST"
+      ],
+      "basis": "independent_extension_not_upstream_guarantee",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R09",
+      "title": "expiry equality, cleanup and clock jumps",
+      "owner_role": "store_and_worker",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "APS-STORE-TEST"
+      ],
+      "basis": "expiry_pattern_with_independent_clock_jump_extension",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R10",
+      "title": "crash after durable receiver effect before acknowledgment",
+      "owner_role": "worker",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "APS-RUNNER"
+      ],
+      "basis": "independent_fault_injection_from_observed_boundary",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R11",
+      "title": "cancellation before and after final pre-send check",
+      "owner_role": "worker",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "APS-RUNNER",
+        "TO-DIRTY"
+      ],
+      "basis": "independent_race_test_from_observed_boundary",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R12",
+      "title": "caller root and nested savepoint rollback include replay/event/outbox state",
+      "owner_role": "embedded_store",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "VK-EVENTS",
+        "VK-EVENT-TEST",
+        "VK-TASK-TEST"
+      ],
+      "basis": "independent_embedded_transaction_extension",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R13",
+      "title": "committed durable intent survives crash before dispatch",
+      "owner_role": "store_and_worker",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "VK-EVENTS",
+        "APS-STORE"
+      ],
+      "basis": "independent_outbox_requirement_not_upstream_guarantee",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R14",
+      "title": "graph validation and foreign-workspace atomic rejection",
+      "owner_role": "import_and_api",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "VK-RELATION",
+        "VK-RELATION-TEST",
+        "VK-ROUNDTRIP-TEST"
+      ],
+      "basis": "batch_pattern_with_daymark_scope_extension",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R15",
+      "title": "snapshot schema versions and inert extension boundary",
+      "owner_role": "snapshot_and_api",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "APS-STATE",
+        "APS-CALENDAR",
+        "TO-ROUNDTRIP-TEST"
+      ],
+      "basis": "version_pattern_and_independent_strict_schema_validation",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R16",
+      "title": "same-state import, unknown preservation and intentional removal",
+      "owner_role": "import",
+      "priority": "P1",
+      "evidence_source_ids": [
+        "TW-IMPORT",
+        "TW-IMPORT-TEST",
+        "TO-SYNC-TEST",
+        "TO-MERGE-TEST"
+      ],
+      "basis": "upstream_test_pattern_adapted",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R17",
+      "title": "prior operation result survives later state, snapshot and restart",
+      "owner_role": "replay_and_store",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "TW-IMPORT-TEST",
+        "TO-DIRTY-TEST"
+      ],
+      "basis": "independent_operation_ledger_requirement",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R18",
+      "title": "same identity different content conflicts atomically",
+      "owner_role": "replay_and_import",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "TW-IMPORT",
+        "RI-UTIL"
+      ],
+      "basis": "independent_requirement_with_upstream_counterexamples",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R19",
+      "title": "workspace-local identities, foreign refs and event cursors",
+      "owner_role": "multiworkspace_and_api",
+      "priority": "P0",
+      "evidence_source_ids": [
+        "VK-RELATION-TEST"
+      ],
+      "basis": "daymark_specific_extension_no_upstream_guarantee",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R20",
+      "title": "missed-run policies preserve intended slots and count",
+      "owner_role": "scheduler_and_core",
+      "priority": "P1",
+      "evidence_source_ids": [
+        "APS-SCHEDULE-TEST",
+        "ORG-TEST"
+      ],
+      "basis": "policy_matrix_adapted",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R21",
+      "title": "bounded generated state-machine histories",
+      "owner_role": "test_harness",
+      "priority": "P1",
+      "evidence_source_ids": [
+        "HY-STATEFUL",
+        "HY-STATEFUL-TEST"
+      ],
+      "basis": "optional_bounded_harness_trial",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    },
+    {
+      "id": "R22",
+      "title": "range meaning and graph export without content duplication",
+      "owner_role": "range_and_export",
+      "priority": "P1",
+      "evidence_source_ids": [
+        "ORG-TEST",
+        "VK-ROUNDTRIP-TEST",
+        "RI-RANGE-TEST"
+      ],
+      "basis": "test_idea_including_known_upstream_expected_failures",
+      "status": "proposed_independent_regression_not_verified_by_research_worker",
+      "fixture_boundary": "Synthetic state, inert or separately durable test receiver; no production data or outbound notifications."
+    }
+  ],
+  "contradictions_and_non_equivalences": [
+    {
+      "source_ids": [
+        "DU-LICENSE",
+        "DU-METADATA"
+      ],
+      "issue": "Package BSD label and retained historical Apache/BSD license notices have different scopes.",
+      "treatment": "Record both; no wholesale source copying or blanket license interpretation."
+    },
+    {
+      "source_ids": [
+        "DU-RRULE",
+        "DU-RRULE-TEST"
+      ],
+      "issue": "Simultaneous COUNT and UNTIL warns in the inspected dateutil constructor; Daymark strict validation rejects.",
+      "treatment": "Application validation is authoritative; successful parsing is not acceptance."
+    },
+    {
+      "source_ids": [
+        "TW-RECURRENCE",
+        "ORG-TEST",
+        "TO-PARITY-TEST"
+      ],
+      "issue": "Month clamping and invalid-month skipping differ.",
+      "treatment": "Borrow boundary vectors, retain Daymark declared semantics."
+    },
+    {
+      "source_ids": [
+        "APS-CALENDAR-TEST",
+        "DU-TZ-TEST",
+        "ORG-TEST"
+      ],
+      "issue": "Gap skipping, forward resolution and editor error policies differ.",
+      "treatment": "Do not silently replace core policy with another implementation default."
+    },
+    {
+      "source_ids": [
+        "APS-STORE",
+        "TO-DIRTY"
+      ],
+      "issue": "Reusable scheduler identity and captured content revision are not per-acquisition fencing.",
+      "treatment": "Propose independent same-owner generation/token test; no upstream defect reproduction claimed."
+    },
+    {
+      "source_ids": [
+        "VK-EVENTS",
+        "APS-RUNNER"
+      ],
+      "issue": "Aftercommit callbacks and job-result persistence leave external-effect/process-crash boundaries.",
+      "treatment": "Require durable intent and explicit receiver idempotency instead of exactly-once inference."
+    },
+    {
+      "source_ids": [
+        "ORG-TEST"
+      ],
+      "issue": "Some range/duration assertions explicitly expect failure.",
+      "treatment": "Label expected failures and do not count them as passing upstream coverage."
+    }
+  ],
+  "remaining_gaps": [
+    {
+      "id": "G01",
+      "topic": "Pinned development source versus released/installed version",
+      "state": "unverified",
+      "impact": "No upgrade or release-parity recommendation made."
+    },
+    {
+      "id": "G02",
+      "topic": "Upstream stale-holder/ABA assumptions across all stores and workers",
+      "state": "not_executed_or_fully_audited",
+      "impact": "No whole-project concurrency defect or guarantee asserted."
+    },
+    {
+      "id": "G03",
+      "topic": "External effect reconciliation without receiver idempotency",
+      "state": "unresolved_architecture_boundary",
+      "impact": "Exactly-once delivery/attention not claimed."
+    },
+    {
+      "id": "G04",
+      "topic": "Universal persisted clock-jump policy",
+      "state": "not_selected_by_research",
+      "impact": "Synthetic clock fixtures must reflect explicit engine policy."
+    },
+    {
+      "id": "G05",
+      "topic": "Operation/event replay continuity after import",
+      "state": "independent_daymark_acceptance_target",
+      "impact": "Upstream task roundtrip tests do not establish command-ledger fidelity."
+    },
+    {
+      "id": "G06",
+      "topic": "icalendar, ical4j, rrule.js, Celery, Huey",
+      "state": "not_separately_assessed",
+      "impact": "Excluded from eight-repository count; retrieval not expanded without a concrete unresolved need."
+    },
+    {
+      "id": "G07",
+      "topic": "Full dependency/asset license and serializer security audits",
+      "state": "not_performed",
+      "impact": "No code copying or legal/security certification."
+    },
+    {
+      "id": "G08",
+      "topic": "Benefit of generated model harness beyond deterministic suite",
+      "state": "bounded_trial_proposed_not_run",
+      "impact": "Optional development dependency, owner-reviewed with explicit history budget."
+    }
+  ]
+}

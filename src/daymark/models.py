@@ -305,6 +305,7 @@ class Entity(Model):
     attempts: int = Field(default=0, ge=0)
     retry_at: datetime | None = None
     lease_owner: str | None = None
+    lease_token: str | None = None
     lease_until: datetime | None = None
     delivery_key: str | None = None
     error: str | None = None

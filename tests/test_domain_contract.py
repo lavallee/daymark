@@ -128,3 +128,49 @@ def test_update_completion_suppresses_claimed_reminder(tmp_path):
     )
     assert store.get("work", "reminder")["reminder_state"] == "cancelled"
     assert store.claim_reminders("other", now=now) == []
+
+
+def test_snooze_is_new_firing_with_retry_stable_delivery_identity(tmp_path):
+    from datetime import timedelta
+
+    from daymark.worker import RecordingSink, Worker
+
+    store = Store(tmp_path / "snooze.db")
+    create(store, "person", "person")
+    create(store, "task")
+    create(
+        store,
+        "reminder",
+        "reminder",
+        task_id="task",
+        recipient_id="person",
+        scheduled_at="2030-04-03T12:00:00Z",
+    )
+    now = datetime(2030, 4, 3, 12, tzinfo=UTC)
+    sink = RecordingSink()
+    worker = Worker(store, sink)
+    assert worker.run_once(now)["recorded"] == 1
+    delivered = store.get("work", "reminder")
+    next_time = now + timedelta(hours=1)
+    snoozed = store.execute(
+        "work",
+        "snooze-once",
+        "reminder.snooze",
+        {"id": "reminder", "scheduled_at": next_time.isoformat()},
+        expected_version=delivered["version"],
+    )
+    assert snoozed["delivery_key"] != delivered["delivery_key"]
+    assert worker.run_once(now + timedelta(minutes=30))["claimed"] == 0
+    assert worker.run_once(next_time)["recorded"] == 1
+    assert len(sink.delivery_keys) == 2
+    assert (
+        store.execute(
+            "work",
+            "snooze-once",
+            "reminder.snooze",
+            {"id": "reminder", "scheduled_at": next_time.isoformat()},
+            expected_version=delivered["version"],
+        )
+        == snoozed
+    )
+    assert worker.run_once(next_time + timedelta(hours=1))["claimed"] == 0

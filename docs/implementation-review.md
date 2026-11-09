@@ -144,3 +144,122 @@ The timestamp-change tests explicitly show month-end clamping and a separate DST
 The test owner can decide whether to add a development-only Hypothesis dependency. Baseline: the existing deterministic regression suite. Variant: at most 50 generated histories of at most 20 actions over two synthetic workspaces, a temporary file database and a fake clock, with no external delivery. Grader: zero divergence from the reference model; rejected commands leave state unchanged; each logical receiver key has at most one effect when the receiver explicitly deduplicates; restarted continuation matches uninterrupted continuation. Keep a small held-out matrix of hand-written races, because generated sequential histories do not cover real concurrency.
 
 Stop after the fixed history budget or the first reproducible failure; preserve the minimized trace before changing implementation. Do not broaden into upstream execution, network services or production data. Promotion requires the owner to review the new dependency/license and the resulting independent tests. This research worker did not install or run the trial.
+
+## Regression handoff for Daymark
+
+The following are **independently designed synthetic tests**, inspired by the stated source/test coordinates. They are not copied upstream tests, nor claims of upstream coverage for Daymark's exact contract. Priority identifies the risk to the engine contract, not an instruction to stop unrelated build work.
+
+| ID / owner | Synthetic sequence and expected invariant | Evidence and adaptation limit |
+| --- | --- | --- |
+| R01 — temporal, P0 | Generate both folds at one local wall time; enforce declared first-fold policy, and assert ordering/equality using UTC instants. Invalid naive instants reject explicitly. | [DU-TZ], [DU-TZ-TEST], [HY-DATETIME]. The gap resolver does not select the desired fold. |
+| R02 — temporal, P0 | Exercise ordinary DST, a whole-day jump, a fractional-hour historical jump and a gap crossing midnight. After forward normalization, subsequent nominal slots retain their original local schedule and finite budget. | [DU-TZ-TEST], [APS-CALENDAR-TEST]. Upstream APScheduler skips the gap; adapt the invariant, not that policy. |
+| R03 — temporal, P0 | Compare monthly day 31, explicit last-day rule, leap day, ordinal weekday and impossible selector. Keep skip versus clamp behavior explicit, including January→February→March continuation. | [TO-PARITY-TEST], [TW-RECURRENCE], [ORG-TEST]. These sources intentionally differ. |
+| R04 — temporal, P0 | COUNT=1 yields no successor; an exact UNTIL slot is included; UNTIL before anchor exhausts; COUNT+UNTIL and invalid counts obey Daymark validation. | [DU-RRULE], [DU-RRULE-TEST], [RI-COUNT-TEST]. Dateutil's warning is not strict rejection. |
+| R05 — temporal/core, P0 | Ancient anchor plus shortest allowed rule, impossible selector and bounded catch-up: work limit produces an explicit limit error; genuine finite exhaustion produces no successor. Assert a budget/sentinel, not only elapsed time. | [VK-REPEAT], [VK-TASK-TEST], [TW-RECURRENCE]. Future lookahead is not a total-compute bound. |
+| R06 — temporal/core, P1 | Preview the same rule twice; original inputs, occurrence index and history do not change. Continue after zero, one and all finite materializations, with export/reopen between steps. | [DU-PROPERTY], [RI-RANGE-TEST]. Use versioned JSON rather than trusted-object pickle. |
+| R07 — core, P0 | Move an occurrence's planned/display time, then retry completion, export/reimport and restart. Original slot identity and logical delivery key remain stable; only one successor exists. | [RI-ID-TEST], [RI-RANGE-TEST]. Upstream RECURRENCE-ID preservation motivates this; its full composite occurrence ID is not assumed identical to Daymark's. |
+| R08 — store/API, P0 | Same owner claims generation/token A; expires; same owner claims B. Stale A success **and** stale A failure conflict without changing B's state, attempt/event records or retry time. B succeeds. Repeat with different owners. | [APS-STORE], [APS-STORE-TEST], [TO-DIRTY-TEST]. Storage must compare acquisition identity; worker naming alone is insufficient. |
+| R09 — store/worker, P0 | Acquire at expiry−ε/equality/+ε, run cleanup, extend a lease, and move wall clock forward/backward under a declared policy. No premature duplicate logical firing or resurrection; timestamps describe actual attempt time. | [APS-STORE-TEST]. Clock backstep is a Daymark extension, not a claimed upstream test. Persisted wall-clock leases cannot be made monotonic merely by changing an in-process timer. |
+| R10 — worker, P0 | A separate durable synthetic receiver records a logical key/effect. Kill the sender process after that commit but before engine acknowledgment. Reopen, reclaim and send again with the same key: two attempts may exist, one receiver effect, no false first-attempt certainty. | [APS-RUNNER]. This is an independently derived crash test; no equivalent upstream crash harness was established. Receiver deduplication is an explicit fixture capability. |
+| R11 — worker, P0 | Cancel/complete before pre-send check: suppress effect. Put a barrier after check, then cancel before the sink call: assert the chosen race policy and prohibit stale successful persistence. | [APS-RUNNER], [TO-DIRTY]. A final check narrows the race but cannot unsend; document the linearization boundary. |
+| R12 — embedded store, P0 | Under a caller-owned root transaction and nested application savepoint, write entity, operation hash/result, events and delivery intent. Release the library savepoint, then roll back outer/nested work. A separate connection sees only committed baseline. | [VK-EVENTS], [VK-EVENT-TEST], [VK-TASK-TEST]. Those sources motivate effect ordering; they do not implement this exact embedded contract. |
+| R13 — store/worker, P0 | Commit domain/outbox rows, stop before dispatch, reopen and drain. Rollback path never dispatches. Failure during savepoint setup or release cannot commit unrelated caller writes. | [VK-EVENTS], [APS-STORE]. An after-commit callback alone cannot recover the committed intent. |
+| R14 — import/API, P0 | Validate a graph with forward refs, long acyclic chain, true cycle, duplicate inverses and one foreign-workspace endpoint. Reject the whole invalid import with zero operation/event/outbox residue. | [VK-RELATION], [VK-RELATION-TEST], [VK-ROUNDTRIP-TEST]. Workspace rejection is Daymark's stronger boundary; cross-project permission rules are not copied. |
+| R15 — snapshot/API, P0 | Missing, malformed, unsupported future and explicitly supported older schema versions: fail or migrate by contract before writes. Unknown core fields reject; preserved extension envelope stays inert. | [APS-STATE], [APS-CALENDAR], [TO-ROUNDTRIP-TEST]. Typed schema validation is distinct from preserving unknown extension data. |
+| R16 — import, P1 | Round-trip same entity twice under a changed clock; same state has no accidental new modification. Unknown recurrence parts survive untouched adapter roundtrip; deliberate edit/removal does not resurrect them. | [TW-IMPORT], [TW-IMPORT-TEST], [TO-SYNC-TEST], [TO-MERGE-TEST]. Preservation is not permission to execute unsupported rules. |
+| R17 — replay/store, P0 | Perform operation A producing version 2, then B producing version 3; export/import/reopen; replay identical A returns the original version-2 result without rewinding version 3 or appending events. Changed A content conflicts atomically. | [TW-IMPORT-TEST], [TO-DIRTY-TEST] motivate identity/version distinctions. Full operation-ledger preservation is an independent Daymark requirement, not observed upstream. |
+| R18 — replay/import, P0 | Duplicate event or operation identity with conflicting payload, workspace or canonical hash rejects atomically. Equivalent key ordering follows the declared canonicalization rule. Prior results and high-water state survive restart. | [TW-IMPORT], [RI-UTIL]. Upstream task equality and sequence selection are counterexamples to assuming this stronger contract. |
+| R19 — multiworkspace/API, P0 | Reuse synthetic external task/operation/event IDs across two workspaces. Foreign parent/dependency/import refs cannot resolve globally by accident; one workspace's cursor cannot leak counts or overwrite another's event. | [VK-RELATION-TEST] motivates endpoint validation; event-cursor isolation is a Daymark-specific extension, not an upstream guarantee. |
+| R20 — scheduler/core, P1 | Resume a stopped scheduler with multiple missed slots under keep-all/earliest/latest or the engine's supported alternatives. Assert retained nominal slots and count consumption, not just the number of jobs. | [APS-SCHEDULE-TEST], [ORG-TEST]. Never silently switch a calendar obligation to completion-relative timing. |
+| R21 — stateful harness, P1 | Generate bounded valid and invalid command histories and assert a simpler model after each step. Include restart, undo, stale completion, same-owner reclaim and rejected foreign refs; retain minimized failures. | [HY-STATEFUL], [HY-STATEFUL-TEST]. Sequential generation complements, not replaces, explicit interleavings and subprocess crashes. |
+| R22 — range/export, P1 | Move a synthetic work window across midnight, month end and zone transition; preserve declared duration/precision and source data. Export contains references rather than recursively duplicating whole related records. | [ORG-TEST], [VK-ROUNDTRIP-TEST], [RI-RANGE-TEST]. Some Org duration expectations are explicitly expected failures, so they are test ideas rather than working-behavior evidence. |
+
+### Lease identity and idempotency identity must differ
+
+One logical firing should retain its delivery key through retries and process restarts, while every acquisition has a fresh token/generation. Otherwise two opposite errors occur: changing the logical key defeats receiver deduplication; retaining only a reusable owner name permits an old holder to masquerade as a new holder. A monotonically increasing generation is one option; an unguessable unique acquisition token can be sufficient for storage compare-and-swap. Neither by itself prevents an already-authorized external sink call from taking effect after a lease expires. These are proposed Daymark invariants derived from the lease and captured-version observations, not a claim that upstream implements this combination. [APS-STORE], [TO-DIRTY]
+
+A stale acknowledgment should leave the current entity, current attempt, current token, retry schedule and event history unchanged. Test both success and failure paths: stale failure can be just as destructive as stale success if it schedules a retry or clears a newer lease. Check the stored row and events, not merely the raised error.
+
+### Snapshot fidelity includes replay authority
+
+Task/graph round trips are insufficient if the public snapshot claims command replay continuity. Preserve or explicitly account for operation canonical hashes, original results, event identities, occurrence budgets, logical delivery keys and relevant schema/high-water state. Import must define whether it is a fresh restore, a merge with version preconditions, or a deliberately lossy portable export. Those modes should not be conflated.
+
+An import that keeps entity IDs but discards prior operation results can make an old completion look new; an import that keeps old results but rewinds newer state is also wrong. An event ID can be idempotent only with an appropriate scope and content check. These are independently inferred Daymark requirements. None of the inspected upstream import fixtures establishes this full replay contract. [TW-IMPORT-TEST], [VK-ROUNDTRIP-TEST], [DU-PROPERTY]
+
+## Scope, gaps and stop condition
+
+The bounded assessment inspected **8 repositories and 56 source/test/license/metadata files**. It does not count transitive engines such as icalendar or ical4j as separately assessed repositories. rrule.js, Celery and Huey were not inspected; they remain outside this pass rather than weakly labeled alternatives. Expanding into them is unnecessary for the present handoff unless a concrete unresolved architecture decision needs their mechanism.
+
+The useful findings do not establish production reliability, current release conformance, performance bounds beyond the inspected algorithm, or universal license compatibility. No upstream test result, benchmark, network-delivery receipt, signature attestation or exploit was produced. No complete source audit of scheduler cancellation, transaction isolation, serializer safety, dependency licensing or every timezone was performed.
+
+Remaining material gaps are:
+
+- Exact release parity between the pinned development snapshots and installed package versions.
+- Full upstream ownership assumptions around lease release, renewal and stale callbacks; no ABA experiment was run against upstream.
+- Durable external-effect reconciliation when a receiver cannot deduplicate or report an accepted request.
+- A universal clock-jump policy; persisted timestamps and elapsed process clocks serve different purposes.
+- Full event/operation replay preservation across archive versions and multiworkspace imports; this is a Daymark acceptance target, not a borrowed guarantee.
+- Whether a development-only generated state-machine harness adds useful coverage beyond the now-expanding deterministic suite. That decision has a bounded trial above.
+
+Research can stop here. Stable mechanisms and concrete tests have been handed to the implementation owners; the JSON inventory is the durable evidence trail. Further retrieval should be triggered by a material decision or contradictory source, not a desire to complete every scheduler/library comparison.
+
+## Primary evidence links
+
+The identifiers below resolve to exact-commit files and line ranges. The JSON inventory provides all inspected coordinate spans, symbols, raw-file hashes and limitations. Short source summaries above are original analysis; no full code or test captures are published.
+
+[DU-RRULE]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/rrule.py#L443-L496
+[DU-TZ]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/src/dateutil/tz/tz.py#L1258-L1289
+[DU-RRULE-TEST]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_rrule.py#L2359-L2408
+[DU-TZ-TEST]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/test_tz.py#L2822-L2837
+[DU-PROPERTY]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/tests/property/test_rrule_prop.py#L15-L37
+[DU-LICENSE]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/LICENSE#L1-L18
+[DU-METADATA]: https://github.com/dateutil/dateutil/blob/a78cbd81d5d03b5f126eb36edb92bca78972c804/pyproject.toml#L5-L12
+[RI-SERIES]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/series/rrule.py#L153-L207
+[RI-UTIL]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/util.py#L209-L237
+[RI-OCCURRENCE]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/occurrence.py#L85-L126
+[RI-ID-TEST]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_243_recurrence_id_is_not_identical_to_dtstart.py#L10-L35
+[RI-RANGE-TEST]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_issue_222_range_recurrence_id.py#L12-L54
+[RI-COUNT-TEST]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/recurring_ical_events/test/test_count.py#L9-L19
+[RI-LICENSE]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/LICENSE#L1-L17
+[RI-METADATA]: https://github.com/niccokunzmann/python-recurring-ical-events/blob/7a0bd1d637e4afec389f9b9f32b336020e98634d/pyproject.toml#L5-L19
+[TW-RECURRENCE]: https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/recur.cpp#L49-L60
+[TW-IMPORT]: https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/src/commands/CmdImport.cpp#L175-L225
+[TW-RECUR-TEST]: https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/recurrence.test.py#L135-L163
+[TW-IMPORT-TEST]: https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/test/import.test.py#L220-L242
+[TW-LICENSE]: https://github.com/GothenburgBitFactory/taskwarrior/blob/efa603a5d60d95adb5b6994ae1907e5bfd20c9e9/LICENSE#L1-L23
+[VK-REPEAT]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks.go#L1928-L1956
+[VK-TASK-TEST]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/tasks_test.go#L1013-L1030
+[VK-EVENTS]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events.go#L273-L289
+[VK-EVENT-TEST]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/events/events_test.go#L38-L99
+[VK-RELATION]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation.go#L211-L246
+[VK-RELATION-TEST]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/models/task_relation_test.go#L326-L406
+[VK-ROUNDTRIP-TEST]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/roundtrip_test.go#L39-L143
+[VK-IMPORT]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/pkg/modules/migration/vikunja-file/vikunja.go#L52-L94
+[VK-LICENSE]: https://github.com/go-vikunja/vikunja/blob/55f5418b0e4f581fed8b6701e6c961e27148fd68/LICENSE#L1-L16
+[TO-RECUR]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonMain/kotlin/org/tasks/repeats/Recur.kt#L34-L83
+[TO-JVM]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/jvmCommonMain/kotlin/org/tasks/repeats/Recur.jvm.kt#L15-L34
+[TO-DIRTY]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/commonMain/kotlin/org/tasks/data/dao/DirtyDao.kt#L67-L82
+[TO-DIRTY-TEST]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/data/src/nonAndroidTest/kotlin/org/tasks/data/dao/TaskDaoDirtyVersionTest.kt#L122-L149
+[TO-PARITY-TEST]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/repeats/RecurEngineParityTest.kt#L9-L54
+[TO-SYNC-TEST]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceSyncLoopTest.kt#L11-L32
+[TO-ROUNDTRIP-TEST]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/icalendar/RecurrenceRoundTripTest.kt#L9-L35
+[TO-MERGE-TEST]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/kmp/src/commonTest/kotlin/org/tasks/caldav/RecurrenceMergeTest.kt#L11-L49
+[TO-LICENSE]: https://github.com/tasks/tasks/blob/3f57c2ae6cc36eeb7e742360b01cf78d971a28bb/LICENSE#L1-L16
+[ORG-REPEAT]: https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/lisp/org.el#L10340-L10395
+[ORG-TEST]: https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/testing/lisp/test-org.el#L8971-L9090
+[ORG-LICENSE]: https://github.com/bzg/org-mode/blob/cf41132d0b21081c999fa31dbda9ef8b7cb20208/COPYING#L1-L16
+[APS-STORE]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/datastores/sqlalchemy.py#L230-L252
+[APS-RUNNER]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_schedulers/async_.py#L1029-L1048
+[APS-STATE]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/_utils.py#L64-L79
+[APS-CALENDAR]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/src/apscheduler/triggers/calendarinterval.py#L95-L131
+[APS-STORE-TEST]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_datastores.py#L373-L413
+[APS-SCHEDULE-TEST]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/test_schedulers.py#L570-L644
+[APS-CALENDAR-TEST]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/tests/triggers/test_calendarinterval.py#L27-L51
+[APS-VERSION]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/docs/versionhistory.rst#L1-L34
+[APS-LICENSE]: https://github.com/agronholm/apscheduler/blob/05b4e2d69f89e3f8d87c6eec5df71ed1dd5705ec/LICENSE.txt#L1-L20
+[HY-STATEFUL]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/stateful.py#L287-L317
+[HY-DATETIME]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/src/hypothesis/strategies/_internal/datetime.py#L139-L189
+[HY-STATEFUL-TEST]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_stateful.py#L543-L560
+[HY-DATETIME-TEST]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/tests/cover/test_datetimes.py#L163-L173
+[HY-LICENSE]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/LICENSE.txt#L1-L17
+[HY-METADATA]: https://github.com/HypothesisWorks/hypothesis/blob/9ab0be61aaaa27396fc1bbf4b34e7925cc68d1e2/hypothesis/pyproject.toml#L5-L18

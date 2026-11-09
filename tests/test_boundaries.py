@@ -594,6 +594,7 @@ def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_pat
     create(store, "w", "task")
     connection.commit()  # Only the application owns the root commit.
     baseline = store.export("w")
+    connection.commit()  # Export's caller-owned read transaction is caller-owned too.
     observer = Store(path)
     connection.execute("BEGIN")
     create(store, "w", "keep-in-root")
@@ -607,7 +608,8 @@ def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_pat
         task_id="task",
         scheduled_at=NOW.isoformat(),
     )
-    assert observer.export("w") == baseline  # No externally visible uncommitted intent.
+    assert observer.list("w") == baseline["entities"]
+    assert observer.events("w", limit=1000) == baseline["events"]
     connection.execute("ROLLBACK TO application_nested")
     connection.execute("RELEASE application_nested")
     assert store.get("w", "keep-in-root")["id"] == "keep-in-root"
@@ -621,9 +623,8 @@ def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_pat
         expected_version=0,
     )
     connection.rollback()
-    assert store.export("w") == baseline
     assert observer.export("w") == baseline
-    assert not observer.claim_reminders("observer", now=NOW)
+    assert observer.list("w", kind="reminder") == []
     connection.close()
 
 
@@ -747,3 +748,158 @@ def test_event_cursors_do_not_reveal_foreign_workspace_activity(tmp_path):
     )
     after = store.events("one", after=before)
     assert len(after) == 1 and after[0]["seq"] == before + 1
+
+
+def test_owned_commit_failure_rolls_back_and_preserves_original_error(tmp_path):
+    path = tmp_path / "commit-failure.db"
+    store = Store(path)
+    create(store, "w", "baseline")
+    store.db.execute("PRAGMA busy_timeout=20")  # Deterministic lock fault, not a timing test.
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT data FROM daymark_entities").fetchall()
+    try:
+        # An older reader can permit writes but prevent their COMMIT in SQLite's
+        # rollback-journal mode. RELEASE succeeded; cleanup must roll back root,
+        # rather than address the now-released library savepoint.
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            create(store, "w", "blocked")
+    finally:
+        reader.rollback()
+        reader.close()
+    assert_code("not_found", store.get, "w", "blocked")
+    store.execute(
+        "w",
+        "create-blocked",
+        "create",
+        {"id": "new-after-rollback", "kind": "task"},
+        expected_version=0,
+    )
+    assert store.get("w", "new-after-rollback")["id"] == "new-after-rollback"
+
+
+@pytest.mark.parametrize("field", ["title", "description"])
+@pytest.mark.parametrize("claimed", [False, True])
+def test_harmless_task_text_edit_preserves_explicit_reminder(tmp_path, field, claimed):
+    store = Store(tmp_path / "harmless-edit.db")
+    seed_reminder(store)
+    if claimed:
+        store.claim_reminders("owner", now=NOW)
+    before = store.get("w", "reminder")
+    task = store.get("w", "task")
+    store.execute(
+        "w",
+        "harmless-edit",
+        "update",
+        {"id": "task", field: "Revised synthetic text"},
+        expected_version=task["version"],
+    )
+    assert store.get("w", "reminder") == before
+    if claimed:
+        store.finish_delivery(
+            "w", "reminder", "owner", True, lease_token=before["lease_token"], now=NOW
+        )
+    else:
+        assert len(store.claim_reminders("owner", now=NOW)) == 1
+
+
+@pytest.mark.parametrize("action", ["cancel", "complete", "archive", "delete"])
+def test_terminal_archive_delete_invalidates_explicit_reminder(tmp_path, action):
+    store = Store(tmp_path / "terminal-edit.db")
+    seed_reminder(store)
+    store.execute(
+        "w", "terminal", action, {"id": "task"}, expected_version=store.get("w", "task")["version"]
+    )
+    assert store.get("w", "reminder")["reminder_state"] == "cancelled"
+    assert store.claim_reminders("owner", now=NOW) == []
+    if action == "delete":
+        assert_code("not_found", store.get, "w", "task")
+
+
+@pytest.mark.parametrize("action", ["create", "update"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("attempts", 99),
+        ("lease_owner", "forged-owner"),
+        ("lease_token", "forged-token"),
+        ("lease_until", "2026-11-10T12:00:00Z"),
+        ("retry_at", "2026-11-10T12:00:00Z"),
+        ("delivery_key", "forged-delivery"),
+        ("reminder_state", "delivered"),
+        ("error", "forged-outcome"),
+    ],
+)
+def test_commands_cannot_forge_scheduler_owned_state(tmp_path, action, field, value):
+    store = Store(tmp_path / "scheduler-forgery.db")
+    seed_reminder(store)
+    baseline = store.export("w")
+    if action == "create":
+        payload = {
+            "id": "forged",
+            "kind": "reminder",
+            "recipient_id": "person",
+            "scheduled_at": NOW.isoformat(),
+            field: value,
+        }
+        version = 0
+    else:
+        payload = {"id": "reminder", field: value}
+        version = store.get("w", "reminder")["version"]
+    assert_code("invalid", store.execute, "w", "forgery", action, payload, expected_version=version)
+    assert store.export("w") == baseline
+
+
+def test_native_skip_advances_series_without_recording_actual_completion(tmp_path):
+    store = Store(tmp_path / "skip-disposition.db")
+    planned = {"date": "2026-11-09", "timezone": "America/New_York"}
+    task = create(
+        store,
+        "w",
+        "skipped-task",
+        planned=planned,
+        recurrence={
+            "rule": "FREQ=DAILY;COUNT=2",
+            "timezone": "America/New_York",
+            "anchor": planned,
+        },
+    )
+    create(store, "w", "person", "person")
+    create(
+        store,
+        "w",
+        "skip-reminder",
+        "reminder",
+        recipient_id="person",
+        task_id="skipped-task",
+        scheduled_at=(NOW - timedelta(seconds=1)).isoformat(),
+    )
+    payload = {"id": "skipped-task"}
+    skipped = store.execute(
+        "w", "skip-occurrence", "skip", payload, expected_version=task["version"]
+    )
+    assert skipped["status"] == "cancelled" and skipped["completed_at"] is None
+    tasks = store.list("w", kind="task")
+    successor = next(item for item in tasks if item["id"] != "skipped-task")
+    assert len(tasks) == 2
+    assert successor["status"] == "open" and successor["completed_at"] is None
+    assert successor["planned"]["date"] == "2026-11-10"
+    assert successor["series_id"] == skipped["series_id"]
+    assert successor["occurrence_key"] != skipped["occurrence_key"]
+    assert store.get("w", "skip-reminder")["reminder_state"] == "cancelled"
+    assert not store.claim_reminders("worker", now=NOW)
+    history = store.events("w", limit=1000)
+    skip_events = [
+        event
+        for event in history
+        if event["entity_id"] == "skipped-task" and event["action"] == "skip"
+    ]
+    assert len(skip_events) == 1
+    assert skip_events[0]["after_data"]["completed_at"] is None
+    assert not any(event["action"] == "complete" for event in history)
+    assert (
+        store.execute("w", "skip-occurrence", "skip", payload, expected_version=task["version"])
+        == skipped
+    )
+    assert store.events("w", limit=1000) == history
+    assert len(store.list("w", kind="task")) == 2

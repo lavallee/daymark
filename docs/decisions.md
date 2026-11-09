@@ -29,3 +29,19 @@ These choices deliberately avoid parity claims with any surveyed product. A futu
 feature should reopen its linked decision with a concrete use case, migration
 impact and a regression test, rather than inherit a vendor's label without its
 meaning.
+
+## Harness adaptation
+
+The [implementation review](implementation-review.md) inspects pinned upstream
+source and test harnesses without executing or copying them. For this release,
+borrow the independent reference-model technique through bounded deterministic
+operation histories (`tests/test_state_sequences.py`): five seeded histories,
+forty command opportunities each, two isolated workspaces, deliberate stale
+writes, replay, restart and native snapshot transfer. The reference model tracks
+only expected title/status/version and cannot stand in for the implementation's
+own database logic. Barrier/lease and subprocess-crash regressions remain separate.
+
+Adding a property-testing runtime is deferred; a new dependency is unnecessary to
+exercise this bounded contract. A useful future generated trace should become a
+small explicit regression before broadening the trial. Neither a bounded run nor
+an inspected upstream test is a proof of all interleavings or deployment behavior.

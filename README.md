@@ -2,7 +2,7 @@
 
 Daymark gives applications a shared vocabulary for tasks, plans, and time. Keep a hard deadline separate from an intention, track structured work in SQLite, and retain control of your application's transactions.
 
-The Python import is `daymark`; the distribution is `daymark-core`. Version 0.1.0 is in development. Package registry publication is not yet promised.
+The Python import is `daymark`; the distribution is `daymark-core`. Version 0.1.0 is the initial release. Package registry publication is not yet promised.
 
 ## Install from source
 
@@ -82,11 +82,11 @@ Store initialization and writes participate in the supplied connection's transac
 
 Entities have explicit kinds, lifecycle state, version, links, source references, and extensible JSON metadata. `deadline`, `planned`, `earliest_start`, and `latest_target` express different constraints. A temporal value contains either a local `date` or an offset-aware `at`, together with an IANA `timezone`; floating instants are rejected.
 
-Recurrence models distinguish fixed schedules from completion-based intervals. Read the [v1 decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md) and [product comparison](https://github.com/lavallee/daymark/blob/main/docs/comparison.md) for chosen scope, deferred behavior, and design context.
+Recurrence models distinguish fixed schedules from completion-based intervals. Skipping a recurring occurrence advances its series without recording an actual completion: that occurrence is cancelled with no completion timestamp. Deleting a task cancels its reminders and detaches their live task references; event history retains the original links. Other inbound entity references block deletion atomically and must be resolved explicitly first. Read the [v1 decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md) and [product comparison](https://github.com/lavallee/daymark/blob/main/docs/comparison.md) for chosen scope, deferred behavior, and design context.
 
 ## Standalone surfaces and status
 
-The optional API, Python HTTP client, CLI, and recording worker are under integration for the initial release. The default recording sink sends no notifications. External sinks must durably deduplicate delivery keys; an external side effect cannot be guaranteed exactly once.
+The optional API, Python HTTP client, CLI, and recording worker use the same Store engine. The default recording sink sends no notifications. External sinks must durably deduplicate delivery keys; an external side effect cannot be guaranteed exactly once.
 
 External delivery requires a committed claim or outbox record before the side effect. A worker using a caller-owned Store cannot commit that transaction; the embedding application must design and own those transaction boundaries. Supplying a custom sink alone does not qualify production delivery.
 
