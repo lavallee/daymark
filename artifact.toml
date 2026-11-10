@@ -6,7 +6,7 @@ kind = "reference-guide"
 form = "article"
 status = "draft"
 created = "2026-11-09"
-updated = "2026-11-09"
+updated = "2026-11-10"
 
 [build]
 site = "docs"
@@ -14,14 +14,14 @@ site = "docs"
 [deploy]
 target = "github-pages"
 
+[deploy.github-pages]
+branch = "gh-pages"
+commit = true
+mode = "branch"
+push = false
+subpath = ""
+
 [[libraries]]
 name = "artoo-kit"
 version = "0.8.1"
 sha256 = "e6ac8a9e1e34d3e77aae843395006b9627a69473e1786cf9f1bc738fec92f2cd"
-
-[deploy.github-pages]
-mode = "branch"
-branch = "gh-pages"
-subpath = ""
-commit = true
-push = false

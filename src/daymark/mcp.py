@@ -30,6 +30,7 @@ _FIELDS = {
     "waiting_on": {"type": "string"},
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
+    "scope": {"type": "string", "description": "Part of life it belongs to, e.g. household."},
 }
 _DATES = (
     "Dates: YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, a weekday name, +Nd, +Nw, +Nm. "
@@ -38,6 +39,7 @@ _DATES = (
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
     "release", "note", "wait", "resume", "defer", "block", "unblock", "forget",
+    "focus", "unfocus",
 ]  # fmt: skip
 
 TOOLS = [
@@ -60,6 +62,7 @@ TOOLS = [
                 "days": {"type": "integer"},
                 "limit": {"type": "integer"},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
+                "scope": {"type": "string", "description": 'Only this scope; "" for unscoped.'},
             },
             "required": ["view"],
         },
@@ -133,10 +136,14 @@ def call(tasks, name, args):
     if name == "daymark_view":
         view = args.get("view")
         if view == "ready":
-            items = tasks.ready(limit=args.get("limit", 20), move=args.get("move"))
+            items = tasks.ready(
+                limit=args.get("limit", 20), move=args.get("move"), scope=args.get("scope")
+            )
             return render.listing(items, now, "Nothing is ready.")
         if view == "agenda":
-            return render.agenda_text(tasks.agenda(args.get("days", 7)), now)
+            return render.agenda_text(
+                tasks.agenda(args.get("days", 7), scope=args.get("scope")), now
+            )
         if view == "show":
             return render.show_text(tasks.show(args["id"]), now)
         if view == "find":

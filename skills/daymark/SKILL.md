@@ -29,6 +29,11 @@ When capturing:
 - For anything that repeats, use `--every`; add `--after-completion` when the
   interval counts from when it was last done.
 
+Every command works in one workspace (`--workspace NAME`); workspaces never
+mix, and `daymark prime` says which one you are in. Inside a workspace,
+`--scope NAME` filters to one part of life. `daymark focus ID` puts a task on
+the person's own short list; do it only when they ask.
+
 Add `--json` for structured output and `--op NAME` to make a write safe to
 retry. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
 5 is an invalid request with the broken rule on standard error.

@@ -818,3 +818,88 @@ def test_cli_policy_and_private_database(cli, tmp_path):
     legacy = tmp_path / "legacy.db"
     assert cli("--db", str(legacy), "list")[0] == 0
     assert legacy.stat().st_mode & 0o077 == 0
+
+
+# -- the person's own order, scopes, and separate workspaces
+
+
+def test_focus_is_the_persons_order_and_leads_ready(tasks):
+    tasks.add("Overdue bill", id="bill", due="2030-04-01")
+    tasks.add("Call a friend", id="call")
+    tasks.add("Sort photos", id="photos")
+    assert tasks.focus("photos")["focus"] == 1
+    assert tasks.focus("call")["focus"] == 2
+    assert [x["id"] for x in tasks.ready()] == ["photos", "call", "bill"]
+    assert line(tasks.get("photos"), NOW).startswith("photos  Sort photos  [focus 1")
+    assert tasks.focus("call", 1)["focus"] == 1  # Ties fall back to the usual order.
+    tasks.unfocus("photos")
+    assert [x["id"] for x in tasks.ready()] == ["call", "bill", "photos"]
+    assert tasks.done("call")["focus"] is None
+    code("invalid", tasks.focus, "bill", 0)
+
+
+def test_scope_filters_within_a_workspace(tasks):
+    tasks.add("Fix the gate", id="gate", scope="household")
+    tasks.add("Ship the release", id="release", scope="studio")
+    tasks.add("Read a book", id="book")
+    assert {x["id"] for x in tasks.ready()} == {"gate", "release", "book"}
+    assert [x["id"] for x in tasks.ready(scope="household")] == ["gate"]
+    assert [x["id"] for x in tasks.ready(scope="")] == ["book"]
+    assert tasks.summary(scope="studio")["ready"] == 1
+    assert tasks.agenda(scope="household")["later_or_undated"] == 1
+    assert tasks.edit("gate", scope="")["scope"] is None
+    code("invalid", tasks.add, "Bad scope", scope="Not A Slug")
+    scoped = {"field": "scope", "op": "eq", "value": "studio"}
+    assert [x["id"] for x in tasks.engine.query("w", scoped)] == ["release"]
+
+
+def test_workspaces_share_a_file_and_nothing_else():
+    store = Store(":memory:")
+    home = Tasks(store, "household", timezone=ZONE)
+    work = Tasks(store, "studio", timezone=ZONE)
+    home.add("Descale the kettle", id="kettle")
+    home.add("Sam", kind="person", id="sam")
+    home.remember("Bins go out on Thursday")
+    work.add("Review the proposal", id="review")
+    assert [x["id"] for x in home.ready()] == ["kettle"]
+    assert [x["id"] for x in work.ready()] == ["review"]
+    assert work.memories() == [] and work.find("kettle") == []
+    assert work.summary()["ready"] == 1 and work.agenda()["later_or_undated"] == 1
+    code("not_found", work.get, "kettle")
+    code("not_found", work.done, "kettle")
+    code("invalid", work.add, "Borrow a person", assignee="sam")  # No reference crosses.
+    code("invalid", work.add, "Depend across", after="kettle")
+    work.add("Same name, different thing", id="kettle")
+    assert home.get("kettle")["title"] == "Descale the kettle"
+    assert [e["entity_id"] for e in store.events("studio")] == ["review", "kettle"]
+    assert store.export("studio")["workspace"] == "studio"
+    assert {x["id"] for x in store.export("studio")["entities"]} == {"review", "kettle"}
+    assert store.workspaces() == [
+        {"workspace": "household", "entities": 3},
+        {"workspace": "studio", "entities": 2},
+    ]
+    store.set_policy("household", deciders=["sam"])
+    assert store.policy("studio") == {"deciders": []}
+
+
+def test_cli_scope_focus_and_workspaces(cli):
+    cli("init")
+    cli("add", "Fix the gate", "--id", "gate", "--scope", "household")
+    cli("add", "Ship it", "--id", "ship")
+    cli("--workspace", "studio", "add", "Studio only", "--id", "s1")
+    assert cli("ready", "--scope", "household")[1].startswith(
+        "gate  Fix the gate  [scope:household]"
+    )
+    assert cli("ready", "--unscoped")[1].startswith("ship  Ship it")
+    assert "Studio only" not in cli("ready")[1]
+    assert cli("focus", "ship")[1].startswith("ship  Ship it  [focus 1]")
+    assert cli("ready")[1].splitlines()[0].startswith("ship")
+    assert cli("unfocus", "ship")[0] == 0
+    listed = json.loads(cli("workspaces")[1])
+    assert listed["current"] == "default"
+    assert listed["workspaces"] == [
+        {"workspace": "default", "entities": 2},
+        {"workspace": "studio", "entities": 1},
+    ]
+    out = cli("--workspace", "studio", "prime")[1]
+    assert "workspace studio" in out and "Fix the gate" not in out
