@@ -170,6 +170,9 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="daymark", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    from . import __version__
+
+    root.add_argument("--version", action="version", version=f"daymark {__version__}")
     root.add_argument(
         "--db",
         help="SQLite path. Default: $DAYMARK_DB, nearest .daymark/, ./daymark.sqlite3, "

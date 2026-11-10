@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Daymark is a Python task library with explicit timing, recurring work, and durable reminder state. Embed it with SQLite or use the optional standalone service.">
-<title>Daymark — Tasks on your terms</title>
+<meta name="description" content="Daymark is a task system for AI agents handling a person's projects and life: hard deadlines kept apart from plans, recurring work, one rule for what is ready now, and reminders. One SQLite file, no cloud.">
+<title>Daymark — a task system that simplifies the complexities of real life</title>
 <link rel="icon" href="lib/artoo-kit/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="lib/artoo-kit/tokens.css">
 <link rel="stylesheet" href="lib/artoo-kit/base.css">
@@ -17,15 +17,21 @@ nav { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
 </style>
 </head>
 <body>
-<header class="article-masthead"><a class="article-masthead__name" href="#install">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
+<header class="article-masthead"><a class="article-masthead__name" href="#start">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
 <main class="article">
-<div class="article-header"><p class="article-kicker">Task infrastructure for your application</p><h1>Tasks on your terms.</h1><p class="article-dek">Keep deadlines, plans, recurring work, and reminder state in one small Python library. Your application owns the data and the transactions.</p><nav aria-label="Project links"><a href="https://github.com/lavallee/daymark">Source and quickstart</a><a href="https://github.com/lavallee/daymark/blob/main/RELEASING.md">Release checklist</a></nav></div>
-<section aria-labelledby="install"><h2 id="install">Start with the library</h2><p>Requires Python 3.11 or newer. Install from a source checkout; the distribution is <code>daymark-core</code> and the import is <code>daymark</code>.</p><pre><code>python -m venv .venv
-. .venv/bin/activate
-python -m pip install .</code></pre><p>Add <code>.[service]</code> for the optional authenticated HTTP API and client. The local CLI and recording worker require no notification provider.</p></section>
-<section aria-labelledby="timing"><h2 id="timing">Make timing explicit</h2><p>A hard deadline, a planned time, an earliest start, and a latest target carry different meanings. Daymark represents local dates and timezone-aware instants separately, with fixed and completion-based recurrence.</p></section>
-<section aria-labelledby="embed"><h2 id="embed">Fit the application you have</h2><p>Use a caller-owned SQLite connection to keep task changes inside your application transaction. Optional service boundaries let standalone clients use the same engine.</p><p>Operation identities and expected versions support safe retries and conflict detection. Durable reminder state tracks delivery attempts; your sink handles external delivery and persistent deduplication.</p></section>
-<section aria-labelledby="status"><h2 id="status">Status</h2><p>Version 0.1.0 is the initial release. Package registry publication is not yet promised. The default worker records outcomes and sends no notifications.</p><p>Read the <a href="https://github.com/lavallee/daymark/blob/main/README.md">executable quickstart</a>, <a href="https://github.com/lavallee/daymark/blob/main/CHANGELOG.md">changelog</a>, <a href="https://github.com/lavallee/daymark/blob/main/docs/decisions.md">v1 decisions</a>, and <a href="https://github.com/lavallee/daymark/blob/main/SECURITY.md">security policy</a> before integrating.</p></section>
+<div class="article-header"><p class="article-kicker">For agents handling a person's projects and life</p><h1>A task system that simplifies the complexities of real life.</h1><p class="article-dek">A passport has a deadline; the trip you mean to book on Friday is only a plan. The filter is changed three months after it was last changed. The leak waits on the plumber. Daymark keeps those differences in the record, so an agent can ask what can be done now and trust the answer.</p><nav aria-label="Project links"><a href="https://github.com/lavallee/daymark">Source and quickstart</a><a href="https://github.com/lavallee/daymark/blob/main/docs/agents.md">Agent guide</a><a href="https://github.com/lavallee/daymark/blob/main/docs/work-and-life.md">Work and life</a><a href="llms.txt">llms.txt</a></nav></div>
+<section aria-labelledby="start"><h2 id="start">Start in a minute</h2><p>Requires Python 3.11 or newer. One SQLite file; no cloud, model or account.</p><pre><code>uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.2.0"
+daymark init
+daymark add "Renew passport" --due 2030-05-03 -p 1
+daymark add "Book flights" --plan fri --id flights
+daymark add "Book hotel" --after flights
+daymark add "Water the plants" --every "3 days" --after-completion
+daymark ready</code></pre><p><code>daymark prime</code> gives an agent the working rules, the commands and the current state in one call. <code>daymark mcp</code> serves the same verbs to an agent harness over MCP with no extra dependency.</p></section>
+<section aria-labelledby="timing"><h2 id="timing">Four kinds of time</h2><p>A hard deadline, a plan, an earliest start and a soft target mean different things, and only a missed deadline is overdue. Repeats follow a fixed schedule or count from when the work was actually done; skipping a round is not completing it. Dates use a small fixed grammar. Daymark never guesses one.</p></section>
+<section aria-labelledby="ready"><h2 id="ready">One rule for what is ready</h2><p>A task is ready when it is open, its start has arrived, what it depends on is finished, and nobody else has claimed it. Claims lapse on their own, so a crashed session cannot hold work. Notes carry context to the next session, and every change is recorded with who made it.</p></section>
+<section aria-labelledby="consent"><h2 id="consent">Suggestions are not commitments</h2><p>An agent proposes; a person accepts or dismisses. A proposal is never ready work and its reminders stay dormant until it is accepted. A workspace can name who may decide.</p></section>
+<section aria-labelledby="embed"><h2 id="embed">Embed it or run it</h2><p>Use the Python library with a caller-owned SQLite connection to keep task changes inside your application's transaction, or run the optional authenticated HTTP service. Operation identities and expected versions make retries safe and stale writes explicit.</p></section>
+<section aria-labelledby="status"><h2 id="status">Status</h2><p>Version 0.2.0. Installed from source or a tagged release; package registry publication is not yet promised. There is no sync between machines. The default reminder worker records outcomes and sends no notifications.</p><p>Read the <a href="https://github.com/lavallee/daymark/blob/main/README.md">quickstart</a>, <a href="https://github.com/lavallee/daymark/blob/main/CHANGELOG.md">changelog</a>, <a href="https://github.com/lavallee/daymark/blob/main/docs/decisions.md">decisions</a>, and <a href="https://github.com/lavallee/daymark/blob/main/SECURITY.md">security policy</a> before integrating.</p></section>
 <footer><p>Daymark is open source under the <a href="https://github.com/lavallee/daymark/blob/main/LICENSE">MIT license</a>.</p></footer>
 </main>
 </body>

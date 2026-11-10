@@ -90,9 +90,17 @@ trackers such as Beads and what it does differently.
 
 ## Install from source
 
-The Python import is `daymark`; the distribution is `daymark-core`. Version
-0.1.0 is the initial release. Package registry publication is not yet promised.
-Requires Python 3.11 or newer.
+The Python import is `daymark`; the distribution is `daymark-core`. The current
+release is 0.2.0. Package registry publication is not yet promised. Requires
+Python 3.11 or newer.
+
+To install the command line tool from the tagged release:
+
+```sh
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.2.0"
+```
+
+Or from a checkout:
 
 ```sh
 git clone https://github.com/lavallee/daymark.git
