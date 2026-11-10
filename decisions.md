@@ -25,6 +25,35 @@ readiness remains governed by [RELEASING.md](../RELEASING.md).
 | C15 Goals without mandatory methodology | Adopt basic kind; defer computed metrics | Goals and projects are optional explicit records; assignee and beneficiary differ. No mandatory household, GTD, sprint or OKR workflow. No implicit goal-progress formula. |
 | C16 Standalone execution/deployment | Adopt | Embedded SQLite first, optional authenticated HTTP service/SDK/CLI. Supplied connections preserve the caller's unit of work; path-owned connections manage their own commits. Durable scheduler and restore drills are operational acceptance, separate from package build success. |
 
+## Decisions for the agent surface
+
+Decision date: 2026-11-09. These defaults were chosen by the implementing agent
+under the commissioner's delegated routine-decision authority and are open to
+reversal. [Work and life](work-and-life.md) gives the reasoning.
+
+| Decision | Default chosen | Contract and limit |
+|---|---|---|
+| A01 One readiness rule | Adopt | Ready means open, unarchived, start date arrived, all dependencies completed or cancelled, no unfinished child task, and no live claim by another actor. The next round of a repeating task also waits for its planned day. Every surface uses `views.ready`. |
+| A02 Cancelled prerequisites | A cancelled or archived dependency releases its dependents | Resolves the question C08 left open. The alternative, requiring an explicit unblock, strands work behind tasks nobody will do. |
+| A03 Containers | A task with an open or waiting child task is not ready; a proposed child blocks nothing | Work the leaves. A parent becomes ready when its children are finished; it never completes automatically (C02 stands). |
+| A04 Claims | Advisory lease, default 60 minutes, at most seven days | One live holder; the same owner may renew; completion, cancellation and archiving clear it. Not access control. |
+| A05 Proposals | `proposed` status with `accept` and `dismiss` | Never ready; cannot be completed, skipped, reopened or moved to another status by update; its reminders stay pending but are not dispatched. Who may accept is set by A18. |
+| A06 Next move | Optional `person`, `answer` or `agent`; never inferred | Unset matches no `--move` filter. |
+| A07 Notes | Append-only, through the `note` action only | At most 1,000 per entity. Undo keeps notes and the current claim. A new round of a repeating task starts with none. |
+| A08 Priority direction | 1 is most important, 4 least, 0 unset | Follows iCalendar. Previously undefined; ordering in `ready` now depends on it. |
+| A09 Date input | Fixed grammar; anything else refused | No natural-language interpretation (C03 stands). The phrase used is stored as `expression` beside the resolved value. |
+| A10 Readable identifiers | Short `dm-xxxx` IDs from the plain verbs; `series.N` for rounds of a repeating task | A round falls back to the hashed identity when `series.N` is or was used by an unrelated entity, or exceeds the ID limit; a slot that was ever materialized is never materialized again. Databases written before this change keep their hashed successors. |
+| A11 Plain verbs and versions | The `Tasks` layer reads the current version and retries stale reads | The engine contract (C10) is unchanged: every write still carries an operation ID and expected version. A repeated `op` in the plain layer replays by ID alone, without comparing the request. |
+| A12 Per-write validation | Each write validates its own references through derived lookup tables | Replaces whole-workspace validation on every write; snapshot import still validates the whole workspace. A randomized test checks the two agree. The 100,000-entity bound now applies to import only. |
+| A13 Journal mode | Path-owned stores use WAL with default synchronous settings | One durable sync per commit. Caller-owned connections keep their own mode. Creates `-wal` and `-shm` files beside the database. |
+| A14 Stored-shape upgrades | A schema marker triggers an in-place rewrite of stored entities when fields are added | Versions and event history are untouched. Snapshots exported by this version contain fields that 0.1.0 rejects. |
+| A15 Error text | Domain failures print their stable code and rule; validation names fields without values | Other failures keep the generic message so stored content cannot reach logs. |
+| A16 Database location | `--db`, `DAYMARK_DB`, nearest `.daymark/`, legacy `./daymark.sqlite3`, then the per-user database | The plain verbs refuse to run without a database and name `daymark init`. The engine commands keep creating `./daymark.sqlite3` as before. |
+
+| A17 Actor on events | `execute(..., actor=)` is recorded on every event it causes | Scheduler and worker events have no actor. The HTTP service records the token's principal and overrides claim owner and note author with it. Snapshots carry the actor; events imported without one read as unattributed. Operation receipts do not include the actor. |
+| A18 Decider policy | A workspace may name who can `accept` or `dismiss`; empty means any writer | Stored beside scheduler state, set locally (`daymark policy`), not exported in snapshots and not settable over HTTP. Enforced against whatever actor name the caller supplies: authenticated over HTTP, self-declared locally. It does not stop an actor creating open tasks directly. |
+| A19 Private files | A database the command line creates is mode 0600 | Applies to every command, including the engine commands' legacy `./daymark.sqlite3`. |
+
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
 impact and a regression test, rather than inherit a vendor's label without its

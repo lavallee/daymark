@@ -1,0 +1,13 @@
+# Daymark
+
+> A task system that simplifies the complexities of real life. For AI agents handling a person's projects and life: separate hard deadlines from plans, fixed and after-completion recurrence, a single "what is ready now" rule, claims, notes, proposals a person accepts, and durable reminders. One SQLite file; no cloud, model or account. Python 3.11+, MIT.
+
+Start: `daymark init`, then `daymark prime` (prints the rules, commands and current state).
+
+## Docs
+
+- [Agent guide](https://github.com/lavallee/daymark/blob/main/docs/agents.md): every everyday command, the date grammar, output and error codes, MCP setup
+- [Work and life](https://github.com/lavallee/daymark/blob/main/docs/work-and-life.md): what Daymark is for, how it differs from Beads, what it leaves to other layers
+- [README](https://github.com/lavallee/daymark/blob/main/README.md): install, quickstart, the typed engine
+- [Decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md): the contract behind each default
+- [Operations](https://github.com/lavallee/daymark/blob/main/docs/operations.md): HTTP service, reminder worker, backup and restore

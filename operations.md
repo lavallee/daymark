@@ -9,7 +9,12 @@ daymark --help
 daymark --db example.sqlite3 --workspace example create --help
 ```
 
-All write commands require a stable `--operation-id`; updates and actions require
+This guide covers the engine commands, the service and the worker. The everyday
+verbs (`add`, `ready`, `done` and the rest) are in the [agent guide](agents.md).
+A path-owned database runs in SQLite WAL mode, so `-wal` and `-shm` files
+appear beside it; back up with `daymark backup`, not by copying the main file.
+
+The engine write commands require a stable `--operation-id`; updates and actions require
 `--expected-version` from the last read. Creation uses expected version zero.
 Reuse an operation ID only for an identical retry. Keep JSON payloads in protected
 files rather than shell command arguments. Unknown entity fields are rejected.
@@ -43,11 +48,16 @@ contains only infrastructure timestamps/counts. Trusted embedded callers and
 local CLI may request global operational health.
 `POST /v1/operations` accepts `operation_id`, `action`, `payload`, and
 `expected_version`. `POST /v1/query` accepts `filters`. Reads are
-`GET /v1/entities`, `/v1/entities/{id}`, `/v1/events?after=0&limit=100`, and
-`/v1/export`. `POST /v1/import` accepts `snapshot`, `operation_id`, and
+`GET /v1/entities`, `/v1/entities/{id}`, `/v1/events?after=0&limit=100`,
+`/v1/export`, and the derived views `/v1/ready`, `/v1/agenda`, `/v1/summary`
+and `/v1/context/{id}`. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
 reject conflicting existing identities rather than rewind newer state. Schema
-operation IDs remain stable within v1.
+operation IDs remain stable within v1. Each write is recorded with the token's
+principal as its actor; for `claim`, `release` and `note` the principal also
+replaces any owner or author in the request. If the workspace names deciders
+(`daymark --db example.sqlite3 --workspace example policy --deciders operator`),
+`accept` and `dismiss` from any other principal return 403.
 The server resolves the workspace from its token configuration. Do not expose
 this bearer-only service beyond a trusted local boundary without TLS termination
 and your own access policy. CORS is disabled. Request bodies are limited to 1 MiB;
