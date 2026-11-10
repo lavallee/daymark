@@ -54,6 +54,10 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A18 Decider policy | A workspace may name who can `accept` or `dismiss`; empty means any writer | Stored beside scheduler state, set locally (`daymark policy`), not exported in snapshots and not settable over HTTP. Enforced against whatever actor name the caller supplies: authenticated over HTTP, self-declared locally. It does not stop an actor creating open tasks directly. |
 | A19 Private files | A database the command line creates is mode 0600 | Applies to every command, including the engine commands' legacy `./daymark.sqlite3`. |
 
+| A20 Focus | Optional `focus` rank: the person's own short list, lowest first | Leads `ready` ahead of every computed order. Set only at the person's request; cleared when a task is completed, cancelled or archived. Ties fall back to the usual order; ranks need not be contiguous. |
+| A21 Scope | Optional `scope` slug, a filter within a workspace | `ready`, `agenda` and `summary` accept a scope, or the empty string for unscoped items. It is never a boundary and is never inferred. |
+| A22 Workspace isolation, stated | A workspace is the only boundary inside a database | Reads, references, history, exports, remembered facts and policy never cross. `Store.workspaces()` and `daymark workspaces` list them for local callers; the HTTP service exposes only the caller's own. |
+
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
 impact and a regression test, rather than inherit a vendor's label without its

@@ -44,6 +44,8 @@ command list and the current state in about 2,600 characters. `daymark onboard
 | Finish, or pass over one round of a repeating task | `daymark done ID`, `daymark skip ID` |
 | Park on someone else, or hide until a date | `daymark wait ID --on WHO`, `daymark defer ID D` |
 | Keep a durable fact | `daymark remember "fact"` |
+| Put a task on the person's own short list | `daymark focus ID` |
+| See only one part of life | `daymark ready --scope household` |
 
 Output is one line per task, carrying only what is set. `--json` gives the same
 content as compact JSON. Failures print a stable code (`not_found`, `conflict`,
@@ -83,6 +85,9 @@ trackers such as Beads and what it does differently.
 - **Whose move it is.** A task can wait on someone, be proposed and await a
   decision, or be marked as the person's move, a question for them, or work an
   agent may carry out.
+- **Separation.** A workspace is a hard boundary: nothing is listed, searched
+  or referenced across it, even in one database file. A scope is a lighter
+  filter inside a workspace.
 - **Memory.** Append-only notes on each task, durable remembered facts, and a
   full event history with undo.
 - **Safety.** Every write has an operation ID and an expected version, so
@@ -91,13 +96,13 @@ trackers such as Beads and what it does differently.
 ## Install from source
 
 The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.2.0. Package registry publication is not yet promised. Requires
+release is 0.3.0. Package registry publication is not yet promised. Requires
 Python 3.11 or newer.
 
 To install the command line tool from the tagged release:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.2.0"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.3.0"
 ```
 
 Or from a checkout:

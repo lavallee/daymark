@@ -2,6 +2,19 @@
 
 Changes are recorded here using semantic versions. Until 1.0, review release notes carefully before upgrading an embedded application or stored database.
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- `focus`: the person's own ordered short list (`daymark focus ID [--rank N]`, `unfocus`). Focused tasks lead `ready`.
+- `scope`: a filter within a workspace (`--scope NAME` on `add`, `edit`, `ready` and `agenda`; `--unscoped`), on the HTTP views and as a filter field.
+- `daymark workspaces` and `Store.workspaces()`; `daymark prime` names the database and workspace it shows.
+
+### Changed
+
+- The stored schema upgrades in place on first open (schema 4). Snapshots exported afterwards contain fields that 0.2.0 does not accept.
+- Completing, cancelling or archiving a task clears its focus.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added

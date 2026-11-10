@@ -63,6 +63,10 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.append("waiting on " + item["waiting_on"])
     if item["recurrence"]:
         tags.append("repeats")
+    if item["focus"]:
+        tags.insert(0, f"focus {item['focus']}")
+    if item["scope"]:
+        tags.append("scope:" + item["scope"])
     if item["next_move"]:
         tags.append("move:" + item["next_move"])
     if item["estimate_minutes"]:
@@ -155,13 +159,14 @@ Rules
 - Claim before working when others may be working too. Leave a note when you stop.
 
 Commands (add --json to any for structured output)
-  daymark ready                     what can be done now, most pressing first
+  daymark ready [--scope NAME]      what can be done now, most pressing first
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
   daymark show ID                   one task with blockers, notes and history
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
-              [--move person|answer|agent] [--minutes N] [--note TEXT]
+              [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
   daymark propose "Title" [...]     suggest; a person runs accept/dismiss
+  daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark claim ID / release ID     take or give back a task
   daymark note ID "text"            progress or context for the next session
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
@@ -196,13 +201,14 @@ This project tracks tasks, plans and deadlines in Daymark.
 """
 
 
-def prime_text(tasks) -> str:
+def prime_text(tasks, where: str | None = None) -> str:
     """Orientation for a new session: the guide, then the live state."""
     now = tasks.now()
     counts = tasks.summary()
     out = [
         GUIDE,
         "",
+        *([f"Database: {where}. Other workspaces are separate and not shown."] if where else []),
         "Now ("
         + now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a")
         + ", "

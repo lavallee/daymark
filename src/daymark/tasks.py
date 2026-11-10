@@ -234,6 +234,8 @@ class Tasks:
                 out["estimate_minutes"] = value
             elif key == "move":
                 out["next_move"] = value or None
+            elif key == "scope":
+                out["scope"] = value or None
             else:
                 out[key] = value
         return out
@@ -448,20 +450,34 @@ class Tasks:
     def show(self, id, history=10):
         return self.engine.context(*self._ws, id, history=history)
 
-    def ready(self, *, limit=20, move=None, mine=True):
+    def ready(self, *, limit=20, move=None, mine=True, scope=None):
+        """``scope`` narrows to one scope; ``""`` to tasks that have none."""
         return self.engine.ready(
             *self._ws,
             now=self._now,
             limit=limit,
             owner=self.actor if mine else None,
             next_move=move,
+            **({} if scope is None else {"scope": scope}),
         )
 
-    def agenda(self, days=7):
-        return self.engine.agenda(*self._ws, now=self._now, days=days)
+    def agenda(self, days=7, *, scope=None):
+        extra = {} if scope is None else {"scope": scope}
+        return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
-    def summary(self):
-        return self.engine.summary(*self._ws, now=self._now)
+    def summary(self, *, scope=None):
+        extra = {} if scope is None else {"scope": scope}
+        return self.engine.summary(*self._ws, now=self._now, **extra)
+
+    def focus(self, id, rank=None, *, op=None):
+        """Put a task on the person's short list. Without a rank it goes last."""
+        if rank is None:
+            placed = [x["focus"] for x in self.find(status="open", limit=10**6) if x["focus"]]
+            rank = max(placed, default=0) + 1
+        return self._act(id, "update", {"focus": rank}, op=op)
+
+    def unfocus(self, id, *, op=None):
+        return self._act(id, "update", {"focus": None}, op=op)
 
     def find(self, text=None, *, kind="task", status=None, limit=50):
         """Case-insensitive title or description search within one kind."""

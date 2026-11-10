@@ -172,6 +172,7 @@ def create_router(store: Any) -> APIRouter:
         limit: int = Query(50, ge=1, le=1000),
         owner: str | None = Query(None, max_length=200),
         next_move: str | None = Query(None, max_length=20),
+        scope: str | None = Query(None, max_length=100),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
         return _invoke(
@@ -181,19 +182,25 @@ def create_router(store: Any) -> APIRouter:
             limit=limit,
             owner=owner,
             next_move=next_move,
+            scope=scope,
         )
 
     @router.get("/agenda", operation_id="daymark_v1_agenda")
     def agenda(
         request: Request,
         days: int = Query(7, ge=0, le=366),
+        scope: str | None = Query(None, max_length=100),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
-        return _invoke(store.agenda, identity(request).workspace, now=now, days=days)
+        return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope)
 
     @router.get("/summary", operation_id="daymark_v1_summary")
-    def summary(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
-        return _invoke(store.summary, identity(request).workspace, now=now)
+    def summary(
+        request: Request,
+        scope: str | None = Query(None, max_length=100),
+        now: str | None = Query(None, max_length=40),
+    ) -> Any:
+        return _invoke(store.summary, identity(request).workspace, now=now, scope=scope)
 
     @router.get("/context/{entity_id}", operation_id="daymark_v1_context")
     def context(entity_id: str, request: Request, history: int = Query(10, ge=0, le=100)) -> Any:

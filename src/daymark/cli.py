@@ -31,6 +31,7 @@ SIMPLE = {
     "prime", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
     "reopen", "archive", "undo", "accept", "dismiss", "claim", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
+    "focus", "unfocus",
 }  # fmt: skip
 
 
@@ -80,6 +81,7 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     item.add_argument("--context", action="append", dest="contexts", metavar="ID")
     item.add_argument("--waiting-on", metavar="WHO")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
+    item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
     item.add_argument("--minutes", type=int, help="Estimated effort")
     if not editing:
         item.add_argument("--kind", default="task", help="task, project, goal, person, label, ...")
@@ -105,8 +107,13 @@ def _simple_commands(sub) -> None:
     ready = add("ready", "Tasks that can be done now, most pressing first")
     ready.add_argument("-n", "--limit", type=int, default=20)
     ready.add_argument("--move", choices=["person", "answer", "agent"], help="Only this next move")
+    for view in (ready,):
+        view.add_argument("--scope", metavar="NAME", help="Only this scope")
+        view.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     agenda = add("agenda", "Overdue, today, the days ahead, waiting and proposed")
     agenda.add_argument("--days", type=int, default=7)
+    agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
+    agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     show = add("show", "One entity with blockers, notes, reminders and history")
     show.add_argument("id")
     for name, help in (("add", "Capture a task"), ("propose", "Suggest a task for a person")):
@@ -128,6 +135,7 @@ def _simple_commands(sub) -> None:
         ("release", "Give back a claim"),
         ("resume", "Stop waiting; make the task open again"),
         ("forget", "Archive a remembered fact"),
+        ("unfocus", "Take a task off the short list"),
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
@@ -163,6 +171,10 @@ def _simple_commands(sub) -> None:
     policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
     policy.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
     policy.add_argument("--clear", action="store_true", help="Let any writer decide again")
+    focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
+    focus.add_argument("id")
+    focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
+    sub.add_parser("workspaces", help="List the workspaces in this database")
     sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
 
 
@@ -347,6 +359,8 @@ def _simple(args, engine) -> int:
     def entity(item):
         out(render.compact(item), render.line(item, now))
 
+    scope = "" if getattr(args, "unscoped", False) else getattr(args, "scope", None)
+
     if name == "prime":
         if as_json:
             _print(
@@ -357,15 +371,17 @@ def _simple(args, engine) -> int:
                 }
             )
         else:
-            print(render.prime_text(tasks))
+            print(
+                render.prime_text(tasks, where=f"{args.db or args.url}, workspace {args.workspace}")
+            )
     elif name == "ready":
-        items = tasks.ready(limit=args.limit, move=args.move)
+        items = tasks.ready(limit=args.limit, move=args.move, scope=scope)
         out(
             [{**render.compact(x), "why": render.why(x, now)} for x in items],
             render.listing(items, now, "Nothing is ready. Try `daymark agenda`."),
         )
     elif name == "agenda":
-        view = tasks.agenda(args.days)
+        view = tasks.agenda(args.days, scope=scope)
         lean = {
             key: (
                 {day: [render.compact(x) for x in items] for day, items in value.items()}
@@ -383,7 +399,7 @@ def _simple(args, engine) -> int:
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
-                 "minutes")  # fmt: skip
+                 "minutes", "scope")  # fmt: skip
         fields = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if name == "edit":
             if args.title is not None:
@@ -408,8 +424,10 @@ def _simple(args, engine) -> int:
     elif name == "done":
         entity(tasks.done(args.id, note=args.note, op=op))
     elif name in {"skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "release",
-                  "resume", "forget"}:  # fmt: skip
+                  "resume", "forget", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
+    elif name == "focus":
+        entity(tasks.focus(args.id, args.rank, op=op))
     elif name == "claim":
         entity(tasks.claim(args.id, minutes=args.minutes, op=op))
     elif name == "note":
@@ -511,6 +529,12 @@ def main(argv: list[str] | None = None) -> int:
                 os.chmod(args.db, 0o600)  # Task data is private by default.
         try:
             ws = [] if args.url else [args.workspace]
+            if args.command == "workspaces":
+                if args.url:
+                    raise ValueError("Workspaces are listed on the local database")
+                _print({"database": args.db, "current": args.workspace,
+                        "workspaces": engine.workspaces()})  # fmt: skip
+                return 0
             if args.command == "policy":
                 if args.url:
                     raise ValueError("Policy is set on the local database")

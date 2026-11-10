@@ -317,6 +317,14 @@ class Entity(Model):
     # Whose move it is: the person does it, the person must answer or decide,
     # or an agent may carry it out. Unset means not yet decided; never inferred.
     next_move: Literal["person", "answer", "agent"] | None = None
+    # A place on the person's own short list, lowest first. It is their ordering,
+    # set by hand; it is not a date or a priority and is never inferred.
+    focus: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    # Which part of a life this belongs to ("household", "studio"). A filter
+    # within a workspace, not a boundary: only a workspace isolates.
+    scope: str | None = Field(
+        default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$"
+    )
     # An expiring working claim. It is advisory coordination, not authorization.
     claimed_by: str | None = Field(default=None, min_length=1, max_length=200)
     claim_until: datetime | None = None

@@ -100,15 +100,17 @@ class Client:
         limit: int = 50,
         owner: str | None = None,
         next_move: str | None = None,
+        scope: str | None = None,
     ) -> Any:
-        params = self._params(now=now, limit=limit, owner=owner, next_move=next_move)
+        params = self._params(now=now, limit=limit, owner=owner, next_move=next_move, scope=scope)
         return self._request("GET", "/v1/ready", params=params)
 
-    def agenda(self, *, now: Any = None, days: int = 7) -> Any:
-        return self._request("GET", "/v1/agenda", params=self._params(now=now, days=days))
+    def agenda(self, *, now: Any = None, days: int = 7, scope: str | None = None) -> Any:
+        params = self._params(now=now, days=days, scope=scope)
+        return self._request("GET", "/v1/agenda", params=params)
 
-    def summary(self, *, now: Any = None) -> Any:
-        return self._request("GET", "/v1/summary", params=self._params(now=now))
+    def summary(self, *, now: Any = None, scope: str | None = None) -> Any:
+        return self._request("GET", "/v1/summary", params=self._params(now=now, scope=scope))
 
     def context(self, entity_id: str, *, history: int = 10) -> Any:
         return self._request(

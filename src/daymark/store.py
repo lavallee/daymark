@@ -40,7 +40,7 @@ def invalid(message):
 
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
-SCHEMA = "3"
+SCHEMA = "4"
 
 REFS = {
     "assignee_id": {"person", "principal"},
@@ -609,8 +609,8 @@ class Store:
         elif data["status"] != "completed":
             data["completed_at"] = None
         if data["status"] in {"completed", "cancelled"} or data["archived"]:
-            # Finished or shelved work holds no working claim.
-            data.update(claimed_by=None, claim_until=None)
+            # Finished or shelved work holds no working claim and no place in focus.
+            data.update(claimed_by=None, claim_until=None, focus=None)
         if action == "delete":
             self._cancel_reminders(workspace, data["id"], operation_id, now, detach=True)
             self.db.execute(
@@ -1042,6 +1042,8 @@ class Store:
             "archived",
             "priority",
             "next_move",
+            "focus",
+            "scope",
             "waiting_on",
             "claimed_by",
             "estimate_minutes",
@@ -1170,17 +1172,30 @@ class Store:
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]
 
-    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None):
+    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None):
         """Open tasks that can be acted on now, most pressing first. See views.ready."""
         from . import views
 
-        return views.ready(self, workspace, now=now, limit=limit, owner=owner, next_move=next_move)
+        return views.ready(
+            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope
+        )
 
-    def agenda(self, workspace, *, now=None, days=7):
+    def agenda(self, workspace, *, now=None, days=7, scope=None):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""
         from . import views
 
-        return views.agenda(self, workspace, now=now, days=days)
+        return views.agenda(self, workspace, now=now, days=days, scope=scope)
+
+    def workspaces(self):
+        """Every workspace in this database with its entity count. Local callers only:
+        the HTTP service never lists workspaces other than the caller's own."""
+        with self._lock:
+            if not self._has_schema():
+                return []
+            rows = self.db.execute(
+                "SELECT workspace, count(*) FROM daymark_entities GROUP BY workspace ORDER BY workspace"
+            ).fetchall()
+            return [{"workspace": row[0], "entities": row[1]} for row in rows]
 
     def context(self, workspace, id, *, history=10):
         """An entity with its blockers, dependents, children, reminders and history."""
@@ -1188,10 +1203,10 @@ class Store:
 
         return views.context(self, workspace, id, history=history)
 
-    def summary(self, workspace, *, now=None):
+    def summary(self, workspace, *, now=None, scope=None):
         from . import views
 
-        return views.summary(self, workspace, now=now)
+        return views.summary(self, workspace, now=now, scope=scope)
 
     def receipt(self, workspace, operation_id):
         """The stored result of a completed operation ID, or None."""

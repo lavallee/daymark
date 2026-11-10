@@ -112,7 +112,10 @@ def urgency(item, now) -> tuple:
             if planned is not None
             else "no date"
         )
-    return (bucket, when, item["priority"] or 5, item["created_at"], item["id"]), why
+    # The person's own ordering outranks every computed one.
+    focus = item["focus"]
+    key = (0 if focus else 1, focus or 0, bucket, when, item["priority"] or 5)
+    return (*key, item["created_at"], item["id"]), why
 
 
 def why(item, now=None) -> str:
@@ -125,7 +128,12 @@ def blockers(store, workspace, item) -> list[str]:
     return [ref for ref in item["depends_on"] if statuses.get(ref) not in DONE]
 
 
-def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None):
+def in_scope(item, scope) -> bool:
+    """``None`` matches everything, ``""`` only unscoped items, a name only that scope."""
+    return scope is None or (item["scope"] or "") == scope
+
+
+def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None):
     """Open tasks that can be acted on now, most pressing first.
 
     A task is ready when it is open and unarchived, its earliest start has
@@ -133,6 +141,8 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None):
     or waiting child task (work the leaves, not the container), and nobody else holds a live
     claim. ``owner`` keeps that owner's own claims in the result. ``next_move``
     narrows to "person", "answer" or "agent"; unset moves match none of them.
+    ``scope`` narrows to one scope, or with ``""`` to items that have none.
+    Tasks the person has put in focus come first, in their order.
     """
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise DomainError("invalid", "Limit must be between 1 and 1000")
@@ -156,6 +166,7 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None):
             or any(statuses.get(ref) not in DONE for ref in item["depends_on"])
             or (holder is not None and holder != owner)
             or (next_move is not None and item["next_move"] != next_move)
+            or not in_scope(item, scope)
         ):
             continue
         result.append(item)
@@ -163,7 +174,7 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None):
     return result[:limit]
 
 
-def agenda(store, workspace, *, now=None, days=7):
+def agenda(store, workspace, *, now=None, days=7, scope=None):
     """The shape of the days ahead: what is late, due, planned, waiting or proposed.
 
     Sections do not overlap. A task appears once, in the first section it fits:
@@ -174,6 +185,7 @@ def agenda(store, workspace, *, now=None, days=7):
     now = normalize_now(now)
     with store._lock:
         tasks = store._rows(workspace, kind="task", status=list(LIVE)) if _usable(store) else []
+    tasks = [item for item in tasks if in_scope(item, scope)]
     out = {"overdue": [], "today": [], "upcoming": {}, "waiting": [], "proposed": []}
     undated = 0
     for item in sorted(tasks, key=lambda item: urgency(item, now)[0]):
@@ -241,12 +253,12 @@ def context(store, workspace, id, *, history=10):
         }
 
 
-def summary(store, workspace, *, now=None):
+def summary(store, workspace, *, now=None, scope=None):
     """Counts for a one-glance orientation."""
     now = normalize_now(now)
-    view = agenda(store, workspace, now=now, days=7)
+    view = agenda(store, workspace, now=now, days=7, scope=scope)
     return {
-        "ready": len(ready(store, workspace, now=now, limit=1000)),
+        "ready": len(ready(store, workspace, now=now, limit=1000, scope=scope)),
         "overdue": len(view["overdue"]),
         "today": len(view["today"]),
         "next_7_days": sum(len(x) for x in view["upcoming"].values()),
