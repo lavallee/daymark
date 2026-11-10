@@ -754,6 +754,9 @@ def test_owned_commit_failure_rolls_back_and_preserves_original_error(tmp_path):
     path = tmp_path / "commit-failure.db"
     store = Store(path)
     create(store, "w", "baseline")
+    # Path-owned stores default to WAL, where a reader no longer blocks COMMIT.
+    # Return to a rollback journal to keep this deterministic commit fault.
+    assert store.db.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
     store.db.execute("PRAGMA busy_timeout=20")  # Deterministic lock fault, not a timing test.
     reader = sqlite3.connect(path)
     reader.execute("BEGIN")

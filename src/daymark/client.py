@@ -85,6 +85,45 @@ class Client:
     def query(self, filters: dict[str, Any]) -> Any:
         return self._request("POST", "/v1/query", json={"filters": filters})
 
+    @staticmethod
+    def _params(**values: Any) -> dict[str, Any]:
+        return {
+            key: value.isoformat() if hasattr(value, "isoformat") else value
+            for key, value in values.items()
+            if value is not None
+        }
+
+    def ready(
+        self,
+        *,
+        now: Any = None,
+        limit: int = 50,
+        owner: str | None = None,
+        next_move: str | None = None,
+    ) -> Any:
+        params = self._params(now=now, limit=limit, owner=owner, next_move=next_move)
+        return self._request("GET", "/v1/ready", params=params)
+
+    def agenda(self, *, now: Any = None, days: int = 7) -> Any:
+        return self._request("GET", "/v1/agenda", params=self._params(now=now, days=days))
+
+    def summary(self, *, now: Any = None) -> Any:
+        return self._request("GET", "/v1/summary", params=self._params(now=now))
+
+    def context(self, entity_id: str, *, history: int = 10) -> Any:
+        return self._request(
+            "GET", f"/v1/context/{quote(entity_id, safe='')}", params={"history": history}
+        )
+
+    def receipt(self, operation_id: str) -> Any:
+        """The stored result of a completed operation ID, or None."""
+        try:
+            return self._request("GET", f"/v1/receipts/{quote(operation_id, safe='')}")
+        except ClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+
     def events(self, after: int = 0, limit: int = 100) -> Any:
         return self._request("GET", "/v1/events", params={"after": after, "limit": limit})
 

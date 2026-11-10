@@ -159,6 +159,46 @@ def create_router(store: Any) -> APIRouter:
     def query(body: QueryRequest, request: Request) -> Any:
         return _invoke(store.query, identity(request).workspace, body.filters)
 
+    @router.get("/ready", operation_id="daymark_v1_ready")
+    def ready(
+        request: Request,
+        limit: int = Query(50, ge=1, le=1000),
+        owner: str | None = Query(None, max_length=200),
+        next_move: str | None = Query(None, max_length=20),
+        now: str | None = Query(None, max_length=40),
+    ) -> Any:
+        return _invoke(
+            store.ready,
+            identity(request).workspace,
+            now=now,
+            limit=limit,
+            owner=owner,
+            next_move=next_move,
+        )
+
+    @router.get("/agenda", operation_id="daymark_v1_agenda")
+    def agenda(
+        request: Request,
+        days: int = Query(7, ge=0, le=366),
+        now: str | None = Query(None, max_length=40),
+    ) -> Any:
+        return _invoke(store.agenda, identity(request).workspace, now=now, days=days)
+
+    @router.get("/summary", operation_id="daymark_v1_summary")
+    def summary(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+        return _invoke(store.summary, identity(request).workspace, now=now)
+
+    @router.get("/context/{entity_id}", operation_id="daymark_v1_context")
+    def context(entity_id: str, request: Request, history: int = Query(10, ge=0, le=100)) -> Any:
+        return _invoke(store.context, identity(request).workspace, entity_id, history=history)
+
+    @router.get("/receipts/{operation_id}", operation_id="daymark_v1_receipt")
+    def receipt(operation_id: str, request: Request) -> Any:
+        result = _invoke(store.receipt, identity(request).workspace, operation_id)
+        if result is None:
+            raise HTTPException(404, "Not found")
+        return result
+
     @router.get("/events", operation_id="daymark_v1_events")
     def events(
         request: Request, after: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)

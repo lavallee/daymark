@@ -14,8 +14,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class DomainError(ValueError):
-    def __init__(self, code: str, message: str):
+    """A domain failure with a stable code.
+
+    ``details`` names offending fields and rules only; it never echoes input values.
+    """
+
+    def __init__(self, code: str, message: str, details: list[str] | None = None):
         self.code = code
+        self.details = details or []
         super().__init__(message)
 
 
@@ -33,6 +39,9 @@ class Temporal(Model):
     date: Date | None = None
     at: datetime | None = None
     timezone: str = "UTC"
+    # The phrase a person actually used ("after the holidays"). Kept as evidence
+    # beside the resolved value; Daymark never interprets it.
+    expression: str | None = Field(default=None, max_length=200)
 
     @field_validator("timezone")
     @classmethod
@@ -254,16 +263,42 @@ class CheckItem(Model):
     completed: bool = False
 
 
+class Note(Model):
+    """One append-only progress or context entry; the working memory of a task."""
+
+    id: str = Field(min_length=1, max_length=128)
+    at: datetime
+    author: str | None = Field(default=None, max_length=200)
+    text: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("at")
+    @classmethod
+    def valid_instant(cls, value):
+        return aware(value)
+
+
 class Entity(Model):
     id: str = Field(min_length=1, max_length=128)
     workspace: str = Field(min_length=1, max_length=128)
     kind: Literal[
-        "task", "project", "goal", "person", "principal", "label", "context", "filter", "reminder"
+        "task",
+        "project",
+        "goal",
+        "person",
+        "principal",
+        "label",
+        "context",
+        "filter",
+        "reminder",
+        "memory",
     ]
     version: int = Field(default=1, ge=1)
     title: str = Field(default="", max_length=2000)
-    status: Literal["open", "waiting", "completed", "cancelled"] = "open"
+    # "proposed" is a suggestion awaiting a person's accept or dismiss; it is
+    # never ready work and never fires reminders.
+    status: Literal["proposed", "open", "waiting", "completed", "cancelled"] = "open"
     archived: bool = False
+    # 0 is unset; 1 is most important and 4 least (the iCalendar convention).
     priority: int = Field(default=0, ge=0, le=4)
     description: str = Field(default="", max_length=100000)
     assignee_id: str | None = None
@@ -275,6 +310,16 @@ class Entity(Model):
     context_ids: list[str] = Field(default_factory=list, max_length=100)
     depends_on: list[str] = Field(default_factory=list, max_length=100)
     checklist: list[CheckItem] = Field(default_factory=list, max_length=1000)
+    notes: list[Note] = Field(default_factory=list, max_length=1000)
+    # Who or what an open item is waiting on; free text, never a permission grant.
+    waiting_on: str | None = Field(default=None, max_length=500)
+    estimate_minutes: int | None = Field(default=None, ge=1, le=525_600)
+    # Whose move it is: the person does it, the person must answer or decide,
+    # or an agent may carry it out. Unset means not yet decided; never inferred.
+    next_move: Literal["person", "answer", "agent"] | None = None
+    # An expiring working claim. It is advisory coordination, not authorization.
+    claimed_by: str | None = Field(default=None, min_length=1, max_length=200)
+    claim_until: datetime | None = None
     deadline: Temporal | None = None
     planned: Temporal | None = None
     earliest_start: Temporal | None = None
@@ -311,7 +356,13 @@ class Entity(Model):
     error: str | None = None
 
     @field_validator(
-        "created_at", "updated_at", "completed_at", "scheduled_at", "retry_at", "lease_until"
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "scheduled_at",
+        "retry_at",
+        "lease_until",
+        "claim_until",
     )
     @classmethod
     def valid_instant(cls, value):
@@ -331,6 +382,10 @@ class Entity(Model):
             raise ValueError("earliest_start exceeds latest_target")
         if len({i.id for i in self.checklist}) != len(self.checklist):
             raise ValueError("checklist ids must be unique")
+        if len({i.id for i in self.notes}) != len(self.notes):
+            raise ValueError("note ids must be unique")
+        if (self.claimed_by is None) != (self.claim_until is None):
+            raise ValueError("claimed_by and claim_until are set together")
         if self.kind == "filter" and self.filter is None:
             raise ValueError("saved filter requires filter AST")
         return self

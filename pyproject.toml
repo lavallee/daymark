@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 [project]
 name = "daymark-core"
 version = "0.1.0"
-description = "Flexible tasks, plans, recurrence and durable reminder delivery"
+description = "A task system for agents handling real life: deadlines, plans, recurrence, readiness and reminders"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
