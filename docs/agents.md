@@ -123,6 +123,7 @@ that was broken. With `--json` the same content is a JSON object.
 | 4 | `conflict` | Someone else changed or claimed it, or the source is already captured. Re-read, then decide. |
 | 5 | `invalid` | The request broke a rule; the details name the field. |
 | 6 | `no_database` | Run `daymark init`. |
+| 7 | `forbidden` | Only a designated decider may accept or dismiss. Leave it for the person. |
 | 1 | | Anything else. The message is deliberately generic so stored content cannot leak into logs. |
 
 ## MCP
@@ -148,12 +149,18 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
 
 ## Limits worth knowing
 
-- Claims, proposals and `next_move` are coordination, not access control.
-  Anyone who can write to the workspace can accept a proposal or release a
-  claim. An application that needs to enforce who may do so must check it
-  before calling Daymark.
-- Events record what changed and when, not who. Notes and claims carry an
-  actor name; other writes do not yet.
+- Every event records the actor that caused it; `show` prints it in the
+  history. On the command line the actor is whatever `--as` or
+  `DAYMARK_ACTOR` says, so it is a label, not proof. Over HTTP it is the
+  principal of the bearer token, which the caller cannot choose.
+- `daymark policy --deciders NAME,NAME` restricts `accept` and `dismiss` to the
+  named actors; others get `forbidden` (exit 7). Over HTTP this is enforced
+  against the authenticated principal. Locally it stops a well-behaved agent
+  from deciding on a person's behalf by accident; it cannot stop a process that
+  lies about its name or edits the file. `daymark policy --clear` lifts it.
+- Claims and `next_move` are coordination, not access control. An agent can
+  still create an open task directly; proposing is a discipline the policy
+  supports but does not force.
 - One SQLite file is the authority. There is no sync between machines.
 - The default reminder worker records deliveries; it sends nothing. See the
   [operations guide](operations.md).

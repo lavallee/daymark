@@ -37,7 +37,7 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A02 Cancelled prerequisites | A cancelled or archived dependency releases its dependents | Resolves the question C08 left open. The alternative, requiring an explicit unblock, strands work behind tasks nobody will do. |
 | A03 Containers | A task with an open or waiting child task is not ready; a proposed child blocks nothing | Work the leaves. A parent becomes ready when its children are finished; it never completes automatically (C02 stands). |
 | A04 Claims | Advisory lease, default 60 minutes, at most seven days | One live holder; the same owner may renew; completion, cancellation and archiving clear it. Not access control. |
-| A05 Proposals | `proposed` status with `accept` and `dismiss` | Never ready; cannot be completed, skipped, reopened or moved to another status by update; its reminders stay pending but are not dispatched. Any workspace writer can accept; enforcing who may is the application's job. |
+| A05 Proposals | `proposed` status with `accept` and `dismiss` | Never ready; cannot be completed, skipped, reopened or moved to another status by update; its reminders stay pending but are not dispatched. Who may accept is set by A18. |
 | A06 Next move | Optional `person`, `answer` or `agent`; never inferred | Unset matches no `--move` filter. |
 | A07 Notes | Append-only, through the `note` action only | At most 1,000 per entity. Undo keeps notes and the current claim. A new round of a repeating task starts with none. |
 | A08 Priority direction | 1 is most important, 4 least, 0 unset | Follows iCalendar. Previously undefined; ordering in `ready` now depends on it. |
@@ -49,6 +49,10 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A14 Stored-shape upgrades | A schema marker triggers an in-place rewrite of stored entities when fields are added | Versions and event history are untouched. Snapshots exported by this version contain fields that 0.1.0 rejects. |
 | A15 Error text | Domain failures print their stable code and rule; validation names fields without values | Other failures keep the generic message so stored content cannot reach logs. |
 | A16 Database location | `--db`, `DAYMARK_DB`, nearest `.daymark/`, legacy `./daymark.sqlite3`, then the per-user database | The plain verbs refuse to run without a database and name `daymark init`. The engine commands keep creating `./daymark.sqlite3` as before. |
+
+| A17 Actor on events | `execute(..., actor=)` is recorded on every event it causes | Scheduler and worker events have no actor. The HTTP service records the token's principal and overrides claim owner and note author with it. Snapshots carry the actor; events imported without one read as unattributed. Operation receipts do not include the actor. |
+| A18 Decider policy | A workspace may name who can `accept` or `dismiss`; empty means any writer | Stored beside scheduler state, set locally (`daymark policy`), not exported in snapshots and not settable over HTTP. Enforced against whatever actor name the caller supplies: authenticated over HTTP, self-declared locally. It does not stop an actor creating open tasks directly. |
+| A19 Private files | A database the command line creates is mode 0600 | Applies to every command, including the engine commands' legacy `./daymark.sqlite3`. |
 
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration

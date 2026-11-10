@@ -160,6 +160,9 @@ def _simple_commands(sub) -> None:
     find.add_argument("--status")
     remember = add("remember", "Keep a durable fact for later sessions", writes=True)
     remember.add_argument("text")
+    policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
+    policy.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
+    policy.add_argument("--clear", action="store_true", help="Let any writer decide again")
     sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
 
 
@@ -439,7 +442,9 @@ def _fail(args, code: str, message: str, details=()) -> int:
         print(f"error: {code}: {message}", file=sys.stderr)
         for detail in details:
             print(f"  {detail}", file=sys.stderr)
-    return {"not_found": 3, "conflict": 4, "invalid": 5, "no_database": 6}.get(code, 1)
+    return {"not_found": 3, "conflict": 4, "invalid": 5, "no_database": 6, "forbidden": 7}.get(
+        code, 1
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -497,9 +502,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .store import Store
 
+            fresh = args.db != ":memory:" and not Path(args.db).exists()
             engine = Store(args.db)
+            if fresh:
+                os.chmod(args.db, 0o600)  # Task data is private by default.
         try:
             ws = [] if args.url else [args.workspace]
+            if args.command == "policy":
+                if args.url:
+                    raise ValueError("Policy is set on the local database")
+                if args.clear or args.deciders is not None:
+                    names = [] if args.clear else [x.strip() for x in args.deciders.split(",")]
+                    engine.set_policy(args.workspace, deciders=[x for x in names if x])
+                _print(engine.policy(args.workspace))
+                return 0
             if args.command in SIMPLE:
                 return _simple(args, engine)
             if args.command == "worker":
@@ -556,8 +572,8 @@ def main(argv: list[str] | None = None) -> int:
         return _fail(args, exc.code, str(exc), exc.details)
     except Exception as exc:  # noqa: BLE001 - prevent private exception text escaping
         status = getattr(exc, "status_code", None)
-        if type(exc).__name__ == "ClientError" and status in {404, 409, 422}:
-            code = {404: "not_found", 409: "conflict", 422: "invalid"}[status]
+        if type(exc).__name__ == "ClientError" and status in {403, 404, 409, 422}:
+            code = {403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}[status]
             return _fail(args, code, "The server refused the request")
         # Parsing/Store/network exceptions can contain private paths and payloads.
         print(

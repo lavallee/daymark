@@ -730,3 +730,91 @@ def test_views_refuse_a_schema_they_cannot_read(tmp_path):
     for view in (store.ready, store.agenda, store.summary):
         code("conflict", view, "w")
     connection.close()
+
+
+# -- who acted, and who may decide
+
+
+def test_events_record_the_actor_and_survive_export_and_import(tasks):
+    store = tasks.engine
+    tasks.add("Send the form", id="form")
+    tasks.done("form")
+    store.tick()
+    events = store.events("w")
+    assert [(e["action"], e["actor"]) for e in events] == [
+        ("create", "alice"),
+        ("complete", "alice"),
+    ]
+    assert [h["actor"] for h in tasks.show("form")["history"]] == ["alice", "alice"]
+    snapshot = store.export("w")
+    copy = Store(":memory:")
+    copy.import_snapshot("w", snapshot, operation_id="import", expected_version=0)
+    assert copy.events("w") == events
+    older = {**snapshot, "events": [{k: v for k, v in e.items() if k != "actor"} for e in events]}
+    plain = Store(":memory:")
+    plain.import_snapshot("w", older, operation_id="import", expected_version=0)
+    assert [e["actor"] for e in plain.events("w")] == [None, None]
+    code("invalid", store.execute, "w", "x", "create", {"kind": "task"}, 0, actor="")
+
+
+def test_only_named_deciders_accept_or_dismiss(tasks):
+    store = tasks.engine
+    assert store.policy("w") == {"deciders": []}
+    idea = tasks.propose("Switch energy supplier", id="idea")
+    assert store.set_policy("w", deciders=["sam", "sam"]) == {"deciders": ["sam"]}
+    assert code("forbidden", tasks.accept, idea["id"]).code == "forbidden"
+    code("forbidden", tasks.dismiss, idea["id"])
+    code("forbidden", store.execute, "w", "anon", "accept", {"id": "idea"}, 1)
+    sam = Tasks(store, "w", actor="sam", timezone=ZONE)
+    assert sam.accept("idea")["status"] == "open"
+    assert store.policy("other") == {"deciders": []}
+    code("invalid", store.set_policy, "w", deciders="sam")
+    store.set_policy("w", deciders=[])
+    tasks.propose("Another", id="another")
+    assert tasks.dismiss("another")["status"] == "cancelled"
+
+
+def test_http_identity_decides_who_acted(tmp_path):
+    store = Store(tmp_path / "http.db")
+    store.set_policy("w", deciders=["owner"])
+    app = create_app(
+        store,
+        {
+            "agent-token": {"workspace": "w", "principal": "helper"},
+            "owner-token": {"workspace": "w", "principal": "owner"},
+        },
+    )
+    with TestClient(app) as http:
+
+        def post(token, operation_id, action, payload, version):
+            return http.post(
+                "/v1/operations",
+                headers={"Authorization": "Bearer " + token},
+                json={"operation_id": operation_id, "action": action, "payload": payload,
+                      "expected_version": version},
+            )  # fmt: skip
+
+        proposal = {"id": "idea", "kind": "task", "status": "proposed"}
+        assert post("agent-token", "c", "create", proposal, 0).status_code == 200
+        assert post("agent-token", "a", "accept", {"id": "idea"}, 1).status_code == 403
+        assert post("owner-token", "a2", "accept", {"id": "idea"}, 1).status_code == 200
+        spoofed = {"id": "idea", "owner": "owner"}
+        assert post("agent-token", "k", "claim", spoofed, 2).json()["claimed_by"] == "helper"
+        note = {"id": "idea", "text": "Checked tariffs", "author": "owner"}
+        assert post("agent-token", "n", "note", note, 3).json()["notes"][0]["author"] == "helper"
+    assert [e["actor"] for e in store.events("w")] == ["helper", "owner", "helper", "helper"]
+    store.close()
+
+
+def test_cli_policy_and_private_database(cli, tmp_path):
+    cli("init")
+    cli("propose", "Idea", "--id", "idea")
+    assert json.loads(cli("policy", "--deciders", "sam, lee")[1]) == {"deciders": ["lee", "sam"]}
+    status, _, err = cli("accept", "idea")
+    assert status == 7 and err.startswith("error: forbidden:")
+    assert cli("--as", "sam", "accept", "idea")[0] == 0
+    assert "accept" in cli("show", "idea")[1] and "by sam" in cli("show", "idea")[1]
+    assert json.loads(cli("policy", "--clear")[1]) == {"deciders": []}
+    legacy = tmp_path / "legacy.db"
+    assert cli("--db", str(legacy), "list")[0] == 0
+    assert legacy.stat().st_mode & 0o077 == 0
