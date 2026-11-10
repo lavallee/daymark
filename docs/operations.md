@@ -53,7 +53,11 @@ local CLI may request global operational health.
 and `/v1/context/{id}`. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
 reject conflicting existing identities rather than rewind newer state. Schema
-operation IDs remain stable within v1.
+operation IDs remain stable within v1. Each write is recorded with the token's
+principal as its actor; for `claim`, `release` and `note` the principal also
+replaces any owner or author in the request. If the workspace names deciders
+(`daymark --db example.sqlite3 --workspace example policy --deciders operator`),
+`accept` and `dismiss` from any other principal return 403.
 The server resolves the workspace from its token configuration. Do not expose
 this bearer-only service beyond a trusted local boundary without TLS termination
 and your own access policy. CORS is disabled. Request bodies are limited to 1 MiB;
