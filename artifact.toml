@@ -1,7 +1,7 @@
 [artifact]
 slug = "daymark"
 title = "Daymark"
-description = "Task timing, recurrence, and reminder state for your application."
+description = "A task system that simplifies the complexities of real life, for agents handling a person's projects and life."
 kind = "reference-guide"
 form = "article"
 status = "draft"

@@ -2,7 +2,7 @@
 
 Changes are recorded here using semantic versions. Until 1.0, review release notes carefully before upgrading an embedded application or stored database.
 
-## [Unreleased]
+## [0.2.0] - 2026-11-09
 
 ### Added
 
