@@ -97,6 +97,11 @@ carry out (`agent`). `daymark ready --move agent` is an agent's work queue;
 `--move answer` is the short list of decisions only the person can make. The
 field is never inferred. Unset means nobody has decided.
 
+**The person's order, and the parts of a life.** `focus` is a hand-ordered
+short list that leads `ready`; it is neither a date nor a priority. `scope`
+separates household from studio inside one view. A workspace is the boundary
+when two bodies of work must never see each other.
+
 **Evidence over inference.** A relative date keeps the phrase that produced
 it. Notes are append-only. Every change is an event with before and after
 state. An agent picking up a task can see what was said and done; it does not
@@ -133,12 +138,11 @@ None is promised.
 2. **Proposal discipline.** Nothing forces an agent to propose; it can create
    an open task. A policy that makes some actors propose-only is the natural
    next step.
-3. **A person-ordered Today.** Some people keep an explicit, hand-ordered
-   short list that is neither a plan date nor a priority.
+3. **Limits a host system may exceed.** A title is at most 2,000 characters
+   and a description 100,000. An application that accepts more must narrow
+   its own limits before Daymark can be its only store.
 4. **Conditions checked against other systems.** "Ready when the pull request
    merges" or "done when the form is acknowledged", observed from the owning
    system with a freshness state, as an alternative to dependency edges.
-5. **Scope as a first-class filter.** Separating personal from professional
-   views today uses workspaces or labels; neither is a perfect fit.
-6. **Sync between machines.** One file is simple and safe; it is also one
+5. **Sync between machines.** One file is simple and safe; it is also one
    machine.

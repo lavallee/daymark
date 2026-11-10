@@ -38,15 +38,17 @@ on later runs.
 
 | Command | Answers |
 | --- | --- |
-| `daymark ready [-n N] [--move person\|answer\|agent]` | What can be acted on now, most pressing first. |
+| `daymark ready [-n N] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. |
 | `daymark agenda [--days N]` | Overdue, today, each coming day, waiting, proposed. Each task appears once. |
 | `daymark show ID` | One entity: the four dates with the phrase originally used, blockers, what it unblocks, children, reminders, notes, history. |
 | `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. |
+| `daymark workspaces` | The workspaces in this database, and which one you are in. |
 
 A task is **ready** when it is open and not archived, its `--start` date has
 arrived, every task it comes `--after` is completed, cancelled or archived, it
 has no open or waiting child task, and no other actor holds a live claim on
-it. The next round of a repeating task also waits for its planned day. A
+it. The next round of a repeating task also waits for its planned day. Tasks the person
+has put in focus come first, in the order they chose. A
 repeating task that has only a deadline is ready as soon as the round exists;
 give it a `--plan` day if it should not be done early. Order: overdue
 deadlines, due today, planned for today or earlier, due within a week, soft
@@ -66,6 +68,7 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 
 | Command | Effect |
 | --- | --- |
+| `focus ID [--rank N]` / `unfocus ID` | Put a task on, or take it off, the person's own short list. Focus is their ordering, set at their request. It is not a date or a priority, and finishing a task clears it. |
 | `claim ID [--minutes N]` / `release ID` | Take or give back a task. A claim lapses on its own (default 60 minutes), so a crashed session cannot hold work forever. |
 | `note ID "text"` | Append a progress note with your actor name and the time. Notes cannot be rewritten. |
 | `done ID [--note T]` | Complete. A repeating task creates its next round, named `ID.1`, `ID.2`, and so on. |
@@ -91,6 +94,28 @@ the date it resolved to, so `show` can report what was actually said.
 `mon,thu`, or an RRULE body such as `FREQ=MONTHLY;BYMONTHDAY=1`.
 
 **Priority** runs from 1 (most important) to 4; 0 means not set.
+
+## Workspaces and scopes
+
+A **workspace** is a hard boundary. Every command works in exactly one
+(`--workspace NAME` or `DAYMARK_WORKSPACE`; `default` otherwise). Tasks,
+people, remembered facts, history, exports and the decider policy belong to
+one workspace. Nothing in another workspace is listed, counted, searched or
+referenced, even when both live in the same database file, and a task cannot
+depend on, or be assigned to, something in another workspace. Use separate
+workspaces for things that must not mix: a household and a studio, or one
+person and another. `daymark prime` names the database and workspace it is
+showing, and `daymark workspaces` lists the others.
+
+Applications that embed Daymark usually keep it in their own database, which
+separates them further: a household application's tasks are not in the
+per-user database at all, so reach them through that application.
+
+A **scope** is a label for filtering inside one workspace (`--scope household`
+on `add`, `ready` and `agenda`; `--unscoped` for tasks with none). It keeps one
+person's work and home tasks apart in a view while still letting a single
+`ready` show both. A scope hides nothing from anyone: use a workspace when
+separation matters.
 
 ## Retrying safely
 
