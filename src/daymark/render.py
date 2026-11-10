@@ -133,7 +133,10 @@ def show_text(ctx: dict, now=None) -> str:
         author = f" {note['author']}" if note["author"] else ""
         out.append(f"note {note['at'][:16]}{author}: {note['text']}")
     if ctx["history"]:
-        trail = ", ".join(f"{e['action']} {e['at'][:10]}" for e in reversed(ctx["history"]))
+        trail = ", ".join(
+            f"{e['action']} {e['at'][:10]}" + (f" by {e['actor']}" if e.get("actor") else "")
+            for e in reversed(ctx["history"])
+        )
         out.append(f"history: {trail}")
     out.append(f"version {item['version']}")
     return "\n".join(out)

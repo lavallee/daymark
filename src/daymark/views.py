@@ -218,7 +218,7 @@ def context(store, workspace, id, *, history=10):
 
         statuses = _statuses(store, workspace, item["depends_on"])
         events = store.db.execute(
-            "SELECT e.action,e.created_at,e.operation_id FROM daymark_events e WHERE "
+            "SELECT e.action,e.created_at,e.operation_id,e.actor FROM daymark_events e WHERE "
             "e.workspace=? AND e.entity_id=? ORDER BY e.seq DESC LIMIT ?",
             (workspace, id, history),
         ).fetchall()
@@ -234,7 +234,10 @@ def context(store, workspace, id, *, history=10):
                 {"id": x["id"], "scheduled_at": x["scheduled_at"], "state": x["reminder_state"]}
                 for x in linked("task_id")
             ],
-            "history": [{"action": row[0], "at": row[1], "operation_id": row[2]} for row in events],
+            "history": [
+                {"action": row[0], "at": row[1], "operation_id": row[2], "actor": row[3]}
+                for row in events
+            ],
         }
 
 

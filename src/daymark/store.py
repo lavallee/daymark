@@ -40,7 +40,7 @@ def invalid(message):
 
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
-SCHEMA = "2"
+SCHEMA = "3"
 
 REFS = {
     "assignee_id": {"person", "principal"},
@@ -63,6 +63,7 @@ class Store:
             sqlite3.connect(path, check_same_thread=False, timeout=30) if self._owned else path
         )
         self._lock = threading.RLock()
+        self._actor = None  # Who is acting in the current execute; recorded on its events.
         if self._owned:
             # One durable sync per commit instead of a journal's several, and readers
             # that do not wait on a writer. A caller-owned connection keeps its own mode.
@@ -84,7 +85,7 @@ class Store:
         upgrade = exists("daymark_entities")
         for statement in (
             "CREATE TABLE IF NOT EXISTS daymark_entities (workspace TEXT NOT NULL,id TEXT NOT NULL,kind TEXT NOT NULL,version INTEGER NOT NULL,data TEXT NOT NULL,status TEXT,archived INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(workspace,id))",
-            "CREATE TABLE IF NOT EXISTS daymark_events (seq INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,operation_id TEXT,entity_id TEXT,action TEXT NOT NULL,before_data TEXT,after_data TEXT,created_at TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS daymark_events (seq INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,operation_id TEXT,entity_id TEXT,action TEXT NOT NULL,before_data TEXT,after_data TEXT,created_at TEXT NOT NULL,actor TEXT)",
             "CREATE TABLE IF NOT EXISTS daymark_event_cursors (workspace TEXT NOT NULL,seq INTEGER NOT NULL,event_seq INTEGER NOT NULL UNIQUE,PRIMARY KEY(workspace,seq))",
             "CREATE TABLE IF NOT EXISTS daymark_operations (workspace TEXT NOT NULL,operation_id TEXT NOT NULL,payload_hash TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(workspace,operation_id))",
             "CREATE TABLE IF NOT EXISTS daymark_scheduler (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
@@ -100,6 +101,8 @@ class Store:
             self.db.execute(
                 "ALTER TABLE daymark_entities ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
             )
+        if "actor" not in {row[1] for row in self.db.execute("PRAGMA table_info(daymark_events)")}:
+            self.db.execute("ALTER TABLE daymark_events ADD COLUMN actor TEXT")
         if upgrade:
             # Rewrite stored entities in the current shape (new fields take their
             # defaults; versions and history are untouched) and rebuild lookups.
@@ -330,14 +333,25 @@ class Store:
                     for target in value if isinstance(value, list) else ([value] if value else []):
                         stack.append((target, False))
 
-    def _event(self, workspace, operation_id, action, before, after, *, seq=None, created_at=None):
+    def _event(
+        self,
+        workspace,
+        operation_id,
+        action,
+        before,
+        after,
+        *,
+        seq=None,
+        created_at=None,
+        actor=...,
+    ):
         if seq is None:
             seq = self.db.execute(
                 "SELECT COALESCE(MAX(seq),0)+1 FROM daymark_event_cursors WHERE workspace=?",
                 (workspace,),
             ).fetchone()[0]
         cursor = self.db.execute(
-            "INSERT INTO daymark_events(workspace,operation_id,entity_id,action,before_data,after_data,created_at) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO daymark_events(workspace,operation_id,entity_id,action,before_data,after_data,created_at,actor) VALUES(?,?,?,?,?,?,?,?)",
             (
                 workspace,
                 operation_id,
@@ -346,6 +360,7 @@ class Store:
                 canonical(before) if before is not None else None,
                 canonical(after) if after is not None else None,
                 created_at or normalize_now().isoformat(),
+                self._actor if actor is ... else actor,
             ),
         )
         self.db.execute(
@@ -359,7 +374,7 @@ class Store:
             if not self._has_schema():
                 return []
             rows = self.db.execute(
-                "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
+                "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
                 (workspace, after, limit),
             ).fetchall()
             keys = (
@@ -371,6 +386,7 @@ class Store:
                 "before_data",
                 "after_data",
                 "created_at",
+                "actor",
             )
             return [
                 {
@@ -406,181 +422,224 @@ class Store:
             (workspace, operation_id, digest, canonical(result)),
         )
 
-    def execute(self, workspace, operation_id, action, payload, expected_version=None):
+    def policy(self, workspace):
+        """Workspace policy. ``deciders`` lists who may accept or dismiss proposals;
+        empty means anyone who can write."""
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return {"deciders": []}
+            row = self.db.execute(
+                "SELECT value FROM daymark_scheduler WHERE key=?", ("policy:" + workspace,)
+            ).fetchone()
+            return json.loads(row[0]) if row else {"deciders": []}
+
+    def set_policy(self, workspace, *, deciders):
+        """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
+
+        The check is only as strong as the actor name it is given. The HTTP
+        service supplies the authenticated principal; a local caller states its own.
+        """
+        if (
+            not isinstance(workspace, str)
+            or not 1 <= len(workspace) <= 128
+            or not isinstance(deciders, list)
+            or len(deciders) > 100
+            or any(not isinstance(x, str) or not 1 <= len(x) <= 200 for x in deciders)
+        ):
+            invalid("Deciders must be a list of at most 100 actor names")
+        value = {"deciders": sorted(set(deciders))}
+        with self._transaction():
+            self.db.execute(
+                "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("policy:" + workspace, canonical(value)),
+            )
+        return value
+
+    def execute(self, workspace, operation_id, action, payload, expected_version=None, actor=None):
+        """Apply one operation. ``actor`` names who is acting; it is recorded on the
+        resulting events and checked against the workspace policy for decisions."""
         if not isinstance(payload, dict):
             invalid("Payload must be an object")
+        if actor is not None and (not isinstance(actor, str) or not 1 <= len(actor) <= 200):
+            invalid("Actor must be a short name")
         with self._transaction():
-            digest, replay = self._receipt(
-                workspace, operation_id, action, payload, expected_version
-            )
-            if replay is not None:
-                return replay
-            now = normalize_now().isoformat()
-            before = None
-            if action == "create":
-                if expected_version != 0:
-                    raise DomainError("conflict", "Create requires version zero")
-                raw = dict(payload)
-                for field, default in {
-                    "lease_owner": None,
-                    "lease_until": None,
-                    "lease_token": None,
-                    "attempts": 0,
-                    "retry_at": None,
-                    "delivery_key": None,
-                    "reminder_state": "pending",
-                    "error": None,
-                }.items():
-                    if raw.get(field, default) != default:
-                        invalid("Scheduler state must be restored through snapshot import")
-                if raw.get("workspace", workspace) != workspace or raw.get("version", 1) != 1:
-                    invalid("Invalid creation identity or version")
-                raw.update(workspace=workspace, version=1)
-                raw.setdefault("id", uuid.uuid4().hex)
-                if self.db.execute(
-                    "SELECT 1 FROM daymark_entities WHERE workspace=? AND id=?",
-                    (workspace, raw["id"]),
-                ).fetchone():
-                    raise DomainError("conflict", "Entity exists")
-                if raw.get("recurrence"):
-                    raw.setdefault("series_id", raw["id"])
-                    raw.setdefault("occurrence_key", raw["id"] + ":0")
-            else:
-                if not isinstance(payload.get("id"), str):
-                    invalid("Entity ID required")
-                if action == "undo":
-                    data = self._undo(workspace, payload, expected_version, operation_id, now)
-                    self._validate_entity(data)
-                    self._record(workspace, operation_id, digest, data)
-                    return data
-                before = self.get(workspace, payload["id"])
-                if before["version"] != expected_version:
-                    raise DomainError("conflict", "Version mismatch")
-                raw = {**before, "version": before["version"] + 1, "updated_at": now}
-                if action == "update":
-                    protected = {
-                        "id",
-                        "workspace",
-                        "kind",
-                        "version",
-                        "created_at",
-                        "series_id",
-                        "occurrence_key",
-                        "lease_owner",
-                        "lease_until",
-                        "delivery_key",
-                        "attempts",
-                        "retry_at",
-                        "reminder_state",
-                        "lease_token",
-                        "error",
-                        "notes",
-                        "claimed_by",
-                        "claim_until",
-                    }
-                    if any(k in protected and v != before.get(k) for k, v in payload.items()):
-                        invalid(
-                            "Identity, provenance, scheduler, note and claim fields change "
-                            "only through their own actions"
-                        )
-                    if payload.get("status", before["status"]) != before[
-                        "status"
-                    ] and "proposed" in {
-                        payload["status"],
-                        before["status"],
-                    }:
-                        invalid("A proposal changes status only through accept or dismiss")
-                    raw.update({k: v for k, v in payload.items() if k not in protected})
-                    if not {canonical(x) for x in before["source_refs"]}.issubset(
-                        {canonical(x) for x in raw["source_refs"]}
-                    ):
-                        invalid("Source references are stable")
-                elif action in {"accept", "dismiss"}:
-                    if set(payload) != {"id"}:
-                        invalid("Unexpected action fields")
-                    if before["status"] != "proposed":
-                        invalid("Only a proposal can be accepted or dismissed")
-                    raw["status"] = "open" if action == "accept" else "cancelled"
-                elif action in {"complete", "cancel", "reopen", "archive", "skip", "delete"}:
-                    if set(payload) - {"id", "completed_at"}:
-                        invalid("Unexpected action fields")
-                    if before["status"] == "proposed" and action in {"complete", "skip", "reopen"}:
-                        invalid("Accept or dismiss a proposal first")
-                    if action == "archive":
-                        raw["archived"] = True
-                    elif action == "complete":
-                        raw.update(
-                            status="completed", completed_at=payload.get("completed_at", now)
-                        )
-                    elif action in {"cancel", "skip"}:
-                        raw.update(status="cancelled", completed_at=None)
-                    elif action == "reopen":
-                        raw.update(status="open", completed_at=None, archived=False)
-                elif action == "note":
-                    if set(payload) - {"id", "text", "author"}:
-                        invalid("Unexpected note fields")
-                    note_id = uuid.uuid5(
-                        uuid.NAMESPACE_URL, canonical([workspace, raw["id"], "note", operation_id])
-                    ).hex[:12]
-                    raw["notes"] = [
-                        *before["notes"],
-                        {
-                            "id": note_id,
-                            "at": now,
-                            "author": payload.get("author"),
-                            "text": payload.get("text"),
-                        },
-                    ]
-                elif action in {"claim", "release"}:
-                    self._claim_action(raw, before, action, payload, now)
-                elif action.startswith("reminder."):
-                    self._reminder_action(raw, action, payload)
-                    if action == "reminder.snooze":
-                        raw["delivery_key"] = uuid.uuid5(
-                            uuid.NAMESPACE_URL,
-                            canonical([workspace, raw["id"], "snooze", operation_id]),
-                        ).hex
-                        raw["attempts"] = 0
-                        raw["error"] = None
-                else:
-                    invalid("Unsupported action")
-            data = self._validated(raw)
-            if data["status"] == "completed" and not data["completed_at"]:
-                data["completed_at"] = now
-            elif data["status"] != "completed":
-                data["completed_at"] = None
-            if data["status"] in {"completed", "cancelled"} or data["archived"]:
-                # Finished or shelved work holds no working claim.
-                data.update(claimed_by=None, claim_until=None)
-            if action == "delete":
-                self._cancel_reminders(workspace, data["id"], operation_id, now, detach=True)
-                self.db.execute(
-                    "DELETE FROM daymark_entities WHERE workspace=? AND id=?",
-                    (workspace, data["id"]),
-                )
-                self._unindex(workspace, data["id"])
-                if self.db.execute(
-                    "SELECT 1 FROM daymark_refs WHERE workspace=? AND target_id=? LIMIT 1",
-                    (workspace, data["id"]),
-                ).fetchone():
-                    invalid("Reference is missing or has the wrong kind")
-                self._event(workspace, operation_id, action, before, None)
-            else:
-                self._put(data)
-                if before:
-                    self._invalidate_reminders(before, data, operation_id, now)
+            self._actor = actor
+            try:
+                return self._execute(workspace, operation_id, action, payload, expected_version)
+            finally:
+                self._actor = None
+
+    def _execute(self, workspace, operation_id, action, payload, expected_version):
+        digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
+        if replay is not None:
+            return replay
+        now = normalize_now().isoformat()
+        before = None
+        if action == "create":
+            if expected_version != 0:
+                raise DomainError("conflict", "Create requires version zero")
+            raw = dict(payload)
+            for field, default in {
+                "lease_owner": None,
+                "lease_until": None,
+                "lease_token": None,
+                "attempts": 0,
+                "retry_at": None,
+                "delivery_key": None,
+                "reminder_state": "pending",
+                "error": None,
+            }.items():
+                if raw.get(field, default) != default:
+                    invalid("Scheduler state must be restored through snapshot import")
+            if raw.get("workspace", workspace) != workspace or raw.get("version", 1) != 1:
+                invalid("Invalid creation identity or version")
+            raw.update(workspace=workspace, version=1)
+            raw.setdefault("id", uuid.uuid4().hex)
+            if self.db.execute(
+                "SELECT 1 FROM daymark_entities WHERE workspace=? AND id=?",
+                (workspace, raw["id"]),
+            ).fetchone():
+                raise DomainError("conflict", "Entity exists")
+            if raw.get("recurrence"):
+                raw.setdefault("series_id", raw["id"])
+                raw.setdefault("occurrence_key", raw["id"] + ":0")
+        else:
+            if not isinstance(payload.get("id"), str):
+                invalid("Entity ID required")
+            if action == "undo":
+                data = self._undo(workspace, payload, expected_version, operation_id, now)
                 self._validate_entity(data)
-                self._event(workspace, operation_id, action, before, data)
-                if data["recurrence"] and (
-                    action == "skip"
-                    or (
-                        data["status"] == "completed"
-                        and (before is None or before["status"] != "completed")
+                self._record(workspace, operation_id, digest, data)
+                return data
+            before = self.get(workspace, payload["id"])
+            if before["version"] != expected_version:
+                raise DomainError("conflict", "Version mismatch")
+            raw = {**before, "version": before["version"] + 1, "updated_at": now}
+            if action == "update":
+                protected = {
+                    "id",
+                    "workspace",
+                    "kind",
+                    "version",
+                    "created_at",
+                    "series_id",
+                    "occurrence_key",
+                    "lease_owner",
+                    "lease_until",
+                    "delivery_key",
+                    "attempts",
+                    "retry_at",
+                    "reminder_state",
+                    "lease_token",
+                    "error",
+                    "notes",
+                    "claimed_by",
+                    "claim_until",
+                }
+                if any(k in protected and v != before.get(k) for k, v in payload.items()):
+                    invalid(
+                        "Identity, provenance, scheduler, note and claim fields change "
+                        "only through their own actions"
                     )
+                if payload.get("status", before["status"]) != before["status"] and "proposed" in {
+                    payload["status"],
+                    before["status"],
+                }:
+                    invalid("A proposal changes status only through accept or dismiss")
+                raw.update({k: v for k, v in payload.items() if k not in protected})
+                if not {canonical(x) for x in before["source_refs"]}.issubset(
+                    {canonical(x) for x in raw["source_refs"]}
                 ):
-                    self._successor(data, operation_id)
-            self._record(workspace, operation_id, digest, data)
-            return data
+                    invalid("Source references are stable")
+            elif action in {"accept", "dismiss"}:
+                if set(payload) != {"id"}:
+                    invalid("Unexpected action fields")
+                if before["status"] != "proposed":
+                    invalid("Only a proposal can be accepted or dismissed")
+                deciders = self.policy(workspace)["deciders"]
+                if deciders and self._actor not in deciders:
+                    raise DomainError(
+                        "forbidden", "Only a designated decider can accept or dismiss"
+                    )
+                raw["status"] = "open" if action == "accept" else "cancelled"
+            elif action in {"complete", "cancel", "reopen", "archive", "skip", "delete"}:
+                if set(payload) - {"id", "completed_at"}:
+                    invalid("Unexpected action fields")
+                if before["status"] == "proposed" and action in {"complete", "skip", "reopen"}:
+                    invalid("Accept or dismiss a proposal first")
+                if action == "archive":
+                    raw["archived"] = True
+                elif action == "complete":
+                    raw.update(status="completed", completed_at=payload.get("completed_at", now))
+                elif action in {"cancel", "skip"}:
+                    raw.update(status="cancelled", completed_at=None)
+                elif action == "reopen":
+                    raw.update(status="open", completed_at=None, archived=False)
+            elif action == "note":
+                if set(payload) - {"id", "text", "author"}:
+                    invalid("Unexpected note fields")
+                note_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL, canonical([workspace, raw["id"], "note", operation_id])
+                ).hex[:12]
+                raw["notes"] = [
+                    *before["notes"],
+                    {
+                        "id": note_id,
+                        "at": now,
+                        "author": payload.get("author"),
+                        "text": payload.get("text"),
+                    },
+                ]
+            elif action in {"claim", "release"}:
+                self._claim_action(raw, before, action, payload, now)
+            elif action.startswith("reminder."):
+                self._reminder_action(raw, action, payload)
+                if action == "reminder.snooze":
+                    raw["delivery_key"] = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        canonical([workspace, raw["id"], "snooze", operation_id]),
+                    ).hex
+                    raw["attempts"] = 0
+                    raw["error"] = None
+            else:
+                invalid("Unsupported action")
+        data = self._validated(raw)
+        if data["status"] == "completed" and not data["completed_at"]:
+            data["completed_at"] = now
+        elif data["status"] != "completed":
+            data["completed_at"] = None
+        if data["status"] in {"completed", "cancelled"} or data["archived"]:
+            # Finished or shelved work holds no working claim.
+            data.update(claimed_by=None, claim_until=None)
+        if action == "delete":
+            self._cancel_reminders(workspace, data["id"], operation_id, now, detach=True)
+            self.db.execute(
+                "DELETE FROM daymark_entities WHERE workspace=? AND id=?",
+                (workspace, data["id"]),
+            )
+            self._unindex(workspace, data["id"])
+            if self.db.execute(
+                "SELECT 1 FROM daymark_refs WHERE workspace=? AND target_id=? LIMIT 1",
+                (workspace, data["id"]),
+            ).fetchone():
+                invalid("Reference is missing or has the wrong kind")
+            self._event(workspace, operation_id, action, before, None)
+        else:
+            self._put(data)
+            if before:
+                self._invalidate_reminders(before, data, operation_id, now)
+            self._validate_entity(data)
+            self._event(workspace, operation_id, action, before, data)
+            if data["recurrence"] and (
+                action == "skip"
+                or (
+                    data["status"] == "completed"
+                    and (before is None or before["status"] != "completed")
+                )
+            ):
+                self._successor(data, operation_id)
+        self._record(workspace, operation_id, digest, data)
+        return data
 
     def _claim_action(self, raw, before, action, payload, now):
         """Take or give back an expiring working claim; one live holder at a time."""
@@ -877,7 +936,9 @@ class Store:
             self._validate_graph(workspace)
             seen_events = set()
             for event in snapshot.get("events", []):
+                event = {"actor": None, **event} if isinstance(event, dict) else event
                 required = {
+                    "actor",
                     "seq",
                     "workspace",
                     "operation_id",
@@ -894,6 +955,10 @@ class Store:
                     or type(event["seq"]) is not int
                     or event["seq"] < 1
                     or event["seq"] in seen_events
+                    or not (
+                        event["actor"] is None
+                        or (isinstance(event["actor"], str) and 1 <= len(event["actor"]) <= 200)
+                    )
                 ):
                     invalid("Invalid or duplicate event cursor")
                 seen_events.add(event["seq"])
@@ -918,6 +983,7 @@ class Store:
                         event["after_data"],
                         seq=event["seq"],
                         created_at=event["created_at"],
+                        actor=event["actor"],
                     )
             seen_ops = set()
             for operation in snapshot.get("operations", []):

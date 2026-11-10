@@ -94,7 +94,10 @@ def test_workspace_is_resolved_only_from_server_mapping(boundary):
     response = client.post("/v1/operations", headers=auth(), json=operation())
     assert response.status_code == 200
     assert engine.calls == [
-        (("one", "op-1", "create", {"title": "synthetic"}), {"expected_version": 0})
+        (
+            ("one", "op-1", "create", {"title": "synthetic"}),
+            {"expected_version": 0, "actor": "actor\nprivate"},
+        )
     ]
     assert (
         client.get("/v1/entities/x", headers={"Authorization": "Bearer other-token"}).json()[

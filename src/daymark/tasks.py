@@ -148,7 +148,10 @@ class Tasks:
     def __init__(self, engine, workspace="default", *, actor="agent", timezone=None, now=None):
         self.engine = engine
         # The HTTP client is already bound to a workspace by its credential.
-        self._ws = () if type(engine).__name__ == "Client" else (workspace,)
+        remote = type(engine).__name__ == "Client"
+        self._ws = () if remote else (workspace,)
+        # Over HTTP the server records its authenticated principal instead.
+        self._who = {} if remote else {"actor": actor}
         self.actor = actor
         self.timezone = timezone or local_timezone()
         ZoneInfo(self.timezone)
@@ -192,6 +195,7 @@ class Tasks:
                     action,
                     payload,
                     expected_version=current["version"],
+                    **self._who,
                 )
             except Exception as exc:
                 conflict = getattr(exc, "code", None) == "conflict" or (
@@ -300,7 +304,7 @@ class Tasks:
             ]
         payload["id"] = id or self._new_id()
         return self.engine.execute(
-            *self._ws, op or uuid.uuid4().hex, "create", payload, expected_version=0
+            *self._ws, op or uuid.uuid4().hex, "create", payload, expected_version=0, **self._who
         )
 
     def propose(self, title, **fields):

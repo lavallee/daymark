@@ -115,8 +115,9 @@ attempt them:
 - **Capture and interpretation.** Reading mail, messages or repositories and
   deciding what they imply. Daymark receives proposals with source references.
 - **Access control between people.** A workspace is the authorization
-  boundary. Claims, proposals and `next_move` coordinate cooperating actors;
-  they do not stop a hostile one.
+  boundary. Claims and `next_move` coordinate cooperating actors. The decider
+  policy protects one decision, accepting a proposal, and only as firmly as
+  the caller's identity is established.
 - **Delivery.** The reminder outbox decides what should fire and records what
   happened. Sending a message is a sink the application supplies.
 
@@ -125,10 +126,13 @@ attempt them:
 These are known gaps for the shared-substrate role, in rough order of value.
 None is promised.
 
-1. **Actor on every event.** Notes and claims name an actor; other writes do
-   not. A multi-agent system needs to answer "who changed this" from history.
-2. **Enforced decision authority.** Today any writer can `accept`. A substrate
-   under several agents needs a way to say that only certain actors may.
+1. **Stronger decision authority.** Events now record the actor, and a
+   workspace can name who may accept or dismiss. That is enforced for
+   authenticated HTTP callers and advisory for local ones; per-action grants
+   beyond accept and dismiss do not exist.
+2. **Proposal discipline.** Nothing forces an agent to propose; it can create
+   an open task. A policy that makes some actors propose-only is the natural
+   next step.
 3. **A person-ordered Today.** Some people keep an explicit, hand-ordered
    short list that is neither a plan date nor a priority.
 4. **Conditions checked against other systems.** "Ready when the pull request

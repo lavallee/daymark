@@ -138,13 +138,20 @@ def create_router(store: Any) -> APIRouter:
     def execute(body: Operation, request: Request) -> Any:
         actor = identity(request)
         _audit("write_attempt", actor)
+        payload = dict(body.payload)
+        # The authenticated principal, not the request body, says who is acting.
+        if body.action in {"claim", "release"}:
+            payload["owner"] = actor.principal
+        elif body.action == "note":
+            payload["author"] = actor.principal
         return _invoke(
             store.execute,
             actor.workspace,
             body.operation_id,
             body.action,
-            body.payload,
+            payload,
             expected_version=body.expected_version,
+            actor=actor.principal,
         )
 
     @router.get("/entities/{entity_id}", operation_id="daymark_v1_get")
