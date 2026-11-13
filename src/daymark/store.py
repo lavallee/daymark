@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from pydantic import ValidationError
 
+from . import plans
 from .models import (
     DomainError,
     Entity,
@@ -40,7 +41,7 @@ def invalid(message):
 
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
-SCHEMA = "4"
+SCHEMA = "5"
 
 REFS = {
     "assignee_id": {"person", "principal"},
@@ -367,16 +368,92 @@ class Store:
             "INSERT INTO daymark_event_cursors VALUES(?,?,?)", (workspace, seq, cursor.lastrowid)
         )
 
-    def events(self, workspace, after=0, limit=100):
+    def head(self, workspace):
+        """The workspace's latest event cursor; 0 when nothing has happened."""
+        with self._lock:
+            if not self._has_schema("daymark_event_cursors"):
+                return 0
+            return self.db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM daymark_event_cursors WHERE workspace=?",
+                (workspace,),
+            ).fetchone()[0]
+
+    @staticmethod
+    def _touches(project_id, entity_id, before, after):
+        """Whether an event changes what a project's plan shows: the project itself,
+        a task entering, leaving or inside it, or a person or label it can name."""
+        if entity_id == project_id:
+            return True
+        for state in (before, after):
+            if state and (
+                state.get("project_id") == project_id
+                or state.get("kind") in {"person", "principal", "label"}
+            ):
+                return True
+        return False
+
+    def _project_events(self, workspace, project_id, after, limit):
+        """Event rows after a cursor that touch a project, prefiltered in SQL."""
+        needle = '"project_id":' + json.dumps(project_id, ensure_ascii=False)
+        kinds = ['"kind":"person"', '"kind":"principal"', '"kind":"label"']
+        clause = " OR ".join(
+            f"instr(COALESCE(e.{column},''),?)>0"
+            for column in ("before_data", "after_data")
+            for _ in range(4)
+        )
+        args = [needle, *kinds] * 2
+        rows = self.db.execute(
+            "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,"
+            "e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c "
+            f"ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? AND (e.entity_id=? OR {clause}) "
+            "ORDER BY c.seq",
+            (workspace, after, project_id, *args),
+        )
+        found = []
+        for row in rows:
+            before = json.loads(row[5]) if row[5] else None
+            after_data = json.loads(row[6]) if row[6] else None
+            if self._touches(project_id, row[3], before, after_data):
+                found.append(row)
+                if len(found) >= limit:
+                    break
+        return found
+
+    def changes(self, workspace, project_id, after):
+        """Whether anything in a project's plan changed after an event cursor.
+
+        Returns the workspace's head cursor and ``changed``. A cursor ahead of the
+        head (a restored database) reads as changed, so the caller reads again.
+        """
+        if type(after) is not int or after < 0:
+            invalid("Invalid event cursor")
+        if not isinstance(project_id, str) or not project_id:
+            invalid("Project ID required")
+        with self._lock:
+            head = self.head(workspace)
+            if after > head:
+                return {"cursor": head, "changed": True}
+            if not self._has_schema():
+                return {"cursor": head, "changed": False}
+            hit = self._project_events(workspace, project_id, after, 1)
+            return {"cursor": head, "changed": bool(hit)}
+
+    def events(self, workspace, after=0, limit=100, project=None):
+        """An event page after a cursor. ``project`` keeps the events that touch it."""
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 1000:
             invalid("Invalid event cursor or limit")
+        if project is not None and (not isinstance(project, str) or not project):
+            invalid("Invalid project filter")
         with self._lock:
             if not self._has_schema():
                 return []
-            rows = self.db.execute(
-                "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
-                (workspace, after, limit),
-            ).fetchall()
+            if project is not None:
+                rows = self._project_events(workspace, project, after, limit)
+            else:
+                rows = self.db.execute(
+                    "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
+                    (workspace, after, limit),
+                ).fetchall()
             keys = (
                 "seq",
                 "workspace",
@@ -469,6 +546,104 @@ class Store:
             finally:
                 self._actor = None
 
+    def batch(self, workspace, operations, *, atomic=True, actor=None):
+        """Apply up to 100 operations in one transaction, each with its own operation
+        ID and expected version, and replayed by that ID like a single operation.
+
+        ``atomic=True`` writes all or nothing: the first refusal rolls back the batch
+        and every other operation reports ``aborted``. ``atomic=False`` rolls back only
+        the refused operations and commits the rest together. Returns ``committed``
+        and one result per operation, in order. A failure outside the domain rules
+        (for example a database error) rolls back the batch and is raised.
+        """
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
+            invalid("A batch holds 1 to 100 operations")
+        if type(atomic) is not bool:
+            invalid("Atomic must be a boolean")
+        if actor is not None and (not isinstance(actor, str) or not 1 <= len(actor) <= 200):
+            invalid("Actor must be a short name")
+        keys = {"operation_id", "action", "payload", "expected_version"}
+        for operation in operations:
+            if (
+                not isinstance(operation, dict)
+                or set(operation) != keys
+                or not isinstance(operation["payload"], dict)
+                or not isinstance(operation["action"], str)
+            ):
+                invalid("Each operation needs operation_id, action, payload and expected_version")
+        if len({op["operation_id"] for op in operations}) != len(operations):
+            invalid("Operation IDs in a batch must differ")
+
+        class Abort(Exception):
+            pass
+
+        results = []
+        try:
+            with self._transaction():
+                self._actor = actor
+                try:
+                    for operation in operations:
+                        name = "daymark_" + uuid.uuid4().hex
+                        self.db.execute("SAVEPOINT " + name)
+                        try:
+                            result = self._execute(
+                                workspace,
+                                operation["operation_id"],
+                                operation["action"],
+                                operation["payload"],
+                                operation["expected_version"],
+                            )
+                        except DomainError as exc:
+                            self.db.execute("ROLLBACK TO " + name)
+                            self.db.execute("RELEASE " + name)
+                            results.append(
+                                {
+                                    "operation_id": operation["operation_id"],
+                                    "ok": False,
+                                    "error": {
+                                        "code": exc.code,
+                                        "message": str(exc),
+                                        "details": exc.details,
+                                    },
+                                }
+                            )
+                            if atomic:
+                                raise Abort from None
+                            continue
+                        self.db.execute("RELEASE " + name)
+                        results.append(
+                            {
+                                "operation_id": operation["operation_id"],
+                                "ok": True,
+                                "result": result,
+                            }
+                        )
+                finally:
+                    self._actor = None
+        except Abort:
+            aborted = {"code": "aborted", "message": "Rolled back with the batch", "details": []}
+            done = {r["operation_id"]: r for r in results if not r["ok"]}
+            results = [
+                done.get(op["operation_id"])
+                or {"operation_id": op["operation_id"], "ok": False, "error": aborted}
+                for op in operations
+            ]
+            return {"committed": False, "results": results}
+        return {"committed": True, "results": results}
+
+    def plan(self, workspace, project_id, *, now=None):
+        """A project as a plan, read in one transaction with the head event cursor.
+        See views.plan."""
+        from . import views
+
+        return views.plan(self, workspace, project_id, now=now)
+
+    def projects(self, workspace, *, now=None):
+        """Every unarchived project in a workspace with its roll-up. See views.projects."""
+        from . import views
+
+        return views.projects(self, workspace, now=now)
+
     def _execute(self, workspace, operation_id, action, payload, expected_version):
         digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
         if replay is not None:
@@ -503,6 +678,8 @@ class Store:
             if raw.get("recurrence"):
                 raw.setdefault("series_id", raw["id"])
                 raw.setdefault("occurrence_key", raw["id"] + ":0")
+            if raw.get("stage") is not None:
+                self._move_to_stage(raw, None, payload)
         else:
             if not isinstance(payload.get("id"), str):
                 invalid("Entity ID required")
@@ -547,6 +724,8 @@ class Store:
                 }:
                     invalid("A proposal changes status only through accept or dismiss")
                 raw.update({k: v for k, v in payload.items() if k not in protected})
+                if payload.get("stage") is not None:
+                    self._move_to_stage(raw, before, payload)
                 if not {canonical(x) for x in before["source_refs"]}.issubset(
                     {canonical(x) for x in raw["source_refs"]}
                 ):
@@ -592,6 +771,13 @@ class Store:
                 ]
             elif action in {"claim", "release"}:
                 self._claim_action(raw, before, action, payload, now)
+            elif action == "place":
+                keys = set(payload) - {"id"}
+                if len(keys) != 1 or keys - {"after", "before"}:
+                    invalid("Place needs exactly one of after or before")
+                if before["kind"] != "task" or not before["project_id"]:
+                    invalid("Only a task in a project has a place in its order")
+                raw["rank"] = self._place(before, payload, operation_id, now)
             elif action.startswith("reminder."):
                 self._reminder_action(raw, action, payload)
                 if action == "reminder.snooze":
@@ -603,6 +789,8 @@ class Store:
                     raw["error"] = None
             else:
                 invalid("Unsupported action")
+        if action != "delete":
+            self._settle_stage(raw, before, payload)
         data = self._validated(raw)
         if data["status"] == "completed" and not data["completed_at"]:
             data["completed_at"] = now
@@ -628,6 +816,7 @@ class Store:
             self._put(data)
             if before:
                 self._invalidate_reminders(before, data, operation_id, now)
+                self._restage(before, data, operation_id, now)
             self._validate_entity(data)
             self._event(workspace, operation_id, action, before, data)
             if data["recurrence"] and (
@@ -672,6 +861,126 @@ class Store:
             claim_until=(normalize_now(now) + timedelta(seconds=lease)).isoformat(),
         )
 
+    # -- projects: stages and manual order (rules in plans.py)
+
+    def _project(self, workspace, id):
+        if not id:
+            return None
+        row = self.db.execute(
+            "SELECT data FROM daymark_entities WHERE workspace=? AND id=? AND kind='project'",
+            (workspace, id),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _project_tasks(self, workspace, project_id):
+        """Every task in a project, archived included, through the reference index."""
+        rows = self.db.execute(
+            "SELECT e.data FROM daymark_refs r JOIN daymark_entities e ON "
+            "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
+            "r.target_id=? AND r.field='project_id' AND e.kind='task' ORDER BY e.id",
+            (workspace, project_id),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def _move_to_stage(self, raw, before, payload):
+        """An explicit stage sets the task's status to the stage's status."""
+        project = self._project(raw["workspace"], raw.get("project_id"))
+        if project is None:
+            invalid("A stage requires the task to be in a project")
+        stage = next((s for s in plans.stages(project) if s["id"] == raw["stage"]), None)
+        if stage is None:
+            invalid("Unknown stage for this project")
+        if (before or raw).get("status") == "proposed":
+            invalid("Accept or dismiss a proposal first")
+        if "status" in payload and payload["status"] != stage["status"]:
+            invalid("Stage and status disagree")
+        raw["status"] = stage["status"]
+
+    def _settle_stage(self, raw, before, payload):
+        """Keep a task's stored stage consistent with its status and project.
+
+        A task that changes project loses its stage and rank unless the same write
+        sets them; a stored stage that is gone or no longer fits the status is
+        cleared, so the task reads in its status's home stage.
+        """
+        if raw.get("kind") != "task":
+            return
+        if before is not None and before["project_id"] != raw.get("project_id"):
+            if "stage" not in payload:
+                raw["stage"] = None
+            if "rank" not in payload:
+                raw["rank"] = None
+        if not raw.get("stage"):
+            return
+        project = self._project(raw["workspace"], raw.get("project_id"))
+        board = plans.stages(project)
+        stage = next((s for s in board if s["id"] == raw["stage"]), None)
+        status = raw.get("status", "open")
+        if (
+            project is None
+            or stage is None
+            or status == "proposed"
+            or not plans.compatible(stage, status, board)
+        ):
+            raw["stage"] = None
+
+    def _restage(self, before, project, operation_id, now):
+        """After a project's stages change, clear task stages that no longer fit."""
+        if project["kind"] != "project" or plans.stages(before) == plans.stages(project):
+            return
+        board = plans.stages(project)
+        for task in self._project_tasks(project["workspace"], project["id"]):
+            stage = next((s for s in board if s["id"] == task["stage"]), None)
+            if task["stage"] is None or (
+                stage is not None and plans.compatible(stage, task["status"], board)
+            ):
+                continue
+            updated = {**task, "stage": None, "version": task["version"] + 1, "updated_at": now}
+            self._put(updated)
+            self._event(project["workspace"], operation_id, "stage.reset", task, updated)
+
+    def _place(self, task, payload, operation_id, now):
+        """The rank that puts ``task`` directly after or before a neighbour.
+
+        ``after: None`` is first and ``before: None`` is last. The first placement
+        in a project with unranked tasks ranks them, in their current order.
+        """
+        workspace = task["workspace"]
+        others = sorted(
+            (
+                x
+                for x in self._project_tasks(workspace, task["project_id"])
+                if x["id"] != task["id"] and not x["archived"]
+            ),
+            key=plans.order_key,
+        )
+        last = max((x["rank"] for x in others if x["rank"]), default=None)
+        for index, item in enumerate(others):
+            if item["rank"] is None:
+                last = plans.rank_between(last, None)
+                updated = {
+                    **item,
+                    "rank": last,
+                    "version": item["version"] + 1,
+                    "updated_at": now,
+                }
+                self._put(updated)
+                self._event(workspace, operation_id, "rank.assign", item, updated)
+                others[index] = updated
+        ranks, ids = [x["rank"] for x in others], [x["id"] for x in others]
+        key = "after" if "after" in payload else "before"
+        ref = payload[key]
+        if ref is None:
+            if key == "after":
+                return plans.rank_between(None, ranks[0] if ranks else None)
+            return plans.rank_between(ranks[-1] if ranks else None, None)
+        if not isinstance(ref, str) or ref not in ids:
+            invalid("The neighbour must be another task in the same project")
+        i = ids.index(ref)
+        if key == "after":
+            return plans.rank_between(ranks[i], ranks[i + 1] if i + 1 < len(ranks) else None)
+        return plans.rank_between(ranks[i - 1] if i else None, ranks[i])
+
     def _undo(self, workspace, payload, expected_version, operation_id, now):
         if set(payload) != {"id"}:
             invalid("Undo requires entity ID")
@@ -699,6 +1008,8 @@ class Store:
             )
         if restored["status"] in {"completed", "cancelled"} or restored["archived"]:
             restored.update(claimed_by=None, claim_until=None)
+        # A stage the project has since removed falls back to the status's home stage.
+        self._settle_stage(restored, None, {})
         if restored["kind"] == "reminder":
             restored.update(lease_owner=None, lease_until=None, lease_token=None)
             if restored["reminder_state"] == "leased":
@@ -706,6 +1017,7 @@ class Store:
         self._put(restored)
         if current:
             self._invalidate_reminders(current, restored, operation_id, now)
+            self._restage(current, restored, operation_id, now)
         self._event(workspace, operation_id, "undo", current, restored)
         return restored
 
@@ -782,6 +1094,8 @@ class Store:
             "waiting_on": None,
             "claimed_by": None,
             "claim_until": None,
+            # A new round starts in its project's first open stage.
+            "stage": None,
         }
         field = "planned" if data["planned"] else "deadline" if data["deadline"] else "planned"
         raw[field] = following.model_dump(mode="json")
@@ -1044,6 +1358,10 @@ class Store:
             "next_move",
             "focus",
             "scope",
+            "stage",
+            "rank",
+            "milestone",
+            "managed_by",
             "waiting_on",
             "claimed_by",
             "estimate_minutes",

@@ -277,6 +277,22 @@ class Note(Model):
         return aware(value)
 
 
+COLORS = (
+    "black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange",
+    "green", "light-green", "light-red", "red", "white",
+)  # fmt: skip
+SLUG = r"^[a-z0-9][a-z0-9_-]*$"
+
+
+class Stage(Model):
+    """One column of a project's board. ``status`` is the lifecycle status a task takes there."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=SLUG)
+    label: str = Field(min_length=1, max_length=200)
+    status: Literal["open", "waiting", "completed", "cancelled"]
+    color: Literal[COLORS] | None = None  # type: ignore[valid-type]
+
+
 class Entity(Model):
     id: str = Field(min_length=1, max_length=128)
     workspace: str = Field(min_length=1, max_length=128)
@@ -325,6 +341,22 @@ class Entity(Model):
     scope: str | None = Field(
         default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$"
     )
+    # A project's workflow, in board order. Empty means the defaults derived from
+    # status (see plans.DEFAULT_STAGES). Projects only.
+    stages: list[Stage] = Field(default_factory=list, max_length=30)
+    # Where a task sits on its project's board. Unset means the project's first
+    # stage for the task's status. Lifecycle status stays the truth for readiness.
+    stage: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG)
+    # A task's place in its project's manual order: a fractional-index key, compared
+    # as plain text. Unset sorts after every ranked task, oldest first.
+    rank: str | None = Field(
+        default=None, min_length=1, max_length=1000, pattern=r"^[0-9A-Za-z]*[1-9A-Za-z]$"
+    )
+    # A marker on a task, dated by its own temporal fields.
+    milestone: bool = False
+    # The system that owns and rewrites this project (for example "rev"). Tools that
+    # edit plans treat such a project as read-only. Daymark itself still accepts writes.
+    managed_by: str | None = Field(default=None, min_length=1, max_length=100, pattern=SLUG)
     # An expiring working claim. It is advisory coordination, not authorization.
     claimed_by: str | None = Field(default=None, min_length=1, max_length=200)
     claim_until: datetime | None = None
@@ -396,6 +428,17 @@ class Entity(Model):
             raise ValueError("claimed_by and claim_until are set together")
         if self.kind == "filter" and self.filter is None:
             raise ValueError("saved filter requires filter AST")
+        if self.kind != "project" and (self.stages or self.managed_by):
+            raise ValueError("stages and managed_by belong to projects")
+        if self.kind != "task" and (self.stage or self.rank or self.milestone):
+            raise ValueError("stage, rank and milestone belong to tasks")
+        if self.stage and not self.project_id:
+            raise ValueError("a stage requires a project")
+        if self.stages:
+            if len({s.id for s in self.stages}) != len(self.stages):
+                raise ValueError("stage ids must be unique")
+            if not {"open", "completed"} <= {s.status for s in self.stages}:
+                raise ValueError("stages need at least one open and one completed stage")
         return self
 
 

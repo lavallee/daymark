@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from . import plans
 from .models import DomainError, Temporal, normalize_now
 
 LIVE = ("proposed", "open", "waiting")
@@ -265,3 +266,134 @@ def summary(store, workspace, *, now=None, scope=None):
         "waiting": len(view["waiting"]),
         "proposed": len(view["proposed"]),
     }
+
+
+def _project_rollup(board, cards, proposed, off_board):
+    by_stage = {stage["id"]: 0 for stage in board}
+    for card in cards:
+        by_stage[card["plan"]["stage"]] += 1
+    counted = [c for c in cards if c["status"] != "cancelled"]
+    done = sum(1 for c in counted if c["status"] == "completed")
+    starts = [c["plan"]["start"] for c in cards if c["plan"]["start"]]
+    ends = [c["plan"]["end"] for c in cards if c["plan"]["end"]]
+    return {
+        "stages": by_stage,
+        "total": len(cards),
+        "done": done,
+        "percent_done": (100 * done) // len(counted) if counted else 0,
+        "earliest_start": min(starts, default=None),
+        "latest_end": max(ends, default=None),
+        "overdue": sum(1 for c in cards if c["plan"]["overdue"]),
+        "milestones": sum(1 for c in cards if c["milestone"]),
+        "proposed": len(proposed),
+        "off_board": off_board,
+    }
+
+
+def _plan(store, workspace, project_id, now):
+    project = store._project(workspace, project_id) if isinstance(project_id, str) else None
+    if project is None:
+        raise DomainError("not_found", "Project not found")
+    board = plans.stages(project)
+    tasks = sorted(
+        (t for t in store._project_tasks(workspace, project_id) if not t["archived"]),
+        key=plans.order_key,
+    )
+    statuses = _statuses(store, workspace, [ref for t in tasks for ref in t["depends_on"]])
+    cards, proposed, off_board = [], [], 0
+    for task in tasks:
+        if task["status"] == "proposed":
+            proposed.append(task)
+            continue
+        stage = plans.resolve_stage(task, board)
+        if stage is None:
+            off_board += 1  # Cancelled, on a board with no cancelled stage.
+            continue
+        live = task["status"] in {"open", "waiting"}
+        overdue = bool(live and task["deadline"] and _is_past(task["deadline"], now))
+        cards.append(
+            {
+                **task,
+                "plan": {
+                    "stage": stage["id"],
+                    **plans.plan_dates(task),
+                    "done": task["status"] == "completed",
+                    "overdue": overdue,
+                    "blocked_by": [r for r in task["depends_on"] if statuses.get(r) not in DONE],
+                },
+            }
+        )
+    inside = {t["id"] for t in tasks}
+    edges = [
+        {"from": t["id"], "to": ref} for t in tasks for ref in t["depends_on"] if ref in inside
+    ]
+    external = []
+    for ref in sorted({r for t in tasks for r in t["depends_on"] if r not in inside}):
+        other = store.get(workspace, ref)
+        external.append(
+            {
+                "id": ref,
+                "title": other["title"],
+                "project_id": other["project_id"],
+                "status": statuses.get(ref),
+                "dependents": [t["id"] for t in tasks if ref in t["depends_on"]],
+            }
+        )
+    people = [
+        {"id": p["id"], "kind": p["kind"], "title": p["title"]}
+        for kind in ("person", "principal")
+        for p in store._rows(workspace, kind=kind)
+    ]
+    labels = [{"id": x["id"], "title": x["title"]} for x in store._rows(workspace, kind="label")]
+    return {
+        "project": project,
+        "stages": board,
+        "default_stages": not project["stages"],
+        "tasks": cards,
+        "proposed": proposed,
+        "dependencies": edges,
+        "external_dependencies": external,
+        "people": people,
+        "labels": labels,
+        "rollup": _project_rollup(board, cards, proposed, off_board),
+    }
+
+
+def plan(store, workspace, project_id, *, now=None):
+    """A project as a plan, read in one transaction.
+
+    Its stages (the defaults when it defines none), its tasks in manual order,
+    each with ``plan``: the resolved stage, start, end and deadline as dates,
+    done, overdue and open blockers. Proposed tasks are listed apart: they are not
+    work yet. A cancelled task appears only when the board has a cancelled stage.
+    Dependencies are restricted to the project; ``external_dependencies`` notes
+    the ones that reach outside it. ``people`` and ``labels`` are the workspace's,
+    as choices. ``cursor`` is the head event cursor at the moment of the read, so
+    a reader can follow ``changes`` from it with no gap.
+    """
+    now = normalize_now(now)
+    with store._transaction(write=False):
+        result = _plan(store, workspace, project_id, now)
+        result["cursor"] = store.head(workspace)
+    return result
+
+
+def projects(store, workspace, *, now=None):
+    """Every unarchived project with its title, stages and roll-up."""
+    now = normalize_now(now)
+    with store._transaction(write=False):
+        out = []
+        for project in store._rows(workspace, kind="project"):
+            view = _plan(store, workspace, project["id"], now)
+            out.append(
+                {
+                    "id": project["id"],
+                    "title": project["title"],
+                    "description": project["description"],
+                    "status": project["status"],
+                    "managed_by": project["managed_by"],
+                    "stages": view["stages"],
+                    "rollup": view["rollup"],
+                }
+            )
+        return {"projects": out, "cursor": store.head(workspace)}
