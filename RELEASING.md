@@ -25,10 +25,13 @@ This checklist covers a source release of `daymark-core` (import: `daymark`). Pa
 4. Replace the unreleased changelog with a dated release entry. Update the landing page version and status. Build and inspect both distributions:
 
    ```sh
+   version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
    uv build
-   python -m zipfile -l dist/daymark_core-0.1.0-py3-none-any.whl
-   tar -tzf dist/daymark_core-0.1.0.tar.gz
+   python -m zipfile -l "dist/daymark_core-$version-py3-none-any.whl"
+   tar -tzf "dist/daymark_core-$version.tar.gz"
    ```
+
+   The wheel also installs a second console script, `toucan-source-daymark`; check that it runs from the core-only install (`toucan-source-daymark list` with `DAYMARK_DB` pointing at a temporary database).
 
    Verify the MIT license is included. Verify no private deployment report, database, export, local path, or credential appears in either archive. Inspect archive contents as well as filenames.
 5. Install the wheel into an empty environment outside this checkout and run the README quickstart. Check that importing `daymark` works without FastAPI, HTTPX, or Uvicorn. Repeat with the `service` extra for CLI and service smoke checks. Build a wheel from the sdist too: a checkout can hide missing source files.
@@ -41,10 +44,10 @@ CI must pass across its supported Python matrix. A local pass on one interpreter
 The release owner approves the tested candidate and commits the intended files. Confirm `git status --short` is clean and the tag points to that commit.
 
 ```sh
-git tag -a v0.1.0 -m 'v0.1.0'
+git tag -a "v$version" -m "v$version"
 git push origin main
-git push origin v0.1.0
-gh release create v0.1.0 --repo lavallee/daymark --title 'Daymark 0.1.0' --notes-file /tmp/daymark-release-notes.md
+git push origin "v$version"
+gh release create "v$version" --repo lavallee/daymark --title "Daymark $version" --notes-file /tmp/daymark-release-notes.md
 ```
 
 Release notes should state verified capabilities and known limits. Use a comparison link for subsequent releases. Confirm the remote commit and tag, release page, and CI results after publishing.
