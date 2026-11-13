@@ -235,6 +235,31 @@ def parse_config(*, preset=None, stages=None, types=None, fields=None) -> dict:
     return config
 
 
+def _number(key, text):
+    """A custom number from text: a whole number kept exact within ±(2**53 - 1), else
+    a finite decimal. Anything else is refused, never rounded or guessed."""
+    from .models import MAX_EXACT, plain_number
+
+    hint = f"Field {key} takes {plans.FIELD_HINTS['number']}"
+    if re.fullmatch(r"[+-]?\d+", text):
+        value = int(text)
+    else:
+        try:
+            value = float(text)
+        except ValueError:
+            raise DomainError("invalid", hint) from None
+        if (
+            value.is_integer()
+            and abs(value) <= MAX_EXACT
+            and "." not in text
+            and "e" not in text.lower()
+        ):
+            value = int(value)
+    if not plain_number(value):
+        raise DomainError("invalid", hint)
+    return value
+
+
 def parse_measure(spec):
     if isinstance(spec, dict) or spec is None:
         return spec
@@ -389,11 +414,7 @@ class Tasks:
             if text == "":
                 out[key] = None
             elif kind == "number":
-                try:
-                    number = float(text)
-                except ValueError:
-                    raise DomainError("invalid", f"Field {key} takes a number") from None
-                out[key] = int(number) if number.is_integer() else number
+                out[key] = _number(key, text)
             elif kind == "bool":
                 lowered = text.lower()
                 if lowered not in {"yes", "no", "true", "false"}:
@@ -547,9 +568,6 @@ class Tasks:
                 merged = {**current, **out}
                 index = (current["recurrence"] or {}).get("occurrence_index", 0)
                 out["recurrence"] = self._recurrence(every, merged, after_completion, index)
-            if "values" in out:  # Values merge: name only what changes; None clears one.
-                merged = {**current.get("values", {}), **out["values"]}
-                out["values"] = {k: v for k, v in merged.items() if v is not None}
             return out
 
         return self._act(id, "update", op=op, build=build)

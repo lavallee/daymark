@@ -294,11 +294,25 @@ class Stage(Model):
     color: Literal[COLORS] | None = None  # type: ignore[valid-type]
 
 
+# Custom number values: integers are kept exact within this bound (the largest
+# integer a double, and so JSON readers in most languages, hold exactly); other
+# numbers must be finite floats.
+MAX_EXACT = 2**53 - 1
+
+
+def plain_number(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return -MAX_EXACT <= value <= MAX_EXACT
+    return isinstance(value, float) and math.isfinite(value)
+
+
 def _plain_value(value) -> bool:
     if isinstance(value, bool):
         return True
     if isinstance(value, (int, float)):
-        return math.isfinite(value)
+        return plain_number(value)
     if isinstance(value, str):
         return len(value) <= 10_000
     if isinstance(value, list):

@@ -25,6 +25,7 @@ from .models import (
     Temporal,
     next_occurrence,
     normalize_now,
+    plain_number,
     retry_delay,
 )
 
@@ -570,7 +571,13 @@ class Store:
             or expected_version < 0
         ):
             invalid("Workspace, operation ID and expected version required")
-        digest = hashlib.sha256(canonical([action, payload, expected_version]).encode()).hexdigest()
+        try:
+            request = canonical([action, payload, expected_version])
+        except (TypeError, ValueError):
+            invalid(
+                "A request is plain JSON: text, finite numbers, true, false, null, lists, objects"
+            )
+        digest = hashlib.sha256(request.encode()).hexdigest()
         row = self.db.execute(
             "SELECT payload_hash,result FROM daymark_operations WHERE workspace=? AND operation_id=?",
             (workspace, operation_id),
@@ -864,6 +871,10 @@ class Store:
                 }:
                     invalid("A proposal changes status only through accept or dismiss")
                 raw.update({k: v for k, v in payload.items() if k not in protected})
+                if isinstance(payload.get("values"), dict):
+                    # Values merge per field: name only what changes; null clears one.
+                    merged = {**before.get("values", {}), **payload["values"]}
+                    raw["values"] = {k: v for k, v in merged.items() if v is not None}
                 if payload.get("stage") is not None:
                     self._move_to_stage(raw, before, payload)
                 if not {canonical(x) for x in before["source_refs"]}.issubset(
@@ -1128,7 +1139,7 @@ class Store:
         kind, name = field["type"], field["id"]
         ok = {
             "text": isinstance(value, str),
-            "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+            "number": plain_number(value),
             "bool": isinstance(value, bool),
             "option": isinstance(value, str) and value in {o["id"] for o in field["options"]},
             "options": isinstance(value, list)

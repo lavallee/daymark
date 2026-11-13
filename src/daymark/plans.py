@@ -123,7 +123,7 @@ def plan_dates(task: dict) -> dict:
 
 FIELD_HINTS = {
     "text": "text",
-    "number": "a number",
+    "number": "a finite number (whole numbers exact up to 9007199254740991)",
     "bool": "true or false",
     "option": "one of its options",
     "options": "a list of its options, each once",
