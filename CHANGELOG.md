@@ -4,20 +4,27 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+### Upgrading: read this first
+
+- **The schema upgrade is one-way.** The first time 0.4.0 opens a database it rewrites every stored entity in place (schema 5). Daymark 0.3.0 cannot open the file afterwards: it fails cleanly (`invalid`, unknown fields), and any long-running 0.3.0 process using the file stops working at that moment. Back up first with `daymark backup --file BEFORE.sqlite3`; rolling back means restoring that backup. Snapshots exported afterwards are refused by 0.3.0 too.
+- Versions, events and receipts are untouched, and entities that use none of the new fields read, sort and render as before.
+- A database written by a newer Daymark is now refused (`conflict`) instead of being rewritten. Reads (`plan`, `projects`, `changes`, `goals`, `tree`, `export`) on a schema a caller has not upgraded are refused with `conflict` rather than upgrading as a side effect; `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict` instead of a database error.
+
 ### Added
 
-- Managed projects. A project can define its stages (`daymark project TITLE --stages SPEC`, `daymark stages PROJECT SPEC`); one that defines none reads as To do, Waiting and Done. A task has a `stage`, kept consistent with its status in both directions, a manual-order `rank`, and a `milestone` flag.
-- `daymark move ID [--stage S] [--after X|--before X|--first|--last]`, `--stage` and `--milestone/--no-milestone` on `add` and `edit`, and the `place` engine action. `--assignee` also accepts a person's exact name.
-- `daymark plan PROJECT` and `daymark projects`; `Store.plan` and `Store.projects` read a project in one transaction with roll-ups and the head event cursor.
-- The project change feed: `Store.head`, `Store.changes`, `events(project=)`, `daymark changes PROJECT --after N`, `daymark events --head` and `--project`.
-- `Store.batch` and `POST /v1/operations/batch`: several operations in one transaction, all-or-nothing or keeping the successes, each with its own operation ID and expected version.
-- HTTP `GET /v1/projects`, `/v1/projects/{id}/plan`, `/v1/projects/{id}/changes`, `/v1/events/head`, and `?project=` on `/v1/events`, with matching client methods. MCP gains the `projects` and `plan` views and a `move` action.
-- `managed_by` on a project marks one another system owns; plan editors treat it as read-only.
+- Projects, each piece optional: stages kept consistent with status in both directions; a manual order (`daymark move ID --after X`, the `place` action); item types and hierarchy roll-ups (`--type`, `--parent`, `daymark tree`); milestones as targets (`--is-milestone`, `--milestone M`) with roll-ups; typed custom fields per project (`--set FIELD=VALUE`, filters on `values.ID`, totals in roll-ups); project facts (lead, dates, goal) and health counts; dependency date conflicts and structural warnings as facts.
+- `daymark project add|set|stages|types|fields|config|presets`, five presets (simple, kanban, milestones, epics, event) and a configuration document that applies in one write.
+- Goals: a target date, an optional hand-kept measure, and `daymark goal add|set|show`, `daymark goals`, `Store.goal_plan`, `Store.goals`, `GET /v1/goals` and `/v1/goals/{id}/plan`.
+- `daymark plan PROJECT [--by milestone|type|parent|assignee|FIELD] [--tree]` and `daymark projects`; `Store.plan`, `Store.projects` and `Store.tree` read in one transaction with the head event cursor; `GET /v1/projects`, `/v1/projects/{id}/plan`, `/v1/tree/{id}`.
+- The project change feed: `Store.head`, `Store.changes`, `events(project=)`, `daymark changes PROJECT --after N`, `daymark events --head` and `--project`, `GET /v1/events/head`, `/v1/projects/{id}/changes` and `?project=` on `/v1/events`.
+- `Store.batch` and `POST /v1/operations/batch`: several operations in one transaction, all-or-nothing or keeping the successes, with an optional request ID that makes the batch idempotent as a unit.
+- `daymark.plans.schedule` and `Tasks.schedule`: write a plan's start, end and deadline back to Daymark's fields, keeping precision and never moving a deadline as a side effect.
+- `managed_by` on a project marks one another system owns.
+- MCP: `projects`, `plan` (with `by`), `goals` and `goal` views; `type`, `milestone`, `is_milestone` and `values` on add and edit; a `move` action.
 
 ### Changed
 
-- The stored schema upgrades in place on first open (schema 5): every entity gains `stages`, `stage`, `rank`, `milestone` and `managed_by` with their defaults. Versions, events and receipts are untouched, and entities that use none of the new fields read, rank and render as before. Snapshots exported afterwards contain fields that 0.3.0 does not accept; back up before upgrading.
-- `--assignee` with a value that is neither a person's ID nor a person's name is refused with `invalid` and the fix, before the write (previously the engine refused the missing reference).
+- `--assignee` with a value that is neither a person's ID nor a person's name is refused with `invalid` and the fix, before the write.
 
 ## [0.3.0] - 2026-11-10
 

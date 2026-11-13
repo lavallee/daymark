@@ -72,32 +72,65 @@ Read the [agent guide](docs/agents.md) for the full surface, and
 [work and life](docs/work-and-life.md) for how Daymark relates to code-centred
 trackers such as Beads and what it does differently.
 
-## Managing a project
+## Projects: as plain or as structured as the work needs
 
-A project can be run as a board. Give it stages, or let it read as To do,
-Waiting and Done; put tasks in it in your own order; mark milestones.
+A project starts as a list of tasks on a board of To do, Waiting and Done. Add
+structure only when the work asks for it: your own stages, item types such as
+epics, milestones that work counts toward, a goal it serves, and fields of your
+own (points, cost, risk). None of it is required, and nothing about a project
+forces a method on it.
+
+Moving house is a few phases and one date that matters:
 
 ```console
-$ daymark project "Website relaunch" --id site --stages "todo:To do,doing:Doing,done:Done:completed:green"
-$ daymark add "Draft the sitemap" --project site --stage doing --plan 2030-04-10 --target 2030-04-20
-$ daymark add "Launch" --project site --milestone --due 2030-05-10
-$ daymark move dm-k3f9 --first
-$ daymark plan site
-site  Website relaunch  [0/2 done (0%), 2030-04-10 to 2030-05-10, 1 milestone]
-TO DO (1)  [todo: open]
-  dm-k3f9  Launch  [due 2030-05-10; milestone]  ?..2030-05-10
-DOING (1)  [doing: open]
-  dm-y2yj  Draft the sitemap  [plan 2030-04-10]  2030-04-10..2030-04-20
-DONE (0)  [done: completed]
-cursor 5
+$ daymark project add "Move house" --id move --preset event --target 2030-06-28
+$ daymark add "Moving day" --project move --id day --is-milestone --due 2030-06-28
+$ daymark add "Book the van" --project move --milestone day --stage book --set cost=180 --due 2030-06-01
+$ daymark add "Pack the kitchen" --project move --milestone day --stage prepare --plan 2030-06-20
+$ daymark plan move
+move  Move house  [0/3 done (0%), 2030-06-20 to 2030-06-28, 1 milestone, cost 180]
+end 2030-06-28
+PLAN (1)  [plan: open]
+  day  Moving day  [due 2030-06-28; milestone]  ?..2030-06-28
+BOOK (1)  [book: open]
+  van  Book the van  [due 2030-06-01]  ?..2030-06-01  for day  cost=180
+PREPARE (1)  [prepare: open]
+  pack  Pack the kitchen  [plan 2030-06-20]  2030-06-20..?  for day
+...
+```
+
+A software release has epics, points and a beta:
+
+```console
+$ daymark project add "Release 2.0" --id rel --preset epics
+$ daymark add "Beta" --project rel --id beta --is-milestone --due 2030-05-01
+$ daymark add "Accounts" --project rel --id acc --type epic
+$ daymark add "Sign-in" --project rel --type story --parent acc --milestone beta --set points=3
+$ daymark add "Fix crash on login" --project rel --type bug --parent acc --milestone beta --set points=2
+$ daymark plan rel --by milestone
+rel  Release 2.0  [0/4 done (0%), ? to 2030-05-01, 1 milestone, points 5]
+MILESTONE beta Beta (2)  [2030-05-01; 0/2 done]
+  signin  Sign-in  story  in acc  points=3
+  crash  Fix crash on login  bug  in acc  points=2
+NO MILESTONE (1)
+  acc  Accounts  epic
 ```
 
 A stage carries a lifecycle status, so moving a card to Done completes the task,
-and `daymark done` moves the card. The plan reads start as the planned day (else
-the earliest start) and end as the target (else the deadline); dragging a plan
-never moves a deadline. `daymark plan --json`, `GET /v1/projects/{id}/plan` and
-`Store.plan` give the same view with roll-ups and an event cursor, and
-`daymark changes PROJECT --after N` says whether anything changed since.
+and `daymark done` moves the card. `daymark move ID --after X` sets the order.
+The plan reads start as the planned day (else the earliest start) and end as the
+target (else the deadline); moving a plan never moves a deadline. Roll-ups,
+health (overdue, blocked, unowned, past a milestone, date conflicts) and warnings
+are facts, never a score. `daymark project presets` lists the starting
+configurations; `daymark project config ID` prints a project's as JSON, and
+`--apply FILE` reshapes it in one step.
+
+For an application that shows and edits a project, `daymark plan --json`,
+`GET /v1/projects/{id}/plan` and `Store.plan` give the whole plan with an event
+cursor in one read; `Store.changes` (`GET /v1/projects/{id}/changes`) says
+cheaply whether anything changed since; `Store.batch` writes several changes in
+one transaction; and `daymark.plans.schedule` turns a plan's dates back into
+Daymark's fields.
 
 ## What it models
 

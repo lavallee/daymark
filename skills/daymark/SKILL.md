@@ -29,11 +29,14 @@ When capturing:
 - For anything that repeats, use `--every`; add `--after-completion` when the
   interval counts from when it was last done.
 
-For a project managed as a board: `daymark plan PROJECT` shows it by stage, in
-its order. `daymark move ID --stage S [--after X]` moves a card; a stage sets the
-task's status, and `done`, `cancel` and `reopen` move the card too. Add work with
-`--project P [--stage S] [--milestone]`; `--assignee` takes a person's name. A
-project with `managed by` set belongs to another system: leave it alone.
+For a project: `daymark plan PROJECT` shows it by stage, in its order
+(`--by milestone|type|parent|assignee|FIELD`, `--tree`). `daymark move ID --stage S
+[--after X]` moves a card; a stage sets the task's status, and `done`, `cancel`
+and `reopen` move the card too. Add work with `--project P` and, only where the
+project already uses them, `--stage`, `--type`, `--parent`, `--milestone M` and
+`--set FIELD=VALUE`. Never add stages, types, fields or milestones the person did
+not ask for. A project with `managed by` set belongs to another system: leave it
+alone.
 
 Every command works in one workspace (`--workspace NAME`); workspaces never
 mix, and `daymark prime` says which one you are in. Inside a workspace,

@@ -99,50 +99,80 @@ the date it resolved to, so `show` can report what was actually said.
 
 ## Projects
 
-A project is a board: an ordered list of stages, each tied to a lifecycle
-status. Tasks join it with `--project`.
+A project can be as plain or as structured as the work needs. A bare project is
+a list of tasks on To do, Waiting and Done, in an order the person sets. Stages,
+item types, milestones, a goal and custom fields are each optional and
+independent. **Do not add stages, types, fields or milestones the person did not
+ask for.** Read what a project already has (`daymark plan P`, `daymark project
+config P`) and work inside it.
+
+### Seeing a project
+
+| Command | Answers |
+| --- | --- |
+| `daymark projects` | Every project: done, overdue, blocked, date span, milestones, field totals. |
+| `daymark plan P` | The board: each stage with its tasks in order, dates, owners, types, values, milestone and parent; then outside blockers, date conflicts and warnings. |
+| `daymark plan P --by milestone\|type\|parent\|assignee\|FIELD` | The same tasks grouped another way. |
+| `daymark plan P --tree` / `daymark tree ID [--depth N]` | The hierarchy: epics and what is under them. |
+| `daymark goals` / `daymark goal show G` | Goals with progress across their projects and tasks, and what is at risk. |
+| `daymark changes P --after N` | Whether anything in the project changed after an event cursor (`plan --json` gives it). |
+
+### Working in a project
 
 ```sh
-daymark project "Website relaunch" --id site \
-  --stages "todo:To do:open:grey,doing:Doing:open:blue,done:Done:completed:green"
-daymark add "Ada" --kind person --id ada
-daymark add "Draft the sitemap" --project site --stage doing --assignee Ada --plan +1w
-daymark add "Launch" --project site --milestone --due 2030-05-10
+daymark add "Draft the sitemap" --project site --stage doing --assignee Ada
 daymark move dm-k3f9 --stage done --after dm-y2yj
-daymark plan site
+daymark edit dm-k3f9 --type bug --milestone beta --set points=3 --set risk=high
 ```
+
+- **Stages and status move together.** Moving a task to a stage sets its status
+  to that stage's status, as `done`, `cancel` or `reopen` would; those verbs move
+  the card too. A waiting task stays in an open stage when there is no waiting
+  stage; a cancelled task leaves the board unless there is a cancelled stage; a
+  proposal is on no board until accepted. Readiness never looks at the stage.
+- **Order** is the project's own: `move --after X`, `--before X`, `--first`,
+  `--last`. New tasks go last. One move writes one task.
+- **Types and parents.** `--type` takes one of the project's types; `--parent`
+  nests work under an epic. A parent with open children is not ready. The plan
+  rolls up each parent: counts, percent done, effort, span and field totals.
+- **Milestones.** A milestone is a task marked `--is-milestone`, dated by its own
+  dates. `--milestone M` says a task counts toward it (same project only). The plan
+  reports each milestone's progress, the items that end after its date, and when
+  all its items are done. It is reached only when someone completes it.
+- **Custom fields.** `--set FIELD=VALUE` (repeatable; `FIELD=` clears) with the
+  fields the project declares: numbers, yes/no, an option, comma-separated options,
+  a date, a URL, text or a person's name. An unknown field or a wrong type is
+  refused with the declared list. If a field is later removed, its values are
+  kept and the plan lists them under warnings.
+- **Dates read as a plan:** start is `--plan`, else `--start`; end is `--target`,
+  else `--due`. Moving a plan never moves a deadline. A task that starts before
+  something it depends on ends is listed as a date conflict, not moved.
+- **`--assignee`** takes a person's ID or exact name. An unknown name is refused;
+  add the person first (`daymark add "Name" --kind person`).
+
+### Shaping a project (only when asked)
 
 | Command | Effect |
 | --- | --- |
-| `project "Title" [--stages SPEC] [--managed-by SYSTEM]` | Create a project. Without stages it reads as To do, Waiting and Done. |
-| `stages PROJECT SPEC` | Replace the stages; `""` restores the defaults. Tasks in a stage that is gone move to their status's first stage; no status changes. |
-| `move ID [--stage S] [--after X \| --before X \| --first \| --last]` | Put a task in a stage, at a place in the project's order, or both, in one write. |
-| `add`/`edit ... --stage S --milestone` | The same at capture; `--no-milestone` unmarks. |
-| `changes PROJECT --after N` | Whether anything in the project changed after an event cursor (`plan --json` gives the cursor). |
+| `project add "Title" [--preset P] [--lead WHO] [--start D] [--target D] [--goal G]` | Create a project; bare unless given a preset or parts. |
+| `project presets` | The starting configurations: simple, kanban, milestones, epics, event. A preset writes stages, types and fields once; the project does not remember it. |
+| `project set P [--title T] [--lead WHO] [--target D] ...` | Change its facts. |
+| `project stages P SPEC` / `types P SPEC` / `fields P SPEC` | Replace one part. `""` removes types or fields, or restores the default stages. |
+| `project config P [--apply FILE] [--preset NAME]` | Print the configuration as JSON, or replace parts of it from a file in one write. Copy a configuration between projects this way. |
+| `goal add "Title" [--target D] [--measure Label:target[:current[:unit]]]` | A goal; link projects with `project set P --goal G` and tasks with `--goal G`. |
 
-**Stages and status move together.** Moving a task to a stage sets its status to
-that stage's status, as `done`, `cancel` or `reopen` would. Completing,
-cancelling or reopening a task by the usual verbs moves it to the first stage
-for its new status. A waiting task stays in an open stage when the board has no
-waiting stage. A cancelled task leaves the board unless there is a cancelled
-stage. A proposal is on no board: `plan` lists it apart until a person accepts it.
-Readiness never looks at the stage, only at the status.
-
-**Stage specs** are comma-separated `id:label:status:color`. Status is `open`,
-`waiting`, `completed` or `cancelled` (default open), and a set needs one open and
-one completed stage. Colours are black, grey, light-violet, violet, blue,
+Specs: stages `id:label:status:color,...`; types `id:label[:color][:container]`;
+fields `id:label:type[:a|b|c or unit]`, type one of text, number, option, options,
+date, bool, person, url. Colours are black, grey, light-violet, violet, blue,
 light-blue, yellow, orange, green, light-green, light-red, red or white.
 
-**Order** is the project's own: `move --after`, `--before`, `--first`, `--last`.
-New tasks go last. **Dates** read as a plan: start is `--plan`, else `--start`;
-end is `--target`, else `--due`. Moving a plan never moves a deadline.
+**Time boxes.** There is no sprint entity. When a person wants iterations, use a
+milestone per iteration (dated, work counts toward it) or an option field
+(`iteration:Iteration:option:i1|i2|i3`). Do not invent another mechanism.
 
-**`--assignee`** takes a person's ID or exact name. An unknown name is refused;
-add the person first (`daymark add "Name" --kind person`).
-
-**Managed projects.** `--managed-by SYSTEM` marks a project another system
-rewrites. Daymark still accepts writes, but applications that edit
-plans should treat it as read-only. Do not set or clear it without the person.
+**Managed projects.** `project set P --managed-by SYSTEM` marks a project another
+system rewrites. Daymark still accepts writes, but applications that edit plans
+should treat it as read-only. Do not set or clear it without the person.
 
 ## Workspaces and scopes
 
@@ -209,9 +239,11 @@ that was broken. With `--json` the same content is a JSON object.
 `daymark mcp` speaks the Model Context Protocol over stdio with no dependency
 beyond Daymark itself. It offers six tools (`daymark_prime`, `daymark_view`,
 `daymark_add`, `daymark_edit`, `daymark_act`, `daymark_remember`) whose
-definitions total about 5.5 kB, so they cost little context to carry. Results
+definitions total about 5.9 kB, so they cost little context to carry. Results
 are the same lean text as the command line. `daymark_view` also reads
-`projects` and `plan` (with `id` the project); `daymark_act` with
+`projects`, `plan` (with `id` the project and optional `by`), `goals` and `goal`;
+`daymark_add` and `daymark_edit` take `type`, `milestone`, `is_milestone` and
+`values`; `daymark_act` with
 `action: move` takes `stage` and `place` (`after:ID`, `before:ID`, `first` or
 `last`).
 
@@ -221,7 +253,8 @@ are the same lean text as the command line. `daymark_view` also reads
 `add`, `propose`, `ready`, `agenda`, `show`, `claim`, `release`, `note`,
 `done`, `skip`, `wait`, `resume`, `defer`, `edit`, `block`, `unblock`,
 `accept`, `dismiss`, `remind`, `remember`, `find`, and for projects `project`,
-`set_stages`, `move`, `plan`, `projects`, `changes`. It reads the current version
+`configure`, `config`, `presets`, `move`, `schedule`, `plan`, `projects`, `changes`,
+`tree`, `goal`, `goal_plan`, `goals`. It reads the current version
 itself and retries when another writer got there first. A refusal that is not
 a stale read, such as a live claim held by someone else, is raised unchanged.
 

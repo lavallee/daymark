@@ -55,8 +55,11 @@ roll-up), `/v1/projects/{id}/plan` (stages, tasks in manual order, roll-up and t
 head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
 (`{"cursor", "changed"}`, cheap enough to poll). `GET /v1/events/head` gives the
 latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
+Goals read as `GET /v1/goals` and `/v1/goals/{id}/plan`, and `GET /v1/tree/{id}?depth=3`
+gives an item with its children in order.
 `POST /v1/operations/batch` takes `operations` (up to 100, each shaped like a
-single operation) and `atomic` (default true: all or nothing); it answers 200 with
+single operation), `atomic` (default true: all or nothing) and optionally
+`request_id` with `request`, which make the batch replay as a unit; it answers 200 with
 `committed` and one result per operation, so a refusal is a result, not an HTTP
 error. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
@@ -151,6 +154,31 @@ including prior operation hashes/results so identical write retries remain
 replays after restore. Conflicting duplicate event/operation identities must be
 rejected atomically. This is distinct from a complete SQLite backup. Compare synthetic snapshot readback
 before considering a restore verified. Do not use real household data in examples.
+
+## Upgrading between releases
+
+A newer Daymark upgrades a database in place the first time it opens it, in one
+transaction. **The upgrade is one-way**: the older release cannot open the file
+afterwards, and an older process that keeps the file open stops working once
+anything has upgraded it. Before installing a release that changes the stored
+schema (the changelog says so):
+
+```sh
+daymark --db example.sqlite3 backup --file example-before-upgrade.sqlite3
+```
+
+Stop or upgrade every process that uses the file (CLI wrappers, the service, the
+worker, embedding applications) together. To roll back, stop them, restore the
+backup into a new path and point the older release at it; writes made after the
+upgrade are not in the backup.
+
+A database written by a newer Daymark is refused with `conflict`; Daymark never
+downgrades a file. Reads never upgrade: `plan`, `projects`, `changes`, `goals`,
+`tree` and `export` on a schema a caller-owned connection has not upgraded (and
+committed) are refused with `conflict`. An application that must never write to a
+file it only reads can open it with `Store(path, upgrade=False)`, which refuses an
+old schema without writing; a read-only connection on an old schema is refused the
+same way.
 
 ## Boundary review rationale
 
