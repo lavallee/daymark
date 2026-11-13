@@ -82,7 +82,7 @@ def test_stage_definitions_are_validated(tasks):
     code("invalid", tasks.add, "No project", stage="todo")
     tasks.add("Sam", kind="person", id="sam")
     code("invalid", tasks.edit, "sam", milestone=True)
-    code("invalid", tasks.edit, "sam", managed_by="rev")
+    code("invalid", tasks.edit, "sam", managed_by="ledger")
 
 
 def test_a_project_without_stages_reads_as_a_board_derived_from_status(tasks):
@@ -674,9 +674,9 @@ def test_cli_manages_a_project(cli):
     assert json.loads(out)["cursor"] > cursor
     status, out, _ = cli("events", "--project", "site", "--after", str(cursor))
     assert {e["entity_id"] for e in json.loads(out)} == {"site"}
-    assert cli("project", "set", "site", "--managed-by", "rev")[0] == 0
-    assert "managed by rev: read-only" in cli("plan", "site")[1]
-    assert "managed by rev" in cli("projects")[1]
+    assert cli("project", "set", "site", "--managed-by", "ledger")[0] == 0
+    assert "managed by ledger: read-only" in cli("plan", "site")[1]
+    assert "managed by ledger" in cli("projects")[1]
     assert (
         json.loads(cli("edit", "site", "--managed-by", "", "--json")[1]).get("managed_by") is None
     )

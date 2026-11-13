@@ -444,7 +444,7 @@ class Entity(Model):
     values: dict[str, Any] = Field(default_factory=dict, max_length=50)
     # A goal's optional single measure: where it stands against a target.
     measure: Measure | None = None
-    # The system that owns and rewrites this project (for example "rev"). Tools that
+    # The system that owns and rewrites this project (for example "ledger"). Tools that
     # edit plans treat such a project as read-only. Daymark itself still accepts writes.
     managed_by: str | None = Field(default=None, min_length=1, max_length=100, pattern=SLUG)
     # An expiring working claim. It is advisory coordination, not authorization.
