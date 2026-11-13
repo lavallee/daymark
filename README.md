@@ -99,10 +99,6 @@ never moves a deadline. `daymark plan --json`, `GET /v1/projects/{id}/plan` and
 `Store.plan` give the same view with roll-ups and an event cursor, and
 `daymark changes PROJECT --after N` says whether anything changed since.
 
-`toucan-source-daymark`, installed alongside `daymark`, lets a visual tool such as
-the toucan canvas show a project as a board, gantt, timeline or table and write
-back what a person drags. See [plans for toucan](docs/toucan.md).
-
 ## What it models
 
 - **Four kinds of time.** `deadline` is a hard cutoff. `planned` is an

@@ -31,8 +31,6 @@ This checklist covers a source release of `daymark-core` (import: `daymark`). Pa
    tar -tzf "dist/daymark_core-$version.tar.gz"
    ```
 
-   The wheel also installs a second console script, `toucan-source-daymark`; check that it runs from the core-only install (`toucan-source-daymark list` with `DAYMARK_DB` pointing at a temporary database).
-
    Verify the MIT license is included. Verify no private deployment report, database, export, local path, or credential appears in either archive. Inspect archive contents as well as filenames.
 5. Install the wheel into an empty environment outside this checkout and run the README quickstart. Check that importing `daymark` works without FastAPI, HTTPX, or Uvicorn. Repeat with the `service` extra for CLI and service smoke checks. Build a wheel from the sdist too: a checkout can hide missing source files.
 6. Run `artoo build .` and `artoo verify .`. Inspect the rendered landing page at phone and desktop widths. Use `artoo deploy . --dry-run` to inspect the public file set. Only the manifest's `docs` site root may be served.

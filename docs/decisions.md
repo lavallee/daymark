@@ -63,7 +63,7 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 Decision date: 2026-11-13. Chosen by the implementing agent under the
 commissioner's delegated routine-decision authority, open to reversal. They make
 a project something a board, gantt or table elsewhere can show and edit, with
-Daymark as the system of record ([plans for toucan](toucan.md)). C08 and C11
+Daymark as the system of record. C08 and C11
 stand: this is a stored model with a read and write surface, not a scheduler,
 and the adapter promises no third-party round trip beyond its own fields.
 
@@ -78,9 +78,8 @@ and the adapter promises no third-party round trip beyond its own fields.
 | P07 Plan dates | start = `planned`, else `earliest_start`; end = `latest_target`, else `deadline`; the deadline is also given on its own | A plan write sets `planned` and `latest_target` only, so dragging never moves a hard deadline. A write that would put the start after the end, or `latest_target` before `earliest_start`, is refused, never clamped. |
 | P08 Plan read and project feed | `Store.plan` reads a project, its stages, tasks in order with resolved stage and dates, in-project dependencies (and a note of outside ones), the workspace's people and labels, roll-ups and the head cursor, in one transaction | `Store.changes(project, after)` answers whether the project, a task in it, a task entering or leaving it, or a person or label changed after a cursor. A cursor ahead of the head reads as changed. Roll-ups are counts: no effort-weighted progress (C15 stands). |
 | P09 Batch writes | `Store.batch`: up to 100 operations in one transaction, each with its own operation ID, expected version and receipt | `atomic=True` (default) writes all or nothing and reports the rest `aborted`; `atomic=False` rolls back only the refused ones. Refusals are results, not exceptions; HTTP answers 200 with them. A replay replays each operation by its ID. |
-| P10 Externally owned projects | An optional `managed_by` on a project names the system that rewrites it | Advisory: Daymark accepts writes as before; plan editors (the toucan adapter) read the project as read-only and refuse writes with `forbidden`. Never inferred. |
+| P10 Externally owned projects | An optional `managed_by` on a project names the system that rewrites it | Advisory: Daymark accepts writes as before; applications that edit plans should treat the project as read-only. Never inferred. |
 | P11 Assigning by name | `--assignee` takes a person's ID or exact name, ignoring case | An unknown name is refused, not created; several matches are refused with their IDs. Workspace isolation (A22) is unchanged. |
-| P12 Adapter database | `toucan-source-daymark` opens `--db`, `$DAYMARK_DB`, else the per-user database | It does not search the working directory for `.daymark/`, and never creates a database. A mutation becomes operation ID `toucan:MUTATION`, so replays write once. |
 
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration

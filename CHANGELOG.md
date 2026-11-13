@@ -13,7 +13,6 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 - `Store.batch` and `POST /v1/operations/batch`: several operations in one transaction, all-or-nothing or keeping the successes, each with its own operation ID and expected version.
 - HTTP `GET /v1/projects`, `/v1/projects/{id}/plan`, `/v1/projects/{id}/changes`, `/v1/events/head`, and `?project=` on `/v1/events`, with matching client methods. MCP gains the `projects` and `plan` views and a `move` action.
 - `managed_by` on a project marks one another system owns; plan editors treat it as read-only.
-- `toucan-source-daymark`, a second console script in the core package: a Daymark project as a `toucan.plan/1` plan source ([docs/toucan.md](docs/toucan.md)).
 
 ### Changed
 

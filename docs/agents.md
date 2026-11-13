@@ -141,11 +141,8 @@ end is `--target`, else `--due`. Moving a plan never moves a deadline.
 add the person first (`daymark add "Name" --kind person`).
 
 **Managed projects.** `--managed-by SYSTEM` marks a project another system
-rewrites. Daymark still accepts writes, but plan editors such as the toucan
-adapter treat it as read-only. Do not set or clear it without the person.
-
-Other tools can show and edit a project through `toucan-source-daymark`; see
-[plans for toucan](toucan.md).
+rewrites. Daymark still accepts writes, but applications that edit
+plans should treat it as read-only. Do not set or clear it without the person.
 
 ## Workspaces and scopes
 

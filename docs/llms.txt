@@ -11,4 +11,3 @@ Start: `daymark init`, then `daymark prime` (prints the rules, commands and curr
 - [README](https://github.com/lavallee/daymark/blob/main/README.md): install, quickstart, the typed engine
 - [Decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md): the contract behind each default
 - [Operations](https://github.com/lavallee/daymark/blob/main/docs/operations.md): HTTP service, reminder worker, backup and restore
-- [Plans for toucan](https://github.com/lavallee/daymark/blob/main/docs/toucan.md): a project as a plan source, `toucan-source-daymark`, and its field mapping
