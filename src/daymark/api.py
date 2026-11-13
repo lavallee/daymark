@@ -36,6 +36,8 @@ class BatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     operations: list[Operation] = Field(min_length=1, max_length=100)
     atomic: bool = True
+    request_id: str | None = Field(default=None, min_length=1, max_length=200)
+    request: Any = None
 
 
 class ImportRequest(BaseModel):
@@ -179,7 +181,13 @@ def create_router(store: Any) -> APIRouter:
             for op in body.operations
         ]
         result = _invoke(
-            store.batch, actor.workspace, operations, atomic=body.atomic, actor=actor.principal
+            store.batch,
+            actor.workspace,
+            operations,
+            atomic=body.atomic,
+            actor=actor.principal,
+            request_id=body.request_id,
+            request=body.request,
         )
         # Domain messages are fixed rule text; field details are dropped at the boundary.
         for item in result["results"]:
@@ -200,6 +208,20 @@ def create_router(store: Any) -> APIRouter:
     @router.get("/projects/{project_id}/changes", operation_id="daymark_v1_changes")
     def changes(project_id: str, request: Request, after: int = Query(..., ge=0)) -> Any:
         return _invoke(store.changes, identity(request).workspace, project_id, after)
+
+    @router.get("/goals", operation_id="daymark_v1_goals")
+    def goals(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+        return _invoke(store.goals, identity(request).workspace, now=now)
+
+    @router.get("/goals/{goal_id}/plan", operation_id="daymark_v1_goal_plan")
+    def goal_plan(
+        goal_id: str, request: Request, now: str | None = Query(None, max_length=40)
+    ) -> Any:
+        return _invoke(store.goal_plan, identity(request).workspace, goal_id, now=now)
+
+    @router.get("/tree/{entity_id}", operation_id="daymark_v1_tree")
+    def tree(entity_id: str, request: Request, depth: int = Query(3, ge=1, le=10)) -> Any:
+        return _invoke(store.tree, identity(request).workspace, entity_id, depth=depth)
 
     @router.get("/entities/{entity_id}", operation_id="daymark_v1_get")
     def get(entity_id: str, request: Request) -> Any:

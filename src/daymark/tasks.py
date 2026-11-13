@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 from dateutil.tz import datetime_exists, resolve_imaginary
 
+from . import plans
 from .models import DomainError, Temporal, normalize_now
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
@@ -162,6 +163,96 @@ def parse_stages(spec) -> list[dict]:
     return out
 
 
+TYPE_FORMS = (
+    "Types: comma-separated id:label[:color][:container], for example "
+    "'epic:Epic:violet:container,story:Story:blue,bug:Bug:red'. \"\" removes them."
+)
+FIELD_FORMS = (
+    "Fields: comma-separated id:label:type[:options or unit], for example "
+    "'points:Points:number,risk:Risk:option:low|medium|high,spec:Spec:url'. Types are "
+    "text, number, option, options, date, bool, person and url; options are separated "
+    'by |; a number may name its unit. "" removes them.'
+)
+
+
+def parse_types(spec) -> list[dict]:
+    if isinstance(spec, list):
+        return spec
+    if not isinstance(spec, str):
+        raise DomainError("invalid", "Unrecognized types", [TYPE_FORMS])
+    out = []
+    for part in (p.strip() for p in spec.split(",") if p.strip()):
+        bits = [b.strip() for b in part.split(":")]
+        if not bits[0] or len(bits) > 4:
+            raise DomainError("invalid", "Unrecognized types", [TYPE_FORMS])
+        item = {"id": bits[0], "label": bits[1] if len(bits) > 1 and bits[1] else bits[0]}
+        for extra in bits[2:]:
+            if extra == "container":
+                item["container"] = True
+            elif extra:
+                item["color"] = extra
+        out.append(item)
+    return out
+
+
+def parse_fields(spec) -> list[dict]:
+    if isinstance(spec, list):
+        return spec
+    if not isinstance(spec, str):
+        raise DomainError("invalid", "Unrecognized fields", [FIELD_FORMS])
+    out = []
+    for part in (p.strip() for p in spec.split(",") if p.strip()):
+        bits = [b.strip() for b in part.split(":")]
+        if len(bits) < 3 or len(bits) > 4 or not bits[0]:
+            raise DomainError("invalid", "Unrecognized fields", [FIELD_FORMS])
+        item = {"id": bits[0], "label": bits[1] or bits[0], "type": bits[2]}
+        if len(bits) == 4 and bits[3]:
+            if bits[2] in {"option", "options"}:
+                item["options"] = [
+                    {"id": o.strip(), "label": o.strip()} for o in bits[3].split("|") if o.strip()
+                ]
+            else:
+                item["unit"] = bits[3]
+        out.append(item)
+    return out
+
+
+def parse_config(*, preset=None, stages=None, types=None, fields=None) -> dict:
+    """A configuration from a preset name and/or parts; parts override the preset."""
+
+    config = {}
+    if preset is not None:
+        if preset not in plans.PRESETS:
+            raise DomainError("invalid", "Unknown preset", sorted(plans.PRESETS))
+        config.update(plans.PRESETS[preset]["config"])
+    for key, value, parse in (
+        ("stages", stages, parse_stages),
+        ("types", types, parse_types),
+        ("fields", fields, parse_fields),
+    ):
+        if value is not None:
+            config[key] = parse(value)
+    return config
+
+
+def parse_measure(spec):
+    if isinstance(spec, dict) or spec is None:
+        return spec
+    bits = [b.strip() for b in str(spec).split(":")]
+    if len(bits) < 2 or len(bits) > 4 or not bits[0]:
+        raise DomainError("invalid", "A measure is Label:target[:current[:unit]]")
+    try:
+        numbers = [float(b) for b in bits[1:3] if b != ""]
+    except ValueError:
+        raise DomainError("invalid", "A measure is Label:target[:current[:unit]]") from None
+    out = {"label": bits[0], "target": numbers[0]}
+    if len(numbers) > 1:
+        out["current"] = numbers[1]
+    if len(bits) == 4 and bits[3]:
+        out["unit"] = bits[3]
+    return out
+
+
 _DATE_FIELDS = {
     "due": "deadline",
     "plan": "planned",
@@ -270,9 +361,51 @@ class Tasks:
         )
 
     def _resolve(self, fields):
+        if "lead" in fields:  # A project's lead is its assignee.
+            fields = {
+                **{k: v for k, v in fields.items() if k != "lead"},
+                "assignee": fields["lead"],
+            }
         if fields.get("assignee"):
             fields = {**fields, "assignee": self._person(fields["assignee"])}
         return fields
+
+    def parse_values(self, project, pairs):
+        """Custom field values from ``id=value`` text, typed by the project's fields:
+        numbers, yes/no, comma lists for multi-option fields, a person's name or ID.
+        An empty value clears the field. Unknown fields are left for the engine to
+        refuse with the list of declared ones."""
+        declared = {}
+        if project:
+            declared = {f["id"]: f for f in self.engine.get(*self._ws, project)["fields"]}
+        out = {}
+        for pair in pairs or []:
+            key, sep, text = pair.partition("=")
+            key = key.strip()
+            if not sep or not key:
+                raise DomainError("invalid", "Set a field as id=value", sorted(declared))
+            kind = declared.get(key, {}).get("type")
+            text = text.strip()
+            if text == "":
+                out[key] = None
+            elif kind == "number":
+                try:
+                    number = float(text)
+                except ValueError:
+                    raise DomainError("invalid", f"Field {key} takes a number") from None
+                out[key] = int(number) if number.is_integer() else number
+            elif kind == "bool":
+                lowered = text.lower()
+                if lowered not in {"yes", "no", "true", "false"}:
+                    raise DomainError("invalid", f"Field {key} takes yes or no")
+                out[key] = lowered in {"yes", "true"}
+            elif kind == "options":
+                out[key] = [part.strip() for part in text.split(",") if part.strip()]
+            elif kind == "person":
+                out[key] = self._person(text)
+            else:
+                out[key] = text
+        return out
 
     def _fields(self, values):
         """Translate friendly keyword names into entity fields."""
@@ -302,8 +435,14 @@ class Tasks:
                 out["estimate_minutes"] = value
             elif key == "move":
                 out["next_move"] = value or None
-            elif key in {"scope", "stage", "managed_by"}:
+            elif key in {"scope", "stage", "managed_by", "type"}:
                 out[key] = value or None
+            elif key == "milestone" and not isinstance(value, bool):
+                out["milestone_id"] = value or None  # Membership: the milestone it counts toward.
+            elif key in {"milestone", "is_milestone"}:
+                out["milestone"] = bool(value)  # The marker: this task is a milestone.
+            elif key == "values":
+                out["values"] = dict(value)
             else:
                 out[key] = value
         return out
@@ -408,6 +547,9 @@ class Tasks:
                 merged = {**current, **out}
                 index = (current["recurrence"] or {}).get("occurrence_index", 0)
                 out["recurrence"] = self._recurrence(every, merged, after_completion, index)
+            if "values" in out:  # Values merge: name only what changes; None clears one.
+                merged = {**current.get("values", {}), **out["values"]}
+                out["values"] = {k: v for k, v in merged.items() if v is not None}
             return out
 
         return self._act(id, "update", op=op, build=build)
@@ -552,19 +694,69 @@ class Tasks:
 
     # -- projects
 
-    def project(self, title, *, stages=None, op=None, **fields):
-        """Create a project. ``stages`` is a list or a spec (see parse_stages); without
-        one the project reads as To do, Waiting and Done. ``managed_by`` names a system
-        that owns the project and rewrites it, so plan editors treat it as read-only."""
-        if stages is not None:
-            fields["stages"] = parse_stages(stages)
-        return self.add(title, kind="project", op=op, **fields)
+    def project(
+        self, title, *, preset=None, stages=None, types=None, fields=None, op=None, **attrs
+    ):
+        """Create a project. A bare project is a list on To do, Waiting and Done.
+
+        ``preset`` (see ``presets``) writes a starting configuration and nothing
+        else; ``stages``, ``types`` and ``fields`` (lists or text specs) override
+        it. ``lead``, ``start``, ``target``, ``due`` and ``goal`` set its facts.
+        ``managed_by`` names a system that owns and rewrites it.
+        """
+        config = parse_config(preset=preset, stages=stages, types=types, fields=fields)
+        return self.add(title, kind="project", op=op, **attrs, **config)
+
+    @staticmethod
+    def presets():
+        return {
+            name: {"description": p["description"], **p["config"]}
+            for name, p in plans.PRESETS.items()
+        }
+
+    def config(self, project):
+        """A project's stages, types and fields as one copyable document."""
+        return plans.config(self.engine.get(*self._ws, project))
+
+    def configure(self, project, *, preset=None, stages=None, types=None, fields=None, op=None):
+        """Replace parts of a project's configuration in one write: the parts given
+        (or a preset's) replace what is there; the rest stays. Tasks keep their data:
+        a stage that is gone sends its tasks to their status's first stage, and a type
+        or field that is gone is reported by the plan as a warning, never dropped."""
+        config = parse_config(preset=preset, stages=stages, types=types, fields=fields)
+        if not config:
+            raise DomainError("invalid", "Give a preset, stages, types or fields")
+        return self._act(project, "update", config, op=op)
 
     def set_stages(self, project, stages, *, op=None):
-        """Replace a project's stages; an empty list or "" restores the defaults.
-        Tasks in a stage that is gone, or that no longer fits their status, move to
-        their status's first stage. No task changes status."""
-        return self._act(project, "update", {"stages": parse_stages(stages)}, op=op)
+        """Replace a project's stages; an empty list or "" restores the defaults."""
+        return self.configure(project, stages=stages, op=op)
+
+    def goal(self, title, *, target=None, measure=None, op=None, **attrs):
+        """Create a goal. ``target`` is its date; ``measure`` an optional single number
+        it is judged by ("Label:target[:current[:unit]]" or a dict)."""
+        if measure is not None:
+            attrs["measure"] = parse_measure(measure)
+        return self.add(title, kind="goal", target=target, op=op, **attrs)
+
+    def goal_plan(self, goal):
+        return self.engine.goal_plan(*self._ws, goal, now=self._now)
+
+    def goals(self):
+        return self.engine.goals(*self._ws, now=self._now)
+
+    def tree(self, id, depth=3):
+        return self.engine.tree(*self._ws, id, depth=depth)
+
+    def schedule(self, id, *, op=None, **dates):
+        """Move a task's plan dates: ``start``, ``end``, ``deadline`` as YYYY-MM-DD
+        (None clears). Writes planned and latest_target for start and end, keeps a
+        timed value's clock time, and moves a deadline only when given one."""
+
+        def build(current):
+            return plans.schedule(current, timezone=self.timezone, **dates)
+
+        return self._act(id, "update", op=op, build=build)
 
     def move(self, id, *, stage=None, after=None, before=None, first=False, last=False, op=None):
         """Put a task in a stage of its project's board, and/or at a place in its order.

@@ -31,8 +31,11 @@ _FIELDS = {
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
     "scope": {"type": "string", "description": "Part of life it belongs to, e.g. household."},
-    "stage": {"type": "string", "description": "Stage on the project's board; sets status."},
-    "milestone": {"type": "boolean"},
+    "stage": {"type": "string", "description": "Board stage; sets status."},
+    "milestone": {"type": "string", "description": "Milestone it counts toward."},
+    "is_milestone": {"type": "boolean"},
+    "type": {"type": "string"},
+    "values": {"type": "object", "description": "Project fields by id."},
 }
 _DATES = (
     "Dates: YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, a weekday name, +Nd, +Nw, +Nm. "
@@ -55,13 +58,22 @@ TOOLS = [
         "description": "Read tasks. view=ready (actionable now, most pressing first), "
         "agenda (overdue, today, days ahead, waiting, proposed), show (one task by id "
         "with blockers, notes, history), find (search by text), projects, or plan (id=project: "
-        "its board by stage, in order).",
+        "its board in order; by=milestone|type|parent|assignee|FIELD), goals, goal (id).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view": {
                     "type": "string",
-                    "enum": ["ready", "agenda", "show", "find", "projects", "plan"],
+                    "enum": [
+                        "ready",
+                        "agenda",
+                        "show",
+                        "find",
+                        "projects",
+                        "plan",
+                        "goals",
+                        "goal",
+                    ],
                 },
                 "id": {"type": "string"},
                 "text": {"type": "string"},
@@ -69,6 +81,7 @@ TOOLS = [
                 "limit": {"type": "integer"},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
                 "scope": {"type": "string", "description": 'Only this scope; "" for unscoped.'},
+                "by": {"type": "string"},
             },
             "required": ["view"],
         },
@@ -170,8 +183,14 @@ def call(tasks, name, args):
         if view == "projects":
             return render.projects_text(tasks.projects())
         if view == "plan":
-            return render.plan_text(tasks.plan(args["id"]), now)
-        raise DomainError("invalid", "view must be ready, agenda, show, find, projects or plan")
+            return render.plan_text(tasks.plan(args["id"]), now, by=args.get("by") or "stage")
+        if view == "goals":
+            return render.goals_text(tasks.goals())
+        if view == "goal":
+            return render.goal_text(tasks.goal_plan(args["id"]))
+        raise DomainError(
+            "invalid", "view must be ready, agenda, show, find, projects, plan, goals or goal"
+        )
     if name in {"daymark_add", "daymark_edit"}:
         known = next(t for t in TOOLS if t["name"] == name)["inputSchema"]["properties"]
         if set(args) - set(known):

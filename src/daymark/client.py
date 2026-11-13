@@ -134,12 +134,32 @@ class Client:
         return self._request("GET", "/v1/events/head")["cursor"]
 
     def batch(
-        self, operations: list[dict[str, Any]], *, atomic: bool = True, actor: Any = None
+        self,
+        operations: list[dict[str, Any]],
+        *,
+        atomic: bool = True,
+        actor: Any = None,
+        request_id: str | None = None,
+        request: Any = None,
     ) -> Any:
         """Several operations in one transaction; see Store.batch. The server records
         its authenticated principal as the actor, so ``actor`` is ignored."""
+        body: dict[str, Any] = {"operations": operations, "atomic": atomic}
+        if request_id is not None:
+            body.update(request_id=request_id, request=request)
+        return self._request("POST", "/v1/operations/batch", json=body)
+
+    def goals(self, *, now: Any = None) -> Any:
+        return self._request("GET", "/v1/goals", params=self._params(now=now))
+
+    def goal_plan(self, goal_id: str, *, now: Any = None) -> Any:
         return self._request(
-            "POST", "/v1/operations/batch", json={"operations": operations, "atomic": atomic}
+            "GET", f"/v1/goals/{quote(goal_id, safe='')}/plan", params=self._params(now=now)
+        )
+
+    def tree(self, entity_id: str, *, depth: int = 3) -> Any:
+        return self._request(
+            "GET", f"/v1/tree/{quote(entity_id, safe='')}", params={"depth": depth}
         )
 
     def projects(self, *, now: Any = None) -> Any:
