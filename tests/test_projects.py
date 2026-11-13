@@ -178,9 +178,11 @@ def test_removing_a_stage_moves_its_tasks_home_without_changing_status(tasks):
     assert board(tasks) == {"todo": ["a", "b"], "done": []}
     history = [e["action"] for e in tasks.engine.events("w", project="site")]
     assert "stage.reset" in history
-    # Undoing the project's change restores its stages; the task stays where it was put.
+    # Undoing the project's change is one unit: its stages come back, and so do the
+    # stages it cleared on tasks nobody has written since.
     tasks.undo("site")
-    assert board(tasks)["doing"] == [] and tasks.get("a")["stage"] is None
+    assert board(tasks)["doing"] == ["a"] and tasks.get("a")["stage"] == "doing"
+    assert "stage.restore" in [e["action"] for e in tasks.engine.events("w", project="site")]
     tasks.set_stages("site", "")
     assert tasks.plan("site")["default_stages"] is True
 
@@ -228,8 +230,10 @@ def test_rank_keys_stay_ordered_and_short():
     for _ in range(2000):
         high = rank_between(low, high)
     assert low < high and len(high) < 400 and valid_rank(high)
-    # Equal or reversed bounds (damaged data) still give a key after the lower one.
-    assert rank_between("a5", "a5") > "a5" and rank_between("a7", "a3") > "a7"
+    # Equal or reversed bounds are the caller's to resolve (the Store re-keys).
+    for low, high in (("a5", "a5"), ("a7", "a3")):
+        with pytest.raises(ValueError):
+            rank_between(low, high)
     assert not valid_rank("a50") and not valid_rank("0a") and valid_rank("a5V")
 
 
