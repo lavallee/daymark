@@ -42,6 +42,8 @@ def invalid(message):
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
 SCHEMA = "5"
+# The first release that writes this schema. A file at this schema needs it or newer.
+RELEASE = "0.4.0"
 
 REFS = {
     "assignee_id": {"person", "principal"},
@@ -52,27 +54,84 @@ REFS = {
     "label_ids": {"label"},
     "context_ids": {"context"},
     "depends_on": {"task"},
+    "milestone_id": {"task"},
     "task_id": {"task"},
     "recipient_id": {"person", "principal"},
 }
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, *, upgrade=True):
+        """Open a database path (Store owns its commits) or a caller's connection.
+
+        A database written by an older Daymark is upgraded in place on open, inside
+        one transaction; an upgraded file cannot be opened by the older release. With
+        ``upgrade=False`` an older or missing schema is refused with ``conflict``
+        instead, and nothing is written. A schema newer than this code is always
+        refused: Daymark never downgrades a file.
+        """
         self._owned = not isinstance(path, sqlite3.Connection)
+        self._upgrade = upgrade
         self.db = (
             sqlite3.connect(path, check_same_thread=False, timeout=30) if self._owned else path
         )
         self._lock = threading.RLock()
         self._actor = None  # Who is acting in the current execute; recorded on its events.
-        if self._owned:
-            # One durable sync per commit instead of a journal's several, and readers
-            # that do not wait on a writer. A caller-owned connection keeps its own mode.
-            self.db.execute("PRAGMA journal_mode=WAL")
-        # Individual DDL statements do not implicitly commit an existing transaction.
-        # Use a root transaction even for schema so caller rollback includes schema.
-        with self._transaction():
-            pass
+        try:
+            self._check_schema(upgrading=upgrade)
+            if not upgrade:
+                return
+            if self._owned:
+                # One durable sync per commit instead of a journal's several, and readers
+                # that do not wait on a writer. A caller-owned connection keeps its own mode.
+                self.db.execute("PRAGMA journal_mode=WAL")
+            # Individual DDL statements do not implicitly commit an existing transaction.
+            # Use a root transaction even for schema so caller rollback includes schema.
+            try:
+                with self._transaction():
+                    pass
+            except sqlite3.OperationalError as exc:
+                if "readonly" not in str(exc).replace(" ", "").replace("-", ""):
+                    raise
+                raise DomainError(
+                    "conflict",
+                    "Stored schema is older than this Daymark and the connection is "
+                    "read-only; open it writable once to upgrade it",
+                ) from None
+        except BaseException:
+            self.close()
+            raise
+
+    def stored_schema(self):
+        """The schema marker in the database: None when it has no Daymark tables (or
+        predates the marker), else a string such as "5". ``SCHEMA`` is this code's."""
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return None
+            row = self.db.execute(
+                "SELECT value FROM daymark_scheduler WHERE key='schema'"
+            ).fetchone()
+            return row[0] if row else None
+
+    def _check_schema(self, *, upgrading):
+        """Refuse a schema this code must not touch: newer always, older or missing
+        unless upgrading."""
+        stored = self.stored_schema()
+        if stored is not None and stored.isdigit() and int(stored) > int(SCHEMA):
+            raise DomainError(
+                "conflict",
+                f"This database was written by a newer Daymark (schema {stored}); this is "
+                f"daymark-core {RELEASE} (schema {SCHEMA}). Use a newer Daymark.",
+            )
+        if upgrading or self._current():
+            return
+        if not self._has_schema():
+            raise DomainError("conflict", "No Daymark data in this database; run `daymark init`")
+        raise DomainError(
+            "conflict",
+            f"This database needs an upgrade to schema {SCHEMA} (daymark-core {RELEASE} or "
+            "newer); open it once with `daymark` to upgrade it in place",
+        )
 
     def _ensure_schema(self):
         """Create or upgrade Daymark's tables inside the current transaction."""
@@ -145,6 +204,10 @@ class Store:
             released = False
             try:
                 if not self._current():
+                    # Reads never upgrade as a side effect, and neither does a store
+                    # opened with upgrade=False; writes upgrade (a caller-owned
+                    # connection that rolled back the upgrade made at open).
+                    self._check_schema(upgrading=write and self._upgrade)
                     self._ensure_schema()
                 yield
                 self.db.execute("RELEASE " + name)
@@ -378,42 +441,62 @@ class Store:
                 (workspace,),
             ).fetchone()[0]
 
-    @staticmethod
-    def _touches(project_id, entity_id, before, after):
+    # Kinds a plan can name anywhere in its workspace: as owners, labels or goals.
+    _NAMED = ("person", "principal", "label", "goal")
+
+    def _related(self, workspace, project_id):
+        """Entities outside a project whose changes alter its plan: what its tasks
+        depend on, and its goal."""
+        rows = self.db.execute(
+            "SELECT DISTINCT r.target_id FROM daymark_refs r JOIN daymark_refs p ON "
+            "p.workspace=r.workspace AND p.source_id=r.source_id AND p.field='project_id' "
+            "AND p.target_id=? WHERE r.workspace=? AND r.field='depends_on'",
+            (project_id, workspace),
+        ).fetchall()
+        related = {row[0] for row in rows}
+        project = self._project(workspace, project_id)
+        if project and project["goal_id"]:
+            related.add(project["goal_id"])
+        return related
+
+    def _touches(self, project_id, related, entity_id, before, after):
         """Whether an event changes what a project's plan shows: the project itself,
-        a task entering, leaving or inside it, or a person or label it can name."""
-        if entity_id == project_id:
+        a task entering, leaving or inside it, something its tasks depend on, or a
+        person, label or goal it can name."""
+        if entity_id == project_id or entity_id in related:
             return True
         for state in (before, after):
             if state and (
-                state.get("project_id") == project_id
-                or state.get("kind") in {"person", "principal", "label"}
+                state.get("project_id") == project_id or state.get("kind") in self._NAMED
             ):
                 return True
         return False
 
     def _project_events(self, workspace, project_id, after, limit):
         """Event rows after a cursor that touch a project, prefiltered in SQL."""
-        needle = '"project_id":' + json.dumps(project_id, ensure_ascii=False)
-        kinds = ['"kind":"person"', '"kind":"principal"', '"kind":"label"']
+        related = sorted(self._related(workspace, project_id))
+        needles = [
+            '"project_id":' + json.dumps(project_id, ensure_ascii=False),
+            *(f'"kind":"{kind}"' for kind in self._NAMED),
+        ]
         clause = " OR ".join(
             f"instr(COALESCE(e.{column},''),?)>0"
             for column in ("before_data", "after_data")
-            for _ in range(4)
+            for _ in needles
         )
-        args = [needle, *kinds] * 2
+        ids = ",".join("?" * (len(related) + 1))
         rows = self.db.execute(
             "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,"
             "e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c "
-            f"ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? AND (e.entity_id=? OR {clause}) "
-            "ORDER BY c.seq",
-            (workspace, after, project_id, *args),
+            f"ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? AND (e.entity_id IN ({ids}) "
+            f"OR {clause}) ORDER BY c.seq",
+            (workspace, after, project_id, *related, *needles, *needles),
         )
-        found = []
+        found, related = [], set(related)
         for row in rows:
             before = json.loads(row[5]) if row[5] else None
             after_data = json.loads(row[6]) if row[6] else None
-            if self._touches(project_id, row[3], before, after_data):
+            if self._touches(project_id, related, row[3], before, after_data):
                 found.append(row)
                 if len(found) >= limit:
                     break
@@ -435,6 +518,9 @@ class Store:
                 return {"cursor": head, "changed": True}
             if not self._has_schema():
                 return {"cursor": head, "changed": False}
+            from . import views
+
+            views._read(self)
             hit = self._project_events(workspace, project_id, after, 1)
             return {"cursor": head, "changed": bool(hit)}
 
@@ -546,7 +632,9 @@ class Store:
             finally:
                 self._actor = None
 
-    def batch(self, workspace, operations, *, atomic=True, actor=None):
+    def batch(
+        self, workspace, operations, *, atomic=True, actor=None, request_id=None, request=None
+    ):
         """Apply up to 100 operations in one transaction, each with its own operation
         ID and expected version, and replayed by that ID like a single operation.
 
@@ -555,6 +643,13 @@ class Store:
         the refused operations and commits the rest together. Returns ``committed``
         and one result per operation, in order. A failure outside the domain rules
         (for example a database error) rolls back the batch and is raised.
+
+        ``request_id`` makes the batch idempotent as a unit: a committed batch is
+        recorded under it with a digest of ``request`` (the caller's own description
+        of what it asked for, defaulting to the operations). The same ID with the same
+        request returns the recorded result and writes nothing; with a different
+        request it is refused with ``conflict``. Use it when the operations are derived
+        from state that may change between an attempt and its retry.
         """
         if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
             invalid("A batch holds 1 to 100 operations")
@@ -567,12 +662,20 @@ class Store:
             if (
                 not isinstance(operation, dict)
                 or set(operation) != keys
+                or not isinstance(operation["operation_id"], str)
                 or not isinstance(operation["payload"], dict)
                 or not isinstance(operation["action"], str)
             ):
                 invalid("Each operation needs operation_id, action, payload and expected_version")
         if len({op["operation_id"] for op in operations}) != len(operations):
             invalid("Operation IDs in a batch must differ")
+        if request_id is not None:
+            if request_id in {op["operation_id"] for op in operations}:
+                invalid("The request ID must differ from its operation IDs")
+            try:
+                canonical(operations if request is None else request)
+            except (TypeError, ValueError):
+                invalid("The request must be plain JSON")
 
         class Abort(Exception):
             pass
@@ -580,6 +683,16 @@ class Store:
         results = []
         try:
             with self._transaction():
+                if request_id is not None:
+                    digest, replay = self._receipt(
+                        workspace,
+                        request_id,
+                        "batch",
+                        operations if request is None else request,
+                        0,
+                    )
+                    if replay is not None:
+                        return {**replay, "replayed": True}
                 self._actor = actor
                 try:
                     for operation in operations:
@@ -620,6 +733,10 @@ class Store:
                         )
                 finally:
                     self._actor = None
+                outcome = {"committed": True, "results": results}
+                if request_id is not None:
+                    self._record(workspace, request_id, digest, outcome)
+                return outcome
         except Abort:
             aborted = {"code": "aborted", "message": "Rolled back with the batch", "details": []}
             done = {r["operation_id"]: r for r in results if not r["ok"]}
@@ -629,7 +746,6 @@ class Store:
                 for op in operations
             ]
             return {"committed": False, "results": results}
-        return {"committed": True, "results": results}
 
     def plan(self, workspace, project_id, *, now=None):
         """A project as a plan, read in one transaction with the head event cursor.
@@ -637,6 +753,24 @@ class Store:
         from . import views
 
         return views.plan(self, workspace, project_id, now=now)
+
+    def goal_plan(self, workspace, goal_id, *, now=None):
+        """A goal with its roll-up across linked projects and tasks. See views.goal_plan."""
+        from . import views
+
+        return views.goal_plan(self, workspace, goal_id, now=now)
+
+    def goals(self, workspace, *, now=None):
+        """Every unarchived goal with its roll-up. See views.goals."""
+        from . import views
+
+        return views.goals(self, workspace, now=now)
+
+    def tree(self, workspace, id, *, depth=3):
+        """An entity and its child tasks in manual order, to a depth. See views.tree."""
+        from . import views
+
+        return views.tree(self, workspace, id, depth=depth)
 
     def projects(self, workspace, *, now=None):
         """Every unarchived project in a workspace with its roll-up. See views.projects."""
@@ -678,6 +812,8 @@ class Store:
             if raw.get("recurrence"):
                 raw.setdefault("series_id", raw["id"])
                 raw.setdefault("occurrence_key", raw["id"] + ":0")
+            if raw.get("rank") is not None:
+                invalid("A task's place in its project's order is set by the place action")
             if raw.get("stage") is not None:
                 self._move_to_stage(raw, None, payload)
         else:
@@ -712,11 +848,12 @@ class Store:
                     "notes",
                     "claimed_by",
                     "claim_until",
+                    "rank",
                 }
                 if any(k in protected and v != before.get(k) for k, v in payload.items()):
                     invalid(
-                        "Identity, provenance, scheduler, note and claim fields change "
-                        "only through their own actions"
+                        "Identity, provenance, scheduler, note, claim and order fields "
+                        "change only through their own actions"
                     )
                 if payload.get("status", before["status"]) != before["status"] and "proposed" in {
                     payload["status"],
@@ -777,7 +914,7 @@ class Store:
                     invalid("Place needs exactly one of after or before")
                 if before["kind"] != "task" or not before["project_id"]:
                     invalid("Only a task in a project has a place in its order")
-                raw["rank"] = self._place(before, payload, operation_id, now)
+                raw["rank"] = self._place(before, payload)
             elif action.startswith("reminder."):
                 self._reminder_action(raw, action, payload)
                 if action == "reminder.snooze":
@@ -791,6 +928,8 @@ class Store:
                 invalid("Unsupported action")
         if action != "delete":
             self._settle_stage(raw, before, payload)
+        if action in {"create", "update"}:
+            self._check_structure(raw, before)
         data = self._validated(raw)
         if data["status"] == "completed" and not data["completed_at"]:
             data["completed_at"] = now
@@ -899,17 +1038,21 @@ class Store:
     def _settle_stage(self, raw, before, payload):
         """Keep a task's stored stage consistent with its status and project.
 
-        A task that changes project loses its stage and rank unless the same write
-        sets them; a stored stage that is gone or no longer fits the status is
-        cleared, so the task reads in its status's home stage.
+        A task that changes project loses its stage unless the same write sets one,
+        and goes last in its new project's order; a stored stage that is gone or no
+        longer fits the status is cleared, so the task reads in its status's home
+        stage.
         """
         if raw.get("kind") != "task":
             return
         if before is not None and before["project_id"] != raw.get("project_id"):
             if "stage" not in payload:
                 raw["stage"] = None
-            if "rank" not in payload:
-                raw["rank"] = None
+            raw["rank"] = (
+                self._rank_after(None, raw["workspace"], raw["project_id"], raw["id"])
+                if raw.get("project_id")
+                else None
+            )
         if not raw.get("stage"):
             return
         project = self._project(raw["workspace"], raw.get("project_id"))
@@ -923,6 +1066,82 @@ class Store:
             or not plans.compatible(stage, status, board)
         ):
             raw["stage"] = None
+
+    def _check_structure(self, raw, before):
+        """Check what this write changes in a task's type, custom values and milestone
+        against its project. Values already stored are kept even when their declaration
+        has since gone: the plan reports them as warnings instead."""
+        if raw.get("kind") != "task":
+            return
+        old = before or {}
+        project = self._project(raw["workspace"], raw.get("project_id"))
+        moved = before is not None and before["project_id"] != raw.get("project_id")
+        if raw.get("type") is not None and raw["type"] != old.get("type"):
+            declared = [t["id"] for t in (project or {}).get("types", [])]
+            if raw["type"] not in declared:
+                raise DomainError(
+                    "invalid",
+                    "Unknown type for this project"
+                    if declared
+                    else "This project declares no types",
+                    declared,
+                )
+        values = {k: v for k, v in (raw.get("values") or {}).items() if v is not None}
+        raw["values"] = values
+        previous = old.get("values") or {}
+        changed = [k for k, v in values.items() if previous.get(k) != v]
+        if changed:
+            declared = {f["id"]: f for f in (project or {}).get("fields", [])}
+            for key in changed:
+                if key not in declared:
+                    raise DomainError(
+                        "invalid",
+                        "Unknown field for this project"
+                        if declared
+                        else "This project declares no fields",
+                        sorted(declared),
+                    )
+                self._check_value(raw["workspace"], declared[key], values[key])
+        if moved and raw.get("milestone_id") == old.get("milestone_id"):
+            raw["milestone_id"] = None  # Membership is part of the project left behind.
+        target = raw.get("milestone_id")
+        if target is not None and (target != old.get("milestone_id") or moved):
+            row = self.db.execute(
+                "SELECT data FROM daymark_entities WHERE workspace=? AND id=?",
+                (raw["workspace"], target),
+            ).fetchone()
+            milestone = json.loads(row[0]) if row else None
+            if (
+                milestone is None
+                or not milestone.get("milestone")
+                or milestone["project_id"] is None
+                or milestone["project_id"] != raw.get("project_id")
+            ):
+                invalid("A task belongs to a milestone task in its own project")
+
+    def _check_value(self, workspace, field, value):
+        kind, name = field["type"], field["id"]
+        ok = {
+            "text": isinstance(value, str),
+            "number": isinstance(value, (int, float)) and not isinstance(value, bool),
+            "bool": isinstance(value, bool),
+            "option": isinstance(value, str) and value in {o["id"] for o in field["options"]},
+            "options": isinstance(value, list)
+            and len(set(value)) == len(value)
+            and set(value) <= {o["id"] for o in field["options"]},
+            "date": isinstance(value, str) and plans.is_civil_date(value),
+            "url": isinstance(value, str)
+            and re.fullmatch(r"https?://\S{1,2000}", value) is not None,
+            "person": isinstance(value, str),
+        }[kind]
+        if ok and kind == "person":
+            row = self.db.execute(
+                "SELECT kind FROM daymark_entities WHERE workspace=? AND id=?", (workspace, value)
+            ).fetchone()
+            ok = row is not None and row[0] in {"person", "principal"}
+        if not ok:
+            choices = [o["id"] for o in field["options"]]
+            raise DomainError("invalid", f"Field {name} takes {plans.FIELD_HINTS[kind]}", choices)
 
     def _restage(self, before, project, operation_id, now):
         """After a project's stages change, clear task stages that no longer fit."""
@@ -939,47 +1158,46 @@ class Store:
             self._put(updated)
             self._event(project["workspace"], operation_id, "stage.reset", task, updated)
 
-    def _place(self, task, payload, operation_id, now):
-        """The rank that puts ``task`` directly after or before a neighbour.
-
-        ``after: None`` is first and ``before: None`` is last. The first placement
-        in a project with unranked tasks ranks them, in their current order.
-        """
-        workspace = task["workspace"]
-        others = sorted(
-            (
-                x
-                for x in self._project_tasks(workspace, task["project_id"])
-                if x["id"] != task["id"] and not x["archived"]
-            ),
+    def _ordered(self, workspace, project_id, exclude=None):
+        """A project's tasks in manual order, archived ones included so that a new
+        key never collides with the place an archived task will return to."""
+        return sorted(
+            (x for x in self._project_tasks(workspace, project_id) if x["id"] != exclude),
             key=plans.order_key,
         )
-        last = max((x["rank"] for x in others if x["rank"]), default=None)
-        for index, item in enumerate(others):
-            if item["rank"] is None:
-                last = plans.rank_between(last, None)
-                updated = {
-                    **item,
-                    "rank": last,
-                    "version": item["version"] + 1,
-                    "updated_at": now,
-                }
-                self._put(updated)
-                self._event(workspace, operation_id, "rank.assign", item, updated)
-                others[index] = updated
-        ranks, ids = [x["rank"] for x in others], [x["id"] for x in others]
+
+    def _place(self, task, payload):
+        """The rank that puts ``task`` directly after or before a neighbour.
+
+        ``after: None`` is first and ``before: None`` is last. Only the moved task
+        is written: a task never placed reads as its creation time.
+        """
+        others = self._ordered(task["workspace"], task["project_id"], task["id"])
+        keys = [plans.effective_rank(x) for x in others]
+        ids = [x["id"] for x in others]
         key = "after" if "after" in payload else "before"
         ref = payload[key]
         if ref is None:
             if key == "after":
-                return plans.rank_between(None, ranks[0] if ranks else None)
-            return plans.rank_between(ranks[-1] if ranks else None, None)
-        if not isinstance(ref, str) or ref not in ids:
+                return plans.rank_between(None, keys[0] if keys else None)
+            return plans.rank_between(keys[-1] if keys else None, None)
+        live = {x["id"] for x in others if not x["archived"]}
+        if not isinstance(ref, str) or ref not in live:
             invalid("The neighbour must be another task in the same project")
         i = ids.index(ref)
         if key == "after":
-            return plans.rank_between(ranks[i], ranks[i + 1] if i + 1 < len(ranks) else None)
-        return plans.rank_between(ranks[i - 1] if i else None, ranks[i])
+            return plans.rank_between(keys[i], keys[i + 1] if i + 1 < len(keys) else None)
+        return plans.rank_between(keys[i - 1] if i else None, keys[i])
+
+    def _rank_after(self, task, workspace, project_id, exclude):
+        """The key directly after ``task`` (None: last) in a project's order."""
+        others = self._ordered(workspace, project_id, exclude)
+        keys = [plans.effective_rank(x) for x in others]
+        if task is None:
+            return plans.rank_between(keys[-1] if keys else None, None)
+        low = plans.effective_rank(task)
+        following = next((k for k in keys if k > low), None)
+        return plans.rank_between(low, following)
 
     def _undo(self, workspace, payload, expected_version, operation_id, now):
         if set(payload) != {"id"}:
@@ -1094,8 +1312,15 @@ class Store:
             "waiting_on": None,
             "claimed_by": None,
             "claim_until": None,
-            # A new round starts in its project's first open stage.
+            # A new round starts in its project's first open stage, directly after
+            # the round it follows. Type, custom values, milestone marker and
+            # milestone membership belong to the series and carry over.
             "stage": None,
+            "rank": (
+                self._rank_after(data, data["workspace"], data["project_id"], id)
+                if data["project_id"]
+                else None
+            ),
         }
         field = "planned" if data["planned"] else "deadline" if data["deadline"] else "planned"
         raw[field] = following.model_dump(mode="json")
@@ -1362,6 +1587,8 @@ class Store:
             "rank",
             "milestone",
             "managed_by",
+            "type",
+            "milestone_id",
             "waiting_on",
             "claimed_by",
             "estimate_minutes",
@@ -1412,7 +1639,10 @@ class Store:
             field, op, value = node["field"], node["op"], node["value"]
             if (
                 not isinstance(field, str)
-                or field not in fields
+                or (
+                    field not in fields
+                    and not re.fullmatch(r"values\.[a-z0-9][a-z0-9_-]{0,63}", field)
+                )
                 or not isinstance(op, str)
                 or op not in {"eq", "ne", "in", "contains", "lt", "lte", "gt", "gte", "exists"}
             ):
@@ -1434,7 +1664,11 @@ class Store:
                         and Temporal.model_validate(item["deadline"]).is_before(now)
                     )
                 else:
-                    actual = item[field]
+                    actual = (
+                        item.get("values", {}).get(field[7:])
+                        if field.startswith("values.")
+                        else item[field]
+                    )
                 if op == "eq":
                     return actual == value
                 if op == "ne":
