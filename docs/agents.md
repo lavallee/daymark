@@ -136,14 +136,17 @@ daymark edit dm-k3f9 --type bug --milestone beta --set points=3 --set risk=high
   nests work under an epic. A parent with open children is not ready. The plan
   rolls up each parent: counts, percent done, effort, span and field totals.
 - **Milestones.** A milestone is a task marked `--is-milestone`, dated by its own
-  dates. `--milestone M` says a task counts toward it (same project only). The plan
+  dates. `--milestone M` says a task counts toward it (same project only; a
+  milestone does not belong to another milestone). The plan
   reports each milestone's progress, the items that end after its date, and when
   all its items are done. It is reached only when someone completes it.
 - **Custom fields.** `--set FIELD=VALUE` (repeatable; `FIELD=` clears) with the
   fields the project declares: numbers, yes/no, an option, comma-separated options,
   a date, a URL, text or a person's name. An unknown field or a wrong type is
   refused with the declared list. If a field is later removed, its values are
-  kept and the plan lists them under warnings.
+  kept and the plan lists them under warnings. Numbers must be finite; whole
+  numbers are exact up to 9007199254740991. Through the API, an update's
+  `values` merges per field (null clears one), like `--set`.
 - **Dates read as a plan:** start is `--plan`, else `--start`; end is `--target`,
   else `--due`. Moving a plan never moves a deadline. A task that starts before
   something it depends on ends is listed as a date conflict, not moved.

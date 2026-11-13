@@ -157,11 +157,31 @@ before considering a restore verified. Do not use real household data in example
 
 ## Upgrading between releases
 
-A newer Daymark upgrades a database in place the first time it opens it, in one
-transaction. **The upgrade is one-way**: the older release cannot open the file
-afterwards, and an older process that keeps the file open stops working once
-anything has upgraded it. Before installing a release that changes the stored
-schema (the changelog says so):
+A newer Daymark upgrades a database in place, in one transaction. **The upgrade
+is one-way**: the older release cannot open the file afterwards, and an older
+process that keeps the file open stops working once anything has upgraded it.
+
+Two rules decide when that happens:
+
+- **The command line upgrades on any command.** `daymark ready`, `daymark add`,
+  `serve`, `mcp`, `worker` and `init` all open the file upgrading it, because the
+  command line is the operator's tool and the documented upgrade path. The first
+  time it upgrades an existing database it prints one line to standard error, for
+  example `daymark: upgraded /data/daymark.sqlite3 from schema 4 to 5 (Daymark
+  0.4.0); older versions can no longer open it`. A new or already current file
+  prints nothing.
+- **The library's reads never upgrade.** `Store.plan`, `projects`, `changes`,
+  `goals`, `tree`, `export`, `get`, `list`, `query` and the ready, agenda and
+  summary views refuse a schema the caller has not upgraded, all with the same
+  `conflict` message. `Store(path)` upgrades when it opens a path; a caller-owned
+  connection is upgraded inside the caller's transaction and the caller commits
+  it. `Store(path, upgrade=False)` refuses an old schema without writing, and a
+  read-only connection on an old schema is refused the same way.
+
+So take the backup **with the release you are leaving, before installing the new
+one** (any `daymark` command of the new release would already upgrade the file).
+`daymark backup` copies the file through SQLite's backup API without opening a
+Store, so it never upgrades what it copies:
 
 ```sh
 daymark --db example.sqlite3 backup --file example-before-upgrade.sqlite3
@@ -170,15 +190,8 @@ daymark --db example.sqlite3 backup --file example-before-upgrade.sqlite3
 Stop or upgrade every process that uses the file (CLI wrappers, the service, the
 worker, embedding applications) together. To roll back, stop them, restore the
 backup into a new path and point the older release at it; writes made after the
-upgrade are not in the backup.
-
-A database written by a newer Daymark is refused with `conflict`; Daymark never
-downgrades a file. Reads never upgrade: `plan`, `projects`, `changes`, `goals`,
-`tree` and `export` on a schema a caller-owned connection has not upgraded (and
-committed) are refused with `conflict`. An application that must never write to a
-file it only reads can open it with `Store(path, upgrade=False)`, which refuses an
-old schema without writing; a read-only connection on an old schema is refused the
-same way.
+upgrade are not in the backup. A database written by a newer Daymark is refused
+with `conflict`; Daymark never downgrades a file.
 
 ## Boundary review rationale
 

@@ -80,13 +80,18 @@ epics, milestones that work counts toward, a goal it serves, and fields of your
 own (points, cost, risk). None of it is required, and nothing about a project
 forces a method on it.
 
-Moving house is a few phases and one date that matters:
+Moving house is a few phases and one date that matters (each example starts from
+a fresh `daymark init` with `DAYMARK_TZ=Europe/London`, and runs as shown):
 
 ```console
 $ daymark project add "Move house" --id move --preset event --target 2030-06-28
+move  Move house
 $ daymark add "Moving day" --project move --id day --is-milestone --due 2030-06-28
-$ daymark add "Book the van" --project move --milestone day --stage book --set cost=180 --due 2030-06-01
-$ daymark add "Pack the kitchen" --project move --milestone day --stage prepare --plan 2030-06-20
+day  Moving day  [due 2030-06-28; milestone]
+$ daymark add "Book the van" --project move --id van --milestone day --stage book --set cost=180 --due 2030-06-01
+van  Book the van  [due 2030-06-01; stage:book]
+$ daymark add "Pack the kitchen" --project move --id pack --milestone day --stage prepare --plan 2030-06-20
+pack  Pack the kitchen  [plan 2030-06-20; stage:prepare]
 $ daymark plan move
 move  Move house  [0/3 done (0%), 2030-06-20 to 2030-06-28, 1 milestone, cost 180]
 end 2030-06-28
@@ -96,17 +101,25 @@ BOOK (1)  [book: open]
   van  Book the van  [due 2030-06-01]  ?..2030-06-01  for day  cost=180
 PREPARE (1)  [prepare: open]
   pack  Pack the kitchen  [plan 2030-06-20]  2030-06-20..?  for day
-...
+ON THE DAY (0)  [day: open]
+DONE (0)  [done: completed]
+DROPPED (0)  [dropped: cancelled]
+cursor 4
 ```
 
 A software release has epics, points and a beta:
 
 ```console
 $ daymark project add "Release 2.0" --id rel --preset epics
+rel  Release 2.0
 $ daymark add "Beta" --project rel --id beta --is-milestone --due 2030-05-01
+beta  Beta  [due 2030-05-01; milestone]
 $ daymark add "Accounts" --project rel --id acc --type epic
-$ daymark add "Sign-in" --project rel --type story --parent acc --milestone beta --set points=3
-$ daymark add "Fix crash on login" --project rel --type bug --parent acc --milestone beta --set points=2
+acc  Accounts
+$ daymark add "Sign-in" --project rel --id signin --type story --parent acc --milestone beta --set points=3
+signin  Sign-in
+$ daymark add "Fix crash on login" --project rel --id crash --type bug --parent acc --milestone beta --set points=2
+crash  Fix crash on login
 $ daymark plan rel --by milestone
 rel  Release 2.0  [0/4 done (0%), ? to 2030-05-01, 1 milestone, points 5]
 MILESTONE beta Beta (2)  [2030-05-01; 0/2 done]
@@ -114,6 +127,7 @@ MILESTONE beta Beta (2)  [2030-05-01; 0/2 done]
   crash  Fix crash on login  bug  in acc  points=2
 NO MILESTONE (1)
   acc  Accounts  epic
+cursor 5
 ```
 
 A stage carries a lifecycle status, so moving a card to Done completes the task,

@@ -6,9 +6,10 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ### Upgrading: read this first
 
-- **The schema upgrade is one-way.** The first time 0.4.0 opens a database it rewrites every stored entity in place (schema 5). Daymark 0.3.0 cannot open the file afterwards: it fails cleanly (`invalid`, unknown fields), and any long-running 0.3.0 process using the file stops working at that moment. Back up first with `daymark backup --file BEFORE.sqlite3`; rolling back means restoring that backup. Snapshots exported afterwards are refused by 0.3.0 too.
+- **The schema upgrade is one-way.** The first time 0.4.0 opens a database it rewrites every stored entity in place (schema 5). Daymark 0.3.0 cannot open the file afterwards: it fails cleanly (`invalid`, unknown fields), and any long-running 0.3.0 process using the file stops working at that moment. Snapshots exported afterwards are refused by 0.3.0 too.
+- **Back up with 0.3.0, before installing 0.4.0**: `daymark backup --file BEFORE.sqlite3`. Every 0.4.0 command line verb (including `ready`, `serve`, `mcp` and `worker`) upgrades the file it opens, and says so once on standard error (`daymark: upgraded FILE from schema 4 to 5 (Daymark 0.4.0); older versions can no longer open it`). `daymark backup` copies without opening a Store, so it never upgrades. Rolling back means restoring the backup.
 - Versions, events and receipts are untouched, and entities that use none of the new fields read, sort and render as before.
-- A database written by a newer Daymark is now refused (`conflict`) instead of being rewritten. Reads (`plan`, `projects`, `changes`, `goals`, `tree`, `export`) on a schema a caller has not upgraded are refused with `conflict` rather than upgrading as a side effect; `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict` instead of a database error.
+- A database written by a newer Daymark is now refused (`conflict`) instead of being rewritten. The library's reads (`plan`, `projects`, `changes`, `goals`, `tree`, `export`, `get`, `list`, `query`, `ready`, `agenda`) on a schema a caller has not upgraded are refused with one `conflict` message rather than upgrading as a side effect or answering in the old shape; `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict` instead of a database error.
 
 ### Added
 
@@ -25,6 +26,10 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 ### Changed
 
 - `--assignee` with a value that is neither a person's ID nor a person's name is refused with `invalid` and the fix, before the write.
+- An engine `update` carrying `values` merges per field (null clears one) on every path: library, batch and HTTP.
+- A `create` may not set `created_at`: it orders tasks never placed. History is restored through snapshot import.
+- Custom number values are finite, and whole numbers are kept exact within ±(2**53 − 1); anything else is refused with `invalid`.
+- A request that is not plain JSON (NaN, infinity) is refused with `invalid`.
 
 ## [0.3.0] - 2026-11-10
 
