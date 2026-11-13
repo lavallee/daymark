@@ -31,7 +31,7 @@ SIMPLE = {
     "prime", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
     "reopen", "archive", "undo", "accept", "dismiss", "claim", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
-    "focus", "unfocus",
+    "focus", "unfocus", "project", "projects", "plan", "stages", "move", "changes",
 }  # fmt: skip
 
 
@@ -76,13 +76,23 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     item.add_argument("--parent", metavar="ID")
     item.add_argument("--project", metavar="ID")
     item.add_argument("--goal", metavar="ID")
-    item.add_argument("--assignee", metavar="ID", help="A person or principal entity")
+    item.add_argument(
+        "--assignee", metavar="WHO", help="A person's ID or name; a new name creates the person"
+    )
     item.add_argument("--label", action="append", dest="labels", metavar="ID")
     item.add_argument("--context", action="append", dest="contexts", metavar="ID")
     item.add_argument("--waiting-on", metavar="WHO")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
     item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
     item.add_argument("--minutes", type=int, help="Estimated effort")
+    item.add_argument("--stage", metavar="S", help="Stage on the project's board; sets the status")
+    item.add_argument(
+        "--milestone", action=argparse.BooleanOptionalAction, help="Mark (or unmark) a milestone"
+    )
+    if editing:
+        item.add_argument(
+            "--managed-by", metavar="SYSTEM", help='A project\'s owning system ("" clears)'
+        )
     if not editing:
         item.add_argument("--kind", default="task", help="task, project, goal, person, label, ...")
         item.add_argument("--note", help="First progress note")
@@ -174,6 +184,33 @@ def _simple_commands(sub) -> None:
     focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
     focus.add_argument("id")
     focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
+    project = add("project", "Create a project, a board with stages", writes=True)
+    project.add_argument("title")
+    project.add_argument("--id", help="Choose the ID instead of a generated short one")
+    project.add_argument("-d", "--description")
+    project.add_argument("--stages", metavar="SPEC", help="id:label:status:color,... (see docs)")
+    project.add_argument(
+        "--managed-by",
+        metavar="SYSTEM",
+        help="A system that owns it; plan editors treat it read-only",
+    )
+    stages = add("stages", 'Replace a project\'s stages ("" restores the defaults)', writes=True)
+    stages.add_argument("project")
+    stages.add_argument("spec", metavar="SPEC")
+    add("projects", "Projects with their roll-ups")
+    plan = add("plan", "One project as a board: stages, tasks in order, roll-up")
+    plan.add_argument("project")
+    move = add("move", "Move a task to a stage and/or a place in its project's order", writes=True)
+    move.add_argument("id")
+    move.add_argument("--stage", metavar="S")
+    where = move.add_mutually_exclusive_group()
+    where.add_argument("--after", metavar="ID")
+    where.add_argument("--before", metavar="ID")
+    where.add_argument("--first", action="store_true")
+    where.add_argument("--last", action="store_true")
+    changes = add("changes", "Whether a project changed after an event cursor")
+    changes.add_argument("project")
+    changes.add_argument("--after", type=int, required=True, metavar="CURSOR")
     sub.add_parser("workspaces", help="List the workspaces in this database")
     sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
 
@@ -238,6 +275,8 @@ def parser() -> argparse.ArgumentParser:
     events = sub.add_parser("events", help="Read event cursor page")
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--limit", type=int, default=100)
+    events.add_argument("--project", metavar="ID", help="Only events that touch this project")
+    events.add_argument("--head", action="store_true", help="Print only the latest cursor")
     export = sub.add_parser("export", help="Export current workspace snapshot to a new JSON file")
     export.add_argument("--output", required=True)
     imp = sub.add_parser(
@@ -399,11 +438,13 @@ def _simple(args, engine) -> int:
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
-                 "minutes", "scope")  # fmt: skip
+                 "minutes", "scope", "stage", "milestone")  # fmt: skip
         fields = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if name == "edit":
             if args.title is not None:
                 fields["title"] = args.title
+            if args.managed_by is not None:
+                fields["managed_by"] = args.managed_by
             item = tasks.edit(
                 args.id, every=args.every, after_completion=args.after_completion, op=op, **fields
             )
@@ -445,6 +486,33 @@ def _simple(args, engine) -> int:
         out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
     elif name == "remember":
         entity(tasks.remember(args.text, op=op))
+    elif name == "project":
+        extra = {key: getattr(args, key) for key in ("description", "managed_by")}
+        entity(tasks.project(args.title, stages=args.stages, id=args.id, op=op,
+                             **{k: v for k, v in extra.items() if v is not None}))  # fmt: skip
+    elif name == "stages":
+        entity(tasks.set_stages(args.project, args.spec, op=op))
+    elif name == "move":
+        entity(tasks.move(args.id, stage=args.stage, after=args.after, before=args.before,
+                          first=args.first, last=args.last, op=op))  # fmt: skip
+    elif name == "projects":
+        view = tasks.projects()
+        out(view, render.projects_text(view))
+    elif name == "plan":
+        view = tasks.plan(args.project)
+        lean = {
+            **view,
+            "project": render.compact(view["project"]),
+            "tasks": [{**render.compact(x), "plan": x["plan"]} for x in view["tasks"]],
+            "proposed": [render.compact(x) for x in view["proposed"]],
+        }
+        out(lean, render.plan_text(view, now))
+    elif name == "changes":
+        result = tasks.changes(args.project, args.after)
+        out(
+            result,
+            f"cursor {result['cursor']}; " + ("changed" if result["changed"] else "unchanged"),
+        )
     elif name == "mcp":
         from .mcp import serve
 
@@ -576,8 +644,11 @@ def main(argv: list[str] | None = None) -> int:
                 result = engine.list(*ws, kind=args.kind)
             elif args.command == "query":
                 result = engine.query(*ws, _json_file(args.file))
+            elif args.command == "events" and args.head:
+                result = {"cursor": engine.head(*ws)}
             elif args.command == "events":
-                result = engine.events(*ws, after=args.after, limit=args.limit)
+                extra = {"project": args.project} if args.project else {}
+                result = engine.events(*ws, after=args.after, limit=args.limit, **extra)
             elif args.command == "health":
                 result = engine.health()
             else:

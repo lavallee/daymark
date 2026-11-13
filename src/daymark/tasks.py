@@ -134,6 +134,34 @@ def parse_every(text) -> str:
     raise DomainError("invalid", "Unrecognized recurrence", [EVERY_FORMS])
 
 
+STAGE_FORMS = (
+    "Stages: comma-separated id:label:status:color, for example "
+    "'todo:To do:open:grey,doing:Doing:open:blue,done:Done:completed:green'. "
+    "Status is open, waiting, completed or cancelled (default open); label and colour "
+    'are optional. Include at least one open and one completed stage; "" restores '
+    "the defaults."
+)
+
+
+def parse_stages(spec) -> list[dict]:
+    """A stage list from a list of dicts or the documented text form, or raise."""
+    if isinstance(spec, list):
+        return spec
+    if not isinstance(spec, str):
+        raise DomainError("invalid", "Unrecognized stages", [STAGE_FORMS])
+    out = []
+    for part in (p.strip() for p in spec.split(",") if p.strip()):
+        bits = [b.strip() for b in part.split(":")]
+        if len(bits) > 4 or not bits[0]:
+            raise DomainError("invalid", "Unrecognized stages", [STAGE_FORMS])
+        stage = {"id": bits[0], "label": bits[1] if len(bits) > 1 and bits[1] else bits[0]}
+        stage["status"] = bits[2] if len(bits) > 2 and bits[2] else "open"
+        if len(bits) > 3 and bits[3]:
+            stage["color"] = bits[3]
+        out.append(stage)
+    return out
+
+
 _DATE_FIELDS = {
     "due": "deadline",
     "plan": "planned",
@@ -206,6 +234,46 @@ class Tasks:
                 if self.engine.get(*self._ws, id)["version"] == current["version"]:
                     raise  # A real refusal (for example a live claim), not a stale read.
 
+    @staticmethod
+    def _missing(exc):
+        return getattr(exc, "code", None) == "not_found" or (
+            getattr(exc, "status_code", None) == 404
+        )
+
+    def _person(self, value):
+        """A person's ID from an ID or a name (exact, ignoring case). An unknown name is
+        refused rather than guessed or created."""
+        try:
+            found = self.engine.get(*self._ws, value)
+            if found["kind"] in {"person", "principal"}:
+                return found["id"]
+        except Exception as exc:  # client and store raise different types
+            if not self._missing(exc):
+                raise
+        wanted = value.strip().casefold()
+        matches = [
+            item["id"]
+            for kind in ("person", "principal")
+            for item in self.engine.list(*self._ws, kind=kind)
+            if item["title"].strip().casefold() == wanted
+        ]
+        if len(matches) > 1:
+            raise DomainError(
+                "invalid", "Several people have that name; use an ID", sorted(matches)
+            )
+        if matches:
+            return matches[0]
+        raise DomainError(
+            "invalid",
+            "No person in this workspace has that ID or name",
+            ['Add them first: daymark add "NAME" --kind person'],
+        )
+
+    def _resolve(self, fields):
+        if fields.get("assignee"):
+            fields = {**fields, "assignee": self._person(fields["assignee"])}
+        return fields
+
     def _fields(self, values):
         """Translate friendly keyword names into entity fields."""
         out = {}
@@ -234,8 +302,8 @@ class Tasks:
                 out["estimate_minutes"] = value
             elif key == "move":
                 out["next_move"] = value or None
-            elif key == "scope":
-                out["scope"] = value or None
+            elif key in {"scope", "stage", "managed_by"}:
+                out[key] = value or None
             else:
                 out[key] = value
         return out
@@ -280,7 +348,7 @@ class Tasks:
         replay = self._replayed(op)
         if replay is not None:
             return replay
-        payload = {"kind": kind, "title": title, **self._fields(fields)}
+        payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields))}
         if every:
             payload["recurrence"] = self._recurrence(every, payload, after_completion)
             if not payload.get("planned") and not payload.get("deadline"):
@@ -327,7 +395,10 @@ class Tasks:
 
     def edit(self, id, *, every=None, after_completion=False, op=None, **fields):
         """Change fields. Pass an empty string to clear a date or link."""
-        changes = self._fields({k: v for k, v in fields.items()})
+        replay = self._replayed(op)
+        if replay is not None:
+            return replay
+        changes = self._fields(self._resolve(dict(fields)))
 
         def build(current):
             out = dict(changes)
@@ -478,6 +549,84 @@ class Tasks:
 
     def unfocus(self, id, *, op=None):
         return self._act(id, "update", {"focus": None}, op=op)
+
+    # -- projects
+
+    def project(self, title, *, stages=None, op=None, **fields):
+        """Create a project. ``stages`` is a list or a spec (see parse_stages); without
+        one the project reads as To do, Waiting and Done. ``managed_by`` names a system
+        that owns the project and rewrites it, so plan editors treat it as read-only."""
+        if stages is not None:
+            fields["stages"] = parse_stages(stages)
+        return self.add(title, kind="project", op=op, **fields)
+
+    def set_stages(self, project, stages, *, op=None):
+        """Replace a project's stages; an empty list or "" restores the defaults.
+        Tasks in a stage that is gone, or that no longer fits their status, move to
+        their status's first stage. No task changes status."""
+        return self._act(project, "update", {"stages": parse_stages(stages)}, op=op)
+
+    def move(self, id, *, stage=None, after=None, before=None, first=False, last=False, op=None):
+        """Put a task in a stage of its project's board, and/or at a place in its order.
+
+        A stage sets the task's status to the stage's status, as the matching verb
+        would. ``after``/``before`` name a neighbour; ``first``/``last`` the ends. Both
+        parts are one transaction.
+        """
+        places = [
+            ({"after": after} if after else None),
+            ({"before": before} if before else None),
+            ({"after": None} if first else None),
+            ({"before": None} if last else None),
+        ]
+        places = [p for p in places if p is not None]
+        if len(places) > 1:
+            raise DomainError("invalid", "Give at most one of after, before, first or last")
+        if stage is None and not places:
+            raise DomainError("invalid", "Give a stage, a place, or both")
+        place = places[0] if places else None
+        if stage is None:
+            return self._act(id, "place", place, op=op)
+        if place is None:
+            return self._act(id, "update", {"stage": stage}, op=op)
+        replay = self._replayed(op)
+        if replay is not None:
+            return self._replayed(op + ":place") or replay
+        base = op or uuid.uuid4().hex
+        for attempt in range(4):
+            version = self.engine.get(*self._ws, id)["version"]
+            operations = [
+                {
+                    "operation_id": base,
+                    "action": "update",
+                    "payload": {"id": id, "stage": stage},
+                    "expected_version": version,
+                },
+                {
+                    "operation_id": base + ":place",
+                    "action": "place",
+                    "payload": {"id": id, **place},
+                    "expected_version": version + 1,
+                },
+            ]
+            result = self.engine.batch(*self._ws, operations, atomic=True, **self._who)
+            if result["committed"]:
+                return result["results"][-1]["result"]
+            error = next(r["error"] for r in result["results"] if r["error"]["code"] != "aborted")
+            stale = error["code"] == "conflict" and (
+                self.engine.get(*self._ws, id)["version"] != version
+            )
+            if not stale or attempt == 3:
+                raise DomainError(error["code"], error["message"], error["details"])
+
+    def plan(self, project):
+        return self.engine.plan(*self._ws, project, now=self._now)
+
+    def projects(self):
+        return self.engine.projects(*self._ws, now=self._now)
+
+    def changes(self, project, after):
+        return self.engine.changes(*self._ws, project, after)
 
     def find(self, text=None, *, kind="task", status=None, limit=50):
         """Case-insensitive title or description search within one kind."""

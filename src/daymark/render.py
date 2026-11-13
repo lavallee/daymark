@@ -67,6 +67,10 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.insert(0, f"focus {item['focus']}")
     if item["scope"]:
         tags.append("scope:" + item["scope"])
+    if item.get("stage"):
+        tags.append("stage:" + item["stage"])
+    if item.get("milestone"):
+        tags.append("milestone")
     if item["next_move"]:
         tags.append("move:" + item["next_move"])
     if item["estimate_minutes"]:
@@ -146,6 +150,60 @@ def show_text(ctx: dict, now=None) -> str:
     return "\n".join(out)
 
 
+def _rollup_text(rollup: dict) -> str:
+    parts = [f"{rollup['done']}/{rollup['total']} done ({rollup['percent_done']}%)"]
+    if rollup["overdue"]:
+        parts.append(f"{rollup['overdue']} overdue")
+    if rollup["earliest_start"] or rollup["latest_end"]:
+        parts.append(f"{rollup['earliest_start'] or '?'} to {rollup['latest_end'] or '?'}")
+    if rollup["milestones"]:
+        count = rollup["milestones"]
+        parts.append(f"{count} milestone" + ("s" if count != 1 else ""))
+    if rollup["proposed"]:
+        parts.append(f"{rollup['proposed']} proposed")
+    return ", ".join(parts)
+
+
+def plan_text(view: dict, now=None) -> str:
+    """A project as a board: one heading per stage, tasks in their manual order."""
+    project = view["project"]
+    out = [f"{project['id']}  {project['title'] or '(project)'}  [{_rollup_text(view['rollup'])}]"]
+    if project.get("managed_by"):
+        out.append(f"managed by {project['managed_by']}: read-only for plan editors")
+    names = {p["id"]: p["title"] or p["id"] for p in view["people"]}
+    for stage in view["stages"]:
+        cards = [c for c in view["tasks"] if c["plan"]["stage"] == stage["id"]]
+        out.append(f"{stage['label'].upper()} ({len(cards)})  [{stage['id']}: {stage['status']}]")
+        for card in cards:
+            dates = card["plan"]
+            extra = ""
+            if dates["start"] or dates["end"]:
+                extra += f"  {dates['start'] or '?'}..{dates['end'] or '?'}"
+            if card["assignee_id"]:
+                extra += "  owner " + names.get(card["assignee_id"], card["assignee_id"])
+            out.append("  " + line({**card, "stage": None}, now) + extra)
+    if view["proposed"]:
+        out.append(f"PROPOSED, awaiting a decision ({len(view['proposed'])})")
+        out.extend("  " + line(item, now, reason=False) for item in view["proposed"])
+    for ref in view["external_dependencies"]:
+        out.append(
+            f"outside this project: {ref['id']} {ref['title']} [{ref['status']}] "
+            f"blocks {', '.join(ref['dependents'])}"
+        )
+    out.append(f"cursor {view['cursor']}")
+    return "\n".join(out)
+
+
+def projects_text(view: dict) -> str:
+    out = [
+        f"{p['id']}  {p['title'] or '(project)'}  [{_rollup_text(p['rollup'])}"
+        + (f"; managed by {p['managed_by']}" if p["managed_by"] else "")
+        + "]"
+        for p in view["projects"]
+    ]
+    return "\n".join(out) if out else "No projects. Create one with `daymark project TITLE`."
+
+
 GUIDE = """\
 Daymark keeps tasks, plans and time for a person's work and life. Use it instead
 of ad-hoc TODO lists so nothing is lost between sessions.
@@ -178,6 +236,12 @@ Commands (add --json to any for structured output)
   daymark find TEXT                 search titles and descriptions
   daymark remember "fact"           durable context shown by `daymark prime`
   daymark undo ID                   restore the previous state
+Projects
+  daymark project "Title" [--stages SPEC]    a board; default stages To do, Waiting, Done
+  daymark projects / plan PROJECT   roll-ups; one project by stage, in its order
+  daymark add "T" --project P [--stage S] [--milestone] [--assignee NAME]
+  daymark move ID [--stage S] [--after X|--before X|--first|--last]
+      a stage sets the status; done, cancel and reopen move the card too
 Dates D: 2030-04-03, 2030-04-03T09:00, today, tomorrow, fri, +3d, +2w, +1m ("fri 09:00").
 Repeats R: day, week, month, year, "2 weeks", weekdays, "mon,thu"; --after-completion
   counts from when it was actually done.
