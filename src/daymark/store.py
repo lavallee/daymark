@@ -17,7 +17,7 @@ from datetime import timedelta
 
 from pydantic import ValidationError
 
-from . import plans
+from . import plans, ranks
 from .models import (
     DomainError,
     Entity,
@@ -814,6 +814,9 @@ class Store:
                 raw.setdefault("occurrence_key", raw["id"] + ":0")
             if raw.get("rank") is not None:
                 invalid("A task's place in its project's order is set by the place action")
+            if "created_at" in payload:
+                # It orders tasks never placed; history is restored by snapshot import.
+                invalid("created_at is set by Daymark; restore history through snapshot import")
             if raw.get("stage") is not None:
                 self._move_to_stage(raw, None, payload)
         else:
@@ -914,7 +917,7 @@ class Store:
                     invalid("Place needs exactly one of after or before")
                 if before["kind"] != "task" or not before["project_id"]:
                     invalid("Only a task in a project has a place in its order")
-                raw["rank"] = self._place(before, payload)
+                raw["rank"] = self._place(before, payload, operation_id, now)
             elif action.startswith("reminder."):
                 self._reminder_action(raw, action, payload)
                 if action == "reminder.snooze":
@@ -927,7 +930,7 @@ class Store:
             else:
                 invalid("Unsupported action")
         if action != "delete":
-            self._settle_stage(raw, before, payload)
+            self._settle_stage(raw, before, payload, operation_id, now)
         if action in {"create", "update"}:
             self._check_structure(raw, before)
         data = self._validated(raw)
@@ -1035,7 +1038,7 @@ class Store:
             invalid("Stage and status disagree")
         raw["status"] = stage["status"]
 
-    def _settle_stage(self, raw, before, payload):
+    def _settle_stage(self, raw, before, payload, operation_id=None, now=None):
         """Keep a task's stored stage consistent with its status and project.
 
         A task that changes project loses its stage unless the same write sets one,
@@ -1049,7 +1052,9 @@ class Store:
             if "stage" not in payload:
                 raw["stage"] = None
             raw["rank"] = (
-                self._rank_after(None, raw["workspace"], raw["project_id"], raw["id"])
+                self._rank_after(
+                    None, raw["workspace"], raw["project_id"], raw["id"], operation_id, now
+                )
                 if raw.get("project_id")
                 else None
             )
@@ -1166,38 +1171,83 @@ class Store:
             key=plans.order_key,
         )
 
-    def _place(self, task, payload):
+    def _rekey(self, item, key, operation_id, now):
+        if item.get("rank") == key:
+            return
+        updated = {**item, "rank": key, "version": item["version"] + 1, "updated_at": now}
+        self._put(updated)
+        self._event(item["workspace"], operation_id, "rank.assign", item, updated)
+
+    def _key_at(self, others, index, operation_id, now):
+        """The key for a task inserted at ``index`` of ``others`` (an ordered list
+        without it). Only that task is written, unless its neighbours share a key
+        (then the tied tasks after it are re-keyed) or the key would grow past
+        ``ranks.REBALANCE_AT`` (then the whole project is re-keyed, evenly)."""
+        keys = [plans.effective_rank(x) for x in others]
+        low = keys[index - 1] if index > 0 else None
+        high = keys[index] if index < len(keys) else None
+        try:
+            if low is not None and high is not None and low >= high:
+                end = index
+                while end < len(keys) and keys[end] <= low:
+                    end += 1
+                upper = keys[end] if end < len(keys) else None
+                fresh, previous = [], low
+                for _ in range(end - index + 1):
+                    previous = ranks.rank_between(previous, upper)
+                    fresh.append(previous)
+                if max(len(k) for k in fresh) <= ranks.REBALANCE_AT:
+                    for item, key in zip(others[index:end], fresh[1:]):
+                        self._rekey(item, key, operation_id, now)
+                    return fresh[0]
+            else:
+                key = ranks.rank_between(low, high)
+                if len(key) <= ranks.REBALANCE_AT:
+                    return key
+            spread = ranks.spaced(len(others) + 1)
+        except ValueError:
+            invalid("This project's order keys are damaged; place a task first or last")
+        for position, item in enumerate(others):
+            self._rekey(item, spread[position + (position >= index)], operation_id, now)
+        return spread[index]
+
+    def _place(self, task, payload, operation_id, now):
         """The rank that puts ``task`` directly after or before a neighbour.
 
-        ``after: None`` is first and ``before: None`` is last. Only the moved task
-        is written: a task never placed reads as its creation time.
+        ``after: None`` is first and ``before: None`` is last. Order is total:
+        by key, then by ID. Archived tasks keep their places.
         """
         others = self._ordered(task["workspace"], task["project_id"], task["id"])
-        keys = [plans.effective_rank(x) for x in others]
         ids = [x["id"] for x in others]
         key = "after" if "after" in payload else "before"
         ref = payload[key]
         if ref is None:
-            if key == "after":
-                return plans.rank_between(None, keys[0] if keys else None)
-            return plans.rank_between(keys[-1] if keys else None, None)
-        live = {x["id"] for x in others if not x["archived"]}
-        if not isinstance(ref, str) or ref not in live:
-            invalid("The neighbour must be another task in the same project")
-        i = ids.index(ref)
-        if key == "after":
-            return plans.rank_between(keys[i], keys[i + 1] if i + 1 < len(keys) else None)
-        return plans.rank_between(keys[i - 1] if i else None, keys[i])
+            index = 0 if key == "after" else len(others)
+        else:
+            live = {x["id"] for x in others if not x["archived"]}
+            if not isinstance(ref, str) or ref not in live:
+                invalid("The neighbour must be another task in the same project")
+            index = ids.index(ref) + (key == "after")
+        return self._key_at(others, index, operation_id, now)
 
-    def _rank_after(self, task, workspace, project_id, exclude):
+    def _rank_after(self, task, workspace, project_id, exclude, operation_id, now):
         """The key directly after ``task`` (None: last) in a project's order."""
         others = self._ordered(workspace, project_id, exclude)
-        keys = [plans.effective_rank(x) for x in others]
         if task is None:
-            return plans.rank_between(keys[-1] if keys else None, None)
-        low = plans.effective_rank(task)
-        following = next((k for k in keys if k > low), None)
-        return plans.rank_between(low, following)
+            return self._key_at(others, len(others), operation_id, now)
+        index = next((i for i, x in enumerate(others) if x["id"] == task["id"]), len(others) - 1)
+        return self._key_at(others, index + 1, operation_id, now)
+
+    def _untie(self, task, operation_id, now):
+        """After an undo restores an old key, move the task just past any task that
+        now holds the same key, so no two tasks share one."""
+        if task["kind"] != "task" or not task["project_id"] or not task["rank"]:
+            return
+        others = self._ordered(task["workspace"], task["project_id"], task["id"])
+        if all(plans.effective_rank(x) != task["rank"] for x in others):
+            return
+        index = sum(1 for x in others if plans.effective_rank(x) <= task["rank"])
+        task["rank"] = self._key_at(others, index, operation_id, now)
 
     def _undo(self, workspace, payload, expected_version, operation_id, now):
         if set(payload) != {"id"}:
@@ -1228,6 +1278,7 @@ class Store:
             restored.update(claimed_by=None, claim_until=None)
         # A stage the project has since removed falls back to the status's home stage.
         self._settle_stage(restored, None, {})
+        self._untie(restored, operation_id, now)
         if restored["kind"] == "reminder":
             restored.update(lease_owner=None, lease_until=None, lease_token=None)
             if restored["reminder_state"] == "leased":
@@ -1317,7 +1368,7 @@ class Store:
             # milestone membership belong to the series and carry over.
             "stage": None,
             "rank": (
-                self._rank_after(data, data["workspace"], data["project_id"], id)
+                self._rank_after(data, data["workspace"], data["project_id"], id, operation_id, now)
                 if data["project_id"]
                 else None
             ),

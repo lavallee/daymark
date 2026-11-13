@@ -416,9 +416,7 @@ class Entity(Model):
     stage: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG)
     # A task's place in its project's manual order: a fractional-index key, compared
     # as plain text. Unset sorts after every ranked task, oldest first.
-    rank: str | None = Field(
-        default=None, min_length=1, max_length=1000, pattern=r"^[A-Za-z][0-9A-Za-z]*$"
-    )
+    rank: str | None = Field(default=None, min_length=1, max_length=1000)
     # A marker on a task, dated by its own temporal fields.
     milestone: bool = False
     # The milestone task this task's work counts toward, in the same project.
@@ -472,6 +470,17 @@ class Entity(Model):
     lease_until: datetime | None = None
     delivery_key: str | None = None
     error: str | None = None
+
+    @field_validator("rank")
+    @classmethod
+    def valid_rank(cls, value):
+        if value is None:
+            return value
+        from .ranks import valid_rank  # Lazy: this module also loads on its own.
+
+        if not valid_rank(value):
+            raise ValueError("invalid order key")
+        return value
 
     @field_validator(
         "created_at",
