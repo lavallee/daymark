@@ -50,7 +50,18 @@ local CLI may request global operational health.
 `expected_version`. `POST /v1/query` accepts `filters`. Reads are
 `GET /v1/entities`, `/v1/entities/{id}`, `/v1/events?after=0&limit=100`,
 `/v1/export`, and the derived views `/v1/ready`, `/v1/agenda`, `/v1/summary`
-and `/v1/context/{id}`. `POST /v1/import` accepts `snapshot`, `operation_id`, and
+and `/v1/context/{id}`. Projects read as plans: `GET /v1/projects` (each with its
+roll-up), `/v1/projects/{id}/plan` (stages, tasks in manual order, roll-up and the
+head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
+(`{"cursor", "changed"}`, cheap enough to poll). `GET /v1/events/head` gives the
+latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
+Goals read as `GET /v1/goals` and `/v1/goals/{id}/plan`, and `GET /v1/tree/{id}?depth=3`
+gives an item with its children in order.
+`POST /v1/operations/batch` takes `operations` (up to 100, each shaped like a
+single operation), `atomic` (default true: all or nothing) and optionally
+`request_id` with `request`, which make the batch replay as a unit; it answers 200 with
+`committed` and one result per operation, so a refusal is a result, not an HTTP
+error. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
 reject conflicting existing identities rather than rewind newer state. Schema
 operation IDs remain stable within v1. Each write is recorded with the token's
@@ -143,6 +154,44 @@ including prior operation hashes/results so identical write retries remain
 replays after restore. Conflicting duplicate event/operation identities must be
 rejected atomically. This is distinct from a complete SQLite backup. Compare synthetic snapshot readback
 before considering a restore verified. Do not use real household data in examples.
+
+## Upgrading between releases
+
+A newer Daymark upgrades a database in place, in one transaction. **The upgrade
+is one-way**: the older release cannot open the file afterwards, and an older
+process that keeps the file open stops working once anything has upgraded it.
+
+Two rules decide when that happens:
+
+- **The command line upgrades on any command.** `daymark ready`, `daymark add`,
+  `serve`, `mcp`, `worker` and `init` all open the file upgrading it, because the
+  command line is the operator's tool and the documented upgrade path. The first
+  time it upgrades an existing database it prints one line to standard error, for
+  example `daymark: upgraded /data/daymark.sqlite3 from schema 4 to 5 (Daymark
+  0.4.0); older versions can no longer open it`. A new or already current file
+  prints nothing.
+- **The library's reads never upgrade.** `Store.plan`, `projects`, `changes`,
+  `goals`, `tree`, `export`, `get`, `list`, `query` and the ready, agenda and
+  summary views refuse a schema the caller has not upgraded, all with the same
+  `conflict` message. `Store(path)` upgrades when it opens a path; a caller-owned
+  connection is upgraded inside the caller's transaction and the caller commits
+  it. `Store(path, upgrade=False)` refuses an old schema without writing, and a
+  read-only connection on an old schema is refused the same way.
+
+So take the backup **with the release you are leaving, before installing the new
+one** (any `daymark` command of the new release would already upgrade the file).
+`daymark backup` copies the file through SQLite's backup API without opening a
+Store, so it never upgrades what it copies:
+
+```sh
+daymark --db example.sqlite3 backup --file example-before-upgrade.sqlite3
+```
+
+Stop or upgrade every process that uses the file (CLI wrappers, the service, the
+worker, embedding applications) together. To roll back, stop them, restore the
+backup into a new path and point the older release at it; writes made after the
+upgrade are not in the backup. A database written by a newer Daymark is refused
+with `conflict`; Daymark never downgrades a file.
 
 ## Boundary review rationale
 

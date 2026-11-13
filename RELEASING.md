@@ -21,13 +21,14 @@ This checklist covers a source release of `daymark-core` (import: `daymark`). Pa
    Release acceptance uses ordinary package imports and the real Store through library, API, client, CLI, and worker paths. Verify caller-owned rollback with and without a preexisting transaction, stale-version/replay conflicts, workspace isolation, reminder cancellation/detachment on task deletion and atomic rejection of other inbound references, skip without actual completion, cancellation before send, and subprocess recovery after a sink side effect but before persisted success. The receiver must durably deduplicate the stable delivery key. For external sinks, verify the claim/outbox record is committed before sending; caller-owned connections require an application-owned transaction design because Store never commits them. Qualify each real delivery integration separately from the recording sink. Fake-engine or temporary package-bootstrap tests are preliminary evidence only.
 
    Run directory scanning on a clean source checkout, without a virtual environment or generated caches. For a new repository with no commits, history scanning is pending until the initial commit. Resolve findings rather than hiding them in broad allowlists. Review direct and transitive runtime dependency licenses and notices for the actual locked versions, including optional service dependencies.
-3. Keep `pyproject.toml` and `daymark.__version__` aligned. Use semantic versions, and describe changes to stored schema and behavioral compatibility. During 0.x, flag breaking changes prominently.
+3. Keep `pyproject.toml` and `daymark.__version__` aligned. Use semantic versions, and describe changes to stored schema and behavioral compatibility. During 0.x, flag breaking changes prominently. When `SCHEMA` changes, the upgrade is one-way: say so at the top of the release notes with the backup step (`daymark backup --file BEFORE.sqlite3`), keep `RELEASE` in `store.py` naming the first release that writes the new schema, and test the upgrade from the previous release's fixture (`tests/fixtures`) through a path and a caller-owned connection.
 4. Replace the unreleased changelog with a dated release entry. Update the landing page version and status. Build and inspect both distributions:
 
    ```sh
+   version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
    uv build
-   python -m zipfile -l dist/daymark_core-0.1.0-py3-none-any.whl
-   tar -tzf dist/daymark_core-0.1.0.tar.gz
+   python -m zipfile -l "dist/daymark_core-$version-py3-none-any.whl"
+   tar -tzf "dist/daymark_core-$version.tar.gz"
    ```
 
    Verify the MIT license is included. Verify no private deployment report, database, export, local path, or credential appears in either archive. Inspect archive contents as well as filenames.
@@ -41,10 +42,10 @@ CI must pass across its supported Python matrix. A local pass on one interpreter
 The release owner approves the tested candidate and commits the intended files. Confirm `git status --short` is clean and the tag points to that commit.
 
 ```sh
-git tag -a v0.1.0 -m 'v0.1.0'
+git tag -a "v$version" -m "v$version"
 git push origin main
-git push origin v0.1.0
-gh release create v0.1.0 --repo lavallee/daymark --title 'Daymark 0.1.0' --notes-file /tmp/daymark-release-notes.md
+git push origin "v$version"
+gh release create "v$version" --repo lavallee/daymark --title "Daymark $version" --notes-file /tmp/daymark-release-notes.md
 ```
 
 Release notes should state verified capabilities and known limits. Use a comparison link for subsequent releases. Confirm the remote commit and tag, release page, and CI results after publishing.

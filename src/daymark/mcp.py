@@ -31,6 +31,11 @@ _FIELDS = {
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
     "scope": {"type": "string", "description": "Part of life it belongs to, e.g. household."},
+    "stage": {"type": "string", "description": "Board stage; sets status."},
+    "milestone": {"type": "string", "description": "Milestone it counts toward."},
+    "is_milestone": {"type": "boolean"},
+    "type": {"type": "string"},
+    "values": {"type": "object", "description": "Project fields by id."},
 }
 _DATES = (
     "Dates: YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, a weekday name, +Nd, +Nw, +Nm. "
@@ -39,7 +44,7 @@ _DATES = (
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
     "release", "note", "wait", "resume", "defer", "block", "unblock", "forget",
-    "focus", "unfocus",
+    "focus", "unfocus", "move",
 ]  # fmt: skip
 
 TOOLS = [
@@ -52,17 +57,31 @@ TOOLS = [
         "name": "daymark_view",
         "description": "Read tasks. view=ready (actionable now, most pressing first), "
         "agenda (overdue, today, days ahead, waiting, proposed), show (one task by id "
-        "with blockers, notes, history) or find (search by text).",
+        "with blockers, notes, history), find (search by text), projects, or plan (id=project: "
+        "its board in order; by=milestone|type|parent|assignee|FIELD), goals, goal (id).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "view": {"type": "string", "enum": ["ready", "agenda", "show", "find"]},
+                "view": {
+                    "type": "string",
+                    "enum": [
+                        "ready",
+                        "agenda",
+                        "show",
+                        "find",
+                        "projects",
+                        "plan",
+                        "goals",
+                        "goal",
+                    ],
+                },
                 "id": {"type": "string"},
                 "text": {"type": "string"},
                 "days": {"type": "integer"},
                 "limit": {"type": "integer"},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
                 "scope": {"type": "string", "description": 'Only this scope; "" for unscoped.'},
+                "by": {"type": "string"},
             },
             "required": ["view"],
         },
@@ -101,7 +120,7 @@ TOOLS = [
         "name": "daymark_act",
         "description": "Act on a task. note needs text; wait needs on (and optional until); "
         "defer needs until; block/unblock need on (another task id); claim takes minutes. "
-        "done accepts text as a closing note.",
+        "done accepts text as a closing note. move takes stage and/or place.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -111,6 +130,8 @@ TOOLS = [
                 "on": {"type": "string"},
                 "until": {"type": "string"},
                 "minutes": {"type": "integer"},
+                "stage": {"type": "string"},
+                "place": {"type": "string", "description": "after:ID, before:ID, first or last"},
                 "op": {"type": "string", "description": "Repeat to retry safely."},
             },
             "required": ["action", "id"],
@@ -126,6 +147,17 @@ TOOLS = [
         },
     },
 ]
+
+
+def _place(text):
+    if not text:
+        return {}
+    if text in {"first", "last"}:
+        return {text: True}
+    side, _, ref = text.partition(":")
+    if side not in {"after", "before"} or not ref:
+        raise DomainError("invalid", "place is after:ID, before:ID, first or last")
+    return {side: ref}
 
 
 def call(tasks, name, args):
@@ -148,7 +180,17 @@ def call(tasks, name, args):
             return render.show_text(tasks.show(args["id"]), now)
         if view == "find":
             return render.listing(tasks.find(args.get("text")), now, "No matches.")
-        raise DomainError("invalid", "view must be ready, agenda, show or find")
+        if view == "projects":
+            return render.projects_text(tasks.projects())
+        if view == "plan":
+            return render.plan_text(tasks.plan(args["id"]), now, by=args.get("by") or "stage")
+        if view == "goals":
+            return render.goals_text(tasks.goals())
+        if view == "goal":
+            return render.goal_text(tasks.goal_plan(args["id"]))
+        raise DomainError(
+            "invalid", "view must be ready, agenda, show, find, projects, plan, goals or goal"
+        )
     if name in {"daymark_add", "daymark_edit"}:
         known = next(t for t in TOOLS if t["name"] == name)["inputSchema"]["properties"]
         if set(args) - set(known):
@@ -175,6 +217,8 @@ def call(tasks, name, args):
             item = getattr(tasks, action)(id, args["on"], op=op)
         elif action == "claim":
             item = tasks.claim(id, minutes=args.get("minutes", 60), op=op)
+        elif action == "move":
+            item = tasks.move(id, stage=args.get("stage"), op=op, **_place(args.get("place")))
         else:
             item = getattr(tasks, action)(id, op=op)
         return render.line(item, now)

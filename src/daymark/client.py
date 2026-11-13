@@ -126,8 +126,54 @@ class Client:
                 return None
             raise
 
-    def events(self, after: int = 0, limit: int = 100) -> Any:
-        return self._request("GET", "/v1/events", params={"after": after, "limit": limit})
+    def events(self, after: int = 0, limit: int = 100, project: str | None = None) -> Any:
+        params = self._params(after=after, limit=limit, project=project)
+        return self._request("GET", "/v1/events", params=params)
+
+    def head(self) -> int:
+        return self._request("GET", "/v1/events/head")["cursor"]
+
+    def batch(
+        self,
+        operations: list[dict[str, Any]],
+        *,
+        atomic: bool = True,
+        actor: Any = None,
+        request_id: str | None = None,
+        request: Any = None,
+    ) -> Any:
+        """Several operations in one transaction; see Store.batch. The server records
+        its authenticated principal as the actor, so ``actor`` is ignored."""
+        body: dict[str, Any] = {"operations": operations, "atomic": atomic}
+        if request_id is not None:
+            body.update(request_id=request_id, request=request)
+        return self._request("POST", "/v1/operations/batch", json=body)
+
+    def goals(self, *, now: Any = None) -> Any:
+        return self._request("GET", "/v1/goals", params=self._params(now=now))
+
+    def goal_plan(self, goal_id: str, *, now: Any = None) -> Any:
+        return self._request(
+            "GET", f"/v1/goals/{quote(goal_id, safe='')}/plan", params=self._params(now=now)
+        )
+
+    def tree(self, entity_id: str, *, depth: int = 3) -> Any:
+        return self._request(
+            "GET", f"/v1/tree/{quote(entity_id, safe='')}", params={"depth": depth}
+        )
+
+    def projects(self, *, now: Any = None) -> Any:
+        return self._request("GET", "/v1/projects", params=self._params(now=now))
+
+    def plan(self, project_id: str, *, now: Any = None) -> Any:
+        return self._request(
+            "GET", f"/v1/projects/{quote(project_id, safe='')}/plan", params=self._params(now=now)
+        )
+
+    def changes(self, project_id: str, after: int) -> Any:
+        return self._request(
+            "GET", f"/v1/projects/{quote(project_id, safe='')}/changes", params={"after": after}
+        )
 
     def export(self) -> Any:
         return self._request("GET", "/v1/export")

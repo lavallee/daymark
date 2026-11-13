@@ -29,7 +29,7 @@ $ daymark ready            # the hotel is no longer blocked
 ## For agents
 
 Run `daymark prime` at the start of a session. It prints the working rules, the
-command list and the current state in about 2,600 characters. `daymark onboard
+command list and the current state in about 3,000 characters. `daymark onboard
 --write AGENTS.md` adds a short section that tells future sessions to do so.
 
 | You want | Command |
@@ -46,6 +46,7 @@ command list and the current state in about 2,600 characters. `daymark onboard
 | Keep a durable fact | `daymark remember "fact"` |
 | Put a task on the person's own short list | `daymark focus ID` |
 | See only one part of life | `daymark ready --scope household` |
+| Run a project as a board, in your own order | `daymark plan P`, `daymark move ID --stage S --after X` |
 
 Output is one line per task, carrying only what is set. `--json` gives the same
 content as compact JSON. Failures print a stable code (`not_found`, `conflict`,
@@ -70,6 +71,80 @@ for task in tasks.ready():
 Read the [agent guide](docs/agents.md) for the full surface, and
 [work and life](docs/work-and-life.md) for how Daymark relates to code-centred
 trackers such as Beads and what it does differently.
+
+## Projects: as plain or as structured as the work needs
+
+A project starts as a list of tasks on a board of To do, Waiting and Done. Add
+structure only when the work asks for it: your own stages, item types such as
+epics, milestones that work counts toward, a goal it serves, and fields of your
+own (points, cost, risk). None of it is required, and nothing about a project
+forces a method on it.
+
+Moving house is a few phases and one date that matters (each example starts from
+a fresh `daymark init` with `DAYMARK_TZ=Europe/London`, and runs as shown):
+
+```console
+$ daymark project add "Move house" --id move --preset event --target 2030-06-28
+move  Move house
+$ daymark add "Moving day" --project move --id day --is-milestone --due 2030-06-28
+day  Moving day  [due 2030-06-28; milestone]
+$ daymark add "Book the van" --project move --id van --milestone day --stage book --set cost=180 --due 2030-06-01
+van  Book the van  [due 2030-06-01; stage:book]
+$ daymark add "Pack the kitchen" --project move --id pack --milestone day --stage prepare --plan 2030-06-20
+pack  Pack the kitchen  [plan 2030-06-20; stage:prepare]
+$ daymark plan move
+move  Move house  [0/3 done (0%), 2030-06-20 to 2030-06-28, 1 milestone, cost 180]
+end 2030-06-28
+PLAN (1)  [plan: open]
+  day  Moving day  [due 2030-06-28; milestone]  ?..2030-06-28
+BOOK (1)  [book: open]
+  van  Book the van  [due 2030-06-01]  ?..2030-06-01  for day  cost=180
+PREPARE (1)  [prepare: open]
+  pack  Pack the kitchen  [plan 2030-06-20]  2030-06-20..?  for day
+ON THE DAY (0)  [day: open]
+DONE (0)  [done: completed]
+DROPPED (0)  [dropped: cancelled]
+cursor 4
+```
+
+A software release has epics, points and a beta:
+
+```console
+$ daymark project add "Release 2.0" --id rel --preset epics
+rel  Release 2.0
+$ daymark add "Beta" --project rel --id beta --is-milestone --due 2030-05-01
+beta  Beta  [due 2030-05-01; milestone]
+$ daymark add "Accounts" --project rel --id acc --type epic
+acc  Accounts
+$ daymark add "Sign-in" --project rel --id signin --type story --parent acc --milestone beta --set points=3
+signin  Sign-in
+$ daymark add "Fix crash on login" --project rel --id crash --type bug --parent acc --milestone beta --set points=2
+crash  Fix crash on login
+$ daymark plan rel --by milestone
+rel  Release 2.0  [0/4 done (0%), ? to 2030-05-01, 1 milestone, points 5]
+MILESTONE beta Beta (2)  [2030-05-01; 0/2 done]
+  signin  Sign-in  story  in acc  points=3
+  crash  Fix crash on login  bug  in acc  points=2
+NO MILESTONE (1)
+  acc  Accounts  epic
+cursor 5
+```
+
+A stage carries a lifecycle status, so moving a card to Done completes the task,
+and `daymark done` moves the card. `daymark move ID --after X` sets the order.
+The plan reads start as the planned day (else the earliest start) and end as the
+target (else the deadline); moving a plan never moves a deadline. Roll-ups,
+health (overdue, blocked, unowned, past a milestone, date conflicts) and warnings
+are facts, never a score. `daymark project presets` lists the starting
+configurations; `daymark project config ID` prints a project's as JSON, and
+`--apply FILE` reshapes it in one step.
+
+For an application that shows and edits a project, `daymark plan --json`,
+`GET /v1/projects/{id}/plan` and `Store.plan` give the whole plan with an event
+cursor in one read; `Store.changes` (`GET /v1/projects/{id}/changes`) says
+cheaply whether anything changed since; `Store.batch` writes several changes in
+one transaction; and `daymark.plans.schedule` turns a plan's dates back into
+Daymark's fields.
 
 ## What it models
 
@@ -96,13 +171,13 @@ trackers such as Beads and what it does differently.
 ## Install from source
 
 The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.3.0. Package registry publication is not yet promised. Requires
+release is 0.4.0. Package registry publication is not yet promised. Requires
 Python 3.11 or newer.
 
 To install the command line tool from the tagged release:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.3.0"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.4.0"
 ```
 
 Or from a checkout:

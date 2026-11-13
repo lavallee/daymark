@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
@@ -277,6 +278,102 @@ class Note(Model):
         return aware(value)
 
 
+COLORS = (
+    "black", "grey", "light-violet", "violet", "blue", "light-blue", "yellow", "orange",
+    "green", "light-green", "light-red", "red", "white",
+)  # fmt: skip
+SLUG = r"^[a-z0-9][a-z0-9_-]*$"
+
+
+class Stage(Model):
+    """One column of a project's board. ``status`` is the lifecycle status a task takes there."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=SLUG)
+    label: str = Field(min_length=1, max_length=200)
+    status: Literal["open", "waiting", "completed", "cancelled"]
+    color: Literal[COLORS] | None = None  # type: ignore[valid-type]
+
+
+# Custom number values: integers are kept exact within this bound (the largest
+# integer a double, and so JSON readers in most languages, hold exactly); other
+# numbers must be finite floats.
+MAX_EXACT = 2**53 - 1
+
+
+def plain_number(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return -MAX_EXACT <= value <= MAX_EXACT
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _plain_value(value) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return plain_number(value)
+    if isinstance(value, str):
+        return len(value) <= 10_000
+    if isinstance(value, list):
+        return len(value) <= 100 and all(isinstance(x, str) and len(x) <= 200 for x in value)
+    return False
+
+
+class ItemType(Model):
+    """A kind of item a project uses. A container (an epic) is expected to have children."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=SLUG)
+    label: str = Field(min_length=1, max_length=200)
+    color: Literal[COLORS] | None = None  # type: ignore[valid-type]
+    container: bool = False
+
+
+class Option(Model):
+    id: str = Field(min_length=1, max_length=64, pattern=SLUG)
+    label: str = Field(min_length=1, max_length=200)
+    color: Literal[COLORS] | None = None  # type: ignore[valid-type]
+
+
+FIELD_TYPES = ("text", "number", "option", "options", "date", "bool", "person", "url")
+
+
+class FieldDef(Model):
+    """A typed field a project declares for its tasks."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=SLUG)
+    label: str = Field(min_length=1, max_length=200)
+    type: Literal[FIELD_TYPES]  # type: ignore[valid-type]
+    options: list[Option] = Field(default_factory=list, max_length=100)
+    unit: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.options and self.type not in {"option", "options"}:
+            raise ValueError("only option fields have options")
+        if len({o.id for o in self.options}) != len(self.options):
+            raise ValueError("option ids must be unique")
+        if self.unit and self.type != "number":
+            raise ValueError("only number fields have a unit")
+        return self
+
+
+class Measure(Model):
+    """One number a goal is judged by, kept by hand: no formula, no history."""
+
+    label: str = Field(min_length=1, max_length=200)
+    target: float
+    current: float | None = None
+    unit: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @field_validator("target", "current")
+    @classmethod
+    def finite(cls, value):
+        if value is not None and not math.isfinite(value):
+            raise ValueError("a measure is a finite number")
+        return value
+
+
 class Entity(Model):
     id: str = Field(min_length=1, max_length=128)
     workspace: str = Field(min_length=1, max_length=128)
@@ -325,6 +422,31 @@ class Entity(Model):
     scope: str | None = Field(
         default=None, min_length=1, max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]*$"
     )
+    # A project's workflow, in board order. Empty means the defaults derived from
+    # status (see plans.DEFAULT_STAGES). Projects only.
+    stages: list[Stage] = Field(default_factory=list, max_length=30)
+    # Where a task sits on its project's board. Unset means the project's first
+    # stage for the task's status. Lifecycle status stays the truth for readiness.
+    stage: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG)
+    # A task's place in its project's manual order: a fractional-index key, compared
+    # as plain text. Unset sorts after every ranked task, oldest first.
+    rank: str | None = Field(default=None, min_length=1, max_length=1000)
+    # A marker on a task, dated by its own temporal fields.
+    milestone: bool = False
+    # The milestone task this task's work counts toward, in the same project.
+    milestone_id: str | None = None
+    # A project's optional item types ("epic", "bug"), and its own typed fields.
+    types: list[ItemType] = Field(default_factory=list, max_length=20)
+    fields: list[FieldDef] = Field(default_factory=list, max_length=50)
+    # A task's type, one of its project's types, and its custom field values by
+    # field id. Values are checked against the project when they are written.
+    type: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG)
+    values: dict[str, Any] = Field(default_factory=dict, max_length=50)
+    # A goal's optional single measure: where it stands against a target.
+    measure: Measure | None = None
+    # The system that owns and rewrites this project (for example "ledger"). Tools that
+    # edit plans treat such a project as read-only. Daymark itself still accepts writes.
+    managed_by: str | None = Field(default=None, min_length=1, max_length=100, pattern=SLUG)
     # An expiring working claim. It is advisory coordination, not authorization.
     claimed_by: str | None = Field(default=None, min_length=1, max_length=200)
     claim_until: datetime | None = None
@@ -363,6 +485,17 @@ class Entity(Model):
     delivery_key: str | None = None
     error: str | None = None
 
+    @field_validator("rank")
+    @classmethod
+    def valid_rank(cls, value):
+        if value is None:
+            return value
+        from .ranks import valid_rank  # Lazy: this module also loads on its own.
+
+        if not valid_rank(value):
+            raise ValueError("invalid order key")
+        return value
+
     @field_validator(
         "created_at",
         "updated_at",
@@ -396,6 +529,34 @@ class Entity(Model):
             raise ValueError("claimed_by and claim_until are set together")
         if self.kind == "filter" and self.filter is None:
             raise ValueError("saved filter requires filter AST")
+        if self.kind != "project" and (self.stages or self.managed_by or self.types or self.fields):
+            raise ValueError("stages, types, fields and managed_by belong to projects")
+        if self.kind != "task" and (
+            self.stage
+            or self.rank
+            or self.milestone
+            or self.type
+            or self.values
+            or self.milestone_id
+        ):
+            raise ValueError("stage, rank, type, values and milestones belong to tasks")
+        if self.kind != "goal" and self.measure is not None:
+            raise ValueError("a measure belongs to a goal")
+        for name, items in (("type", self.types), ("field", self.fields)):
+            if len({x.id for x in items}) != len(items):
+                raise ValueError(f"{name} ids must be unique")
+        for key, value in self.values.items():
+            if not re.fullmatch(SLUG, key) or len(key) > 64:
+                raise ValueError("value keys are field ids")
+            if not _plain_value(value):
+                raise ValueError("a value is text, a number, true or false, or a list of text")
+        if self.stage and not self.project_id:
+            raise ValueError("a stage requires a project")
+        if self.stages:
+            if len({s.id for s in self.stages}) != len(self.stages):
+                raise ValueError("stage ids must be unique")
+            if not {"open", "completed"} <= {s.status for s in self.stages}:
+                raise ValueError("stages need at least one open and one completed stage")
         return self
 
 

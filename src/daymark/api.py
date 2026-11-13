@@ -32,6 +32,14 @@ class Operation(BaseModel):
     expected_version: int = Field(ge=0)
 
 
+class BatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    operations: list[Operation] = Field(min_length=1, max_length=100)
+    atomic: bool = True
+    request_id: str | None = Field(default=None, min_length=1, max_length=200)
+    request: Any = None
+
+
 class ImportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     operation_id: str = Field(min_length=1, max_length=200)
@@ -134,25 +142,86 @@ def create_router(store: Any) -> APIRouter:
 
         return {"status": "ok", **sanitize({k: v for k, v in raw.items() if k in allowed})}
 
-    @router.post("/operations", operation_id="daymark_v1_execute")
-    def execute(body: Operation, request: Request) -> Any:
-        actor = identity(request)
-        _audit("write_attempt", actor)
+    def principal_payload(body: Operation, actor: Identity) -> dict[str, Any]:
         payload = dict(body.payload)
         # The authenticated principal, not the request body, says who is acting.
         if body.action in {"claim", "release"}:
             payload["owner"] = actor.principal
         elif body.action == "note":
             payload["author"] = actor.principal
+        return payload
+
+    @router.post("/operations", operation_id="daymark_v1_execute")
+    def execute(body: Operation, request: Request) -> Any:
+        actor = identity(request)
+        _audit("write_attempt", actor)
         return _invoke(
             store.execute,
             actor.workspace,
             body.operation_id,
             body.action,
-            payload,
+            principal_payload(body, actor),
             expected_version=body.expected_version,
             actor=actor.principal,
         )
+
+    @router.post("/operations/batch", operation_id="daymark_v1_batch")
+    def batch(body: BatchRequest, request: Request) -> Any:
+        """Per-operation results in one transaction; see Store.batch. Refusals are
+        results (200), not HTTP errors; a malformed batch is 422."""
+        actor = identity(request)
+        _audit("write_attempt", actor)
+        operations = [
+            {
+                "operation_id": op.operation_id,
+                "action": op.action,
+                "payload": principal_payload(op, actor),
+                "expected_version": op.expected_version,
+            }
+            for op in body.operations
+        ]
+        result = _invoke(
+            store.batch,
+            actor.workspace,
+            operations,
+            atomic=body.atomic,
+            actor=actor.principal,
+            request_id=body.request_id,
+            request=body.request,
+        )
+        # Domain messages are fixed rule text; field details are dropped at the boundary.
+        for item in result["results"]:
+            if not item["ok"]:
+                item["error"] = {**item["error"], "details": []}
+        return result
+
+    @router.get("/projects", operation_id="daymark_v1_projects")
+    def projects(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+        return _invoke(store.projects, identity(request).workspace, now=now)
+
+    @router.get("/projects/{project_id}/plan", operation_id="daymark_v1_plan")
+    def plan(
+        project_id: str, request: Request, now: str | None = Query(None, max_length=40)
+    ) -> Any:
+        return _invoke(store.plan, identity(request).workspace, project_id, now=now)
+
+    @router.get("/projects/{project_id}/changes", operation_id="daymark_v1_changes")
+    def changes(project_id: str, request: Request, after: int = Query(..., ge=0)) -> Any:
+        return _invoke(store.changes, identity(request).workspace, project_id, after)
+
+    @router.get("/goals", operation_id="daymark_v1_goals")
+    def goals(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+        return _invoke(store.goals, identity(request).workspace, now=now)
+
+    @router.get("/goals/{goal_id}/plan", operation_id="daymark_v1_goal_plan")
+    def goal_plan(
+        goal_id: str, request: Request, now: str | None = Query(None, max_length=40)
+    ) -> Any:
+        return _invoke(store.goal_plan, identity(request).workspace, goal_id, now=now)
+
+    @router.get("/tree/{entity_id}", operation_id="daymark_v1_tree")
+    def tree(entity_id: str, request: Request, depth: int = Query(3, ge=1, le=10)) -> Any:
+        return _invoke(store.tree, identity(request).workspace, entity_id, depth=depth)
 
     @router.get("/entities/{entity_id}", operation_id="daymark_v1_get")
     def get(entity_id: str, request: Request) -> Any:
@@ -213,11 +282,20 @@ def create_router(store: Any) -> APIRouter:
             raise HTTPException(404, "Not found")
         return result
 
+    @router.get("/events/head", operation_id="daymark_v1_events_head")
+    def events_head(request: Request) -> Any:
+        return {"cursor": _invoke(store.head, identity(request).workspace)}
+
     @router.get("/events", operation_id="daymark_v1_events")
     def events(
-        request: Request, after: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=1000)
+        request: Request,
+        after: int = Query(0, ge=0),
+        limit: int = Query(100, ge=1, le=1000),
+        project: str | None = Query(None, min_length=1, max_length=128),
     ) -> Any:
-        return _invoke(store.events, identity(request).workspace, after=after, limit=limit)
+        return _invoke(
+            store.events, identity(request).workspace, after=after, limit=limit, project=project
+        )
 
     @router.get("/export", operation_id="daymark_v1_export")
     def export(request: Request) -> Any:

@@ -31,7 +31,8 @@ SIMPLE = {
     "prime", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
     "reopen", "archive", "undo", "accept", "dismiss", "claim", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
-    "focus", "unfocus",
+    "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
+    "tree",
 }  # fmt: skip
 
 
@@ -76,13 +77,36 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     item.add_argument("--parent", metavar="ID")
     item.add_argument("--project", metavar="ID")
     item.add_argument("--goal", metavar="ID")
-    item.add_argument("--assignee", metavar="ID", help="A person or principal entity")
+    item.add_argument(
+        "--assignee", metavar="WHO", help="A person's ID or exact name (an unknown name is refused)"
+    )
     item.add_argument("--label", action="append", dest="labels", metavar="ID")
     item.add_argument("--context", action="append", dest="contexts", metavar="ID")
     item.add_argument("--waiting-on", metavar="WHO")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
     item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
     item.add_argument("--minutes", type=int, help="Estimated effort")
+    item.add_argument("--stage", metavar="S", help="Stage on the project's board; sets the status")
+    item.add_argument(
+        "--is-milestone",
+        action=argparse.BooleanOptionalAction,
+        help="Mark (or unmark) this task as a milestone",
+    )
+    item.add_argument(
+        "--milestone", metavar="ID", help='The milestone it counts toward ("" clears)'
+    )
+    item.add_argument("--type", metavar="T", help='One of its project\'s types ("" clears)')
+    item.add_argument(
+        "--set",
+        action="append",
+        dest="values",
+        metavar="FIELD=VALUE",
+        help="A project field's value (repeatable; empty clears)",
+    )
+    if editing:
+        item.add_argument(
+            "--managed-by", metavar="SYSTEM", help='A project\'s owning system ("" clears)'
+        )
     if not editing:
         item.add_argument("--kind", default="task", help="task, project, goal, person, label, ...")
         item.add_argument("--note", help="First progress note")
@@ -174,6 +198,87 @@ def _simple_commands(sub) -> None:
     focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
     focus.add_argument("id")
     focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
+    project = add("project", "Create a project or change its configuration and facts")
+    actions = project.add_subparsers(dest="action", required=True, metavar="ACTION")
+
+    def action(name, help, *, writes=True):
+        return actions.add_parser(name, help=help, parents=[common, *([write] if writes else [])])
+
+    def facts(item):
+        item.add_argument("-d", "--description")
+        item.add_argument("--lead", metavar="WHO", help="A person's ID or name")
+        item.add_argument("--start", metavar="D")
+        item.add_argument("--target", metavar="D", help="Soft target date")
+        item.add_argument("--due", metavar="D", help="Hard deadline")
+        item.add_argument("--goal", metavar="ID")
+        item.add_argument(
+            "--managed-by", metavar="SYSTEM", help='A system that owns it ("" clears)'
+        )
+
+    def parts(item):
+        item.add_argument("--preset", metavar="NAME", help="See `daymark project presets`")
+        item.add_argument("--stages", metavar="SPEC", help="id:label:status:color,...")
+        item.add_argument("--types", metavar="SPEC", help="id:label[:color][:container],...")
+        item.add_argument("--fields", metavar="SPEC", help="id:label:type[:options|unit],...")
+
+    created = action("add", "Create a project; bare unless given a preset or parts")
+    created.add_argument("title")
+    created.add_argument("--id", help="Choose the ID instead of a generated short one")
+    facts(created)
+    parts(created)
+    changed = action("set", "Change a project's title and facts")
+    changed.add_argument("project")
+    changed.add_argument("--title")
+    facts(changed)
+    for name, label in (("stages", "stages"), ("types", "item types"), ("fields", "fields")):
+        part = action(name, f'Replace a project\'s {label} ("" removes or restores defaults)')
+        part.add_argument("project")
+        part.add_argument("spec", metavar="SPEC")
+    configure = action("config", "Print a project's configuration, or --apply one")
+    configure.add_argument("project")
+    configure.add_argument("--apply", metavar="FILE", help="JSON with stages, types, fields")
+    configure.add_argument("--preset", metavar="NAME", help="Apply a preset's configuration")
+    action("presets", "Starting configurations and what each sets", writes=False)
+    add("projects", "Projects with their roll-ups and health")
+    plan = add("plan", "One project: by stage, in its order, with roll-ups and health")
+    plan.add_argument("project")
+    plan.add_argument(
+        "--by",
+        metavar="GROUP",
+        help="stage (default), milestone, type, parent, assignee or a field",
+    )
+    plan.add_argument("--tree", action="store_true", help="Show the hierarchy instead")
+    goal = add("goal", "Create, change or show a goal")
+    goal_actions = goal.add_subparsers(dest="action", required=True, metavar="ACTION")
+    for name in ("add", "set"):
+        item = goal_actions.add_parser(
+            name, help=f"{'Create' if name == 'add' else 'Change'} a goal", parents=[common, write]
+        )
+        item.add_argument("title" if name == "add" else "goal")
+        if name == "add":
+            item.add_argument("--id", help="Choose the ID instead of a generated short one")
+        else:
+            item.add_argument("--title")
+        item.add_argument("--target", metavar="D", help="Its target date")
+        item.add_argument("--measure", metavar="SPEC", help="Label:target[:current[:unit]]")
+        item.add_argument("-d", "--description")
+    shown = goal_actions.add_parser("show", help="A goal's roll-up", parents=[common])
+    shown.add_argument("goal")
+    add("goals", "Goals with their roll-ups")
+    tree = add("tree", "An item and its children, in order")
+    tree.add_argument("id")
+    tree.add_argument("--depth", type=int, default=3)
+    move = add("move", "Move a task to a stage and/or a place in its project's order", writes=True)
+    move.add_argument("id")
+    move.add_argument("--stage", metavar="S")
+    where = move.add_mutually_exclusive_group()
+    where.add_argument("--after", metavar="ID")
+    where.add_argument("--before", metavar="ID")
+    where.add_argument("--first", action="store_true")
+    where.add_argument("--last", action="store_true")
+    changes = add("changes", "Whether a project changed after an event cursor")
+    changes.add_argument("project")
+    changes.add_argument("--after", type=int, required=True, metavar="CURSOR")
     sub.add_parser("workspaces", help="List the workspaces in this database")
     sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
 
@@ -238,6 +343,8 @@ def parser() -> argparse.ArgumentParser:
     events = sub.add_parser("events", help="Read event cursor page")
     events.add_argument("--after", type=int, default=0)
     events.add_argument("--limit", type=int, default=100)
+    events.add_argument("--project", metavar="ID", help="Only events that touch this project")
+    events.add_argument("--head", action="store_true", help="Print only the latest cursor")
     export = sub.add_parser("export", help="Export current workspace snapshot to a new JSON file")
     export.add_argument("--output", required=True)
     imp = sub.add_parser(
@@ -308,6 +415,40 @@ def _copy_database(source: Path, destination: Path) -> None:
             raise
 
 
+def _stored_schema(path):
+    """The schema marker of an existing Daymark database, read without writing:
+    None for a new or empty file, "" for Daymark tables without a marker."""
+    if path == ":memory:" or not Path(path).is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "daymark_entities" not in tables:
+                return None
+            if "daymark_scheduler" not in tables:
+                return ""
+            row = db.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone()
+            return row[0] if row else ""
+    except sqlite3.Error:
+        return None
+
+
+def _open_store(path):
+    """Open a Store the way every command does: upgrading an older database in place.
+    The upgrade is one-way, so the first one is announced on standard error."""
+    from .store import RELEASE, SCHEMA, Store
+
+    before = _stored_schema(path)
+    store = Store(path)
+    if before is not None and before != SCHEMA:
+        print(
+            f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
+            f"(Daymark {RELEASE}); older versions can no longer open it",
+            file=sys.stderr,
+        )
+    return store
+
+
 def _init(args) -> int:
     explicit = args.db or os.environ.get("DAYMARK_DB")
     target = (
@@ -317,9 +458,8 @@ def _init(args) -> int:
     )
     existed = target.is_file()
     target.parent.mkdir(parents=True, exist_ok=True)
-    from .store import Store
 
-    Store(str(target)).close()
+    _open_store(str(target)).close()
     os.chmod(target, 0o600)
     print(f"{'Using existing' if existed else 'Created'} {target}")
     print("Next: `daymark prime` for the workflow; `daymark onboard` for an AGENTS.md snippet.")
@@ -347,6 +487,7 @@ def _onboard(args) -> int:
 def _simple(args, engine) -> int:
     """Run one everyday verb and print a lean rendering of its result."""
     from . import render
+    from . import tasks as tasks_module
     from .tasks import Tasks
 
     tasks = Tasks(engine, args.workspace, actor=args.actor, timezone=args.tz)
@@ -399,11 +540,18 @@ def _simple(args, engine) -> int:
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
-                 "minutes", "scope")  # fmt: skip
+                 "minutes", "scope", "stage", "milestone", "is_milestone", "type")  # fmt: skip
         fields = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
+        if args.values:
+            project = args.project if args.project is not None else (
+                tasks.get(args.id)["project_id"] if name == "edit" else None
+            )  # fmt: skip
+            fields["values"] = tasks.parse_values(project, args.values)
         if name == "edit":
             if args.title is not None:
                 fields["title"] = args.title
+            if args.managed_by is not None:
+                fields["managed_by"] = args.managed_by
             item = tasks.edit(
                 args.id, every=args.every, after_completion=args.after_completion, op=op, **fields
             )
@@ -445,11 +593,99 @@ def _simple(args, engine) -> int:
         out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
     elif name == "remember":
         entity(tasks.remember(args.text, op=op))
+    elif name == "project":
+        _project(args, tasks, out, entity, op)
+    elif name == "goal":
+        if args.action == "show":
+            view = tasks.goal_plan(args.goal)
+            out({**view, "goal": render.compact(view["goal"])}, render.goal_text(view))
+        else:
+            attrs = {k: getattr(args, k) for k in ("description", "target")}
+            attrs = {k: v for k, v in attrs.items() if v is not None}
+            if args.measure is not None:
+                attrs["measure"] = (
+                    tasks_module.parse_measure(args.measure) if args.measure else None
+                )
+            if args.action == "add":
+                entity(tasks.goal(args.title, id=args.id, op=op, **attrs))
+            else:
+                if args.title is not None:
+                    attrs["title"] = args.title
+                entity(tasks.edit(args.goal, op=op, **attrs))
+    elif name == "goals":
+        view = tasks.goals()
+        out(view, render.goals_text(view))
+    elif name == "tree":
+        view = tasks.tree(args.id, args.depth)
+        out(view, render.tree_text(view))
+    elif name == "move":
+        entity(tasks.move(args.id, stage=args.stage, after=args.after, before=args.before,
+                          first=args.first, last=args.last, op=op))  # fmt: skip
+    elif name == "projects":
+        view = tasks.projects()
+        out(view, render.projects_text(view))
+    elif name == "plan":
+        view = tasks.plan(args.project)
+        lean = {
+            **view,
+            "project": render.compact(view["project"]),
+            "tasks": [{**render.compact(x), "plan": x["plan"]} for x in view["tasks"]],
+            "proposed": [render.compact(x) for x in view["proposed"]],
+        }
+        text = (
+            render.tree_text(tasks.tree(args.project, 10))
+            if args.tree
+            else render.plan_text(view, now, by=args.by or "stage")
+        )
+        out(lean, text)
+    elif name == "changes":
+        result = tasks.changes(args.project, args.after)
+        out(
+            result,
+            f"cursor {result['cursor']}; " + ("changed" if result["changed"] else "unchanged"),
+        )
     elif name == "mcp":
         from .mcp import serve
 
         serve(tasks)
     return 0
+
+
+def _project(args, tasks, out, entity, op) -> None:
+    """The project verb family: add, set, stages, types, fields, config, presets."""
+    from . import render
+    from .models import DomainError
+
+    action = args.action
+    if action == "presets":
+        presets = tasks.presets()
+        out(presets, render.presets_text(presets))
+        return
+    if action in {"add", "set"}:
+        names = ("description", "lead", "start", "target", "due", "goal", "managed_by")
+        attrs = {k: getattr(args, k) for k in names if getattr(args, k) is not None}
+        if action == "add":
+            entity(tasks.project(args.title, id=args.id, op=op, preset=args.preset,
+                                 stages=args.stages, types=args.types, fields=args.fields,
+                                 **attrs))  # fmt: skip
+        else:
+            if args.title is not None:
+                attrs["title"] = args.title
+            if not attrs:
+                raise DomainError("invalid", "Nothing to change")
+            entity(tasks.edit(args.project, op=op, **attrs))
+        return
+    if action in {"stages", "types", "fields"}:
+        entity(tasks.configure(args.project, op=op, **{action: args.spec}))
+        return
+    # config
+    if args.apply or args.preset:
+        document = _json_file(args.apply) if args.apply else {}
+        if not isinstance(document, dict) or set(document) - {"stages", "types", "fields"}:
+            raise DomainError("invalid", "A configuration has only stages, types and fields")
+        tasks.configure(args.project, preset=args.preset, op=op, **document)
+    config = tasks.config(args.project)
+    out(config, json.dumps(config, indent=2, sort_keys=True))
 
 
 def _fail(args, code: str, message: str, details=()) -> int:
@@ -502,9 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             import uvicorn
 
             from .api import create_app
-            from .store import Store
 
-            store = Store(args.db)
+            store = _open_store(args.db)
             app = create_app(store, _json_file(args.auth_file))
             # Uvicorn access logs include private URL/query values; never enable them here.
             try:
@@ -521,10 +756,8 @@ def main(argv: list[str] | None = None) -> int:
 
             engine = Client(args.url, os.environ.get(args.token_env, ""))
         else:
-            from .store import Store
-
             fresh = args.db != ":memory:" and not Path(args.db).exists()
-            engine = Store(args.db)
+            engine = _open_store(args.db)
             if fresh:
                 os.chmod(args.db, 0o600)  # Task data is private by default.
         try:
@@ -576,8 +809,11 @@ def main(argv: list[str] | None = None) -> int:
                 result = engine.list(*ws, kind=args.kind)
             elif args.command == "query":
                 result = engine.query(*ws, _json_file(args.file))
+            elif args.command == "events" and args.head:
+                result = {"cursor": engine.head(*ws)}
             elif args.command == "events":
-                result = engine.events(*ws, after=args.after, limit=args.limit)
+                extra = {"project": args.project} if args.project else {}
+                result = engine.events(*ws, after=args.after, limit=args.limit, **extra)
             elif args.command == "health":
                 result = engine.health()
             else:
