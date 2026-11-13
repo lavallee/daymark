@@ -29,7 +29,7 @@ $ daymark ready            # the hotel is no longer blocked
 ## For agents
 
 Run `daymark prime` at the start of a session. It prints the working rules, the
-command list and the current state in about 2,600 characters. `daymark onboard
+command list and the current state in about 3,000 characters. `daymark onboard
 --write AGENTS.md` adds a short section that tells future sessions to do so.
 
 | You want | Command |
@@ -46,6 +46,7 @@ command list and the current state in about 2,600 characters. `daymark onboard
 | Keep a durable fact | `daymark remember "fact"` |
 | Put a task on the person's own short list | `daymark focus ID` |
 | See only one part of life | `daymark ready --scope household` |
+| Run a project as a board, in your own order | `daymark plan P`, `daymark move ID --stage S --after X` |
 
 Output is one line per task, carrying only what is set. `--json` gives the same
 content as compact JSON. Failures print a stable code (`not_found`, `conflict`,
@@ -70,6 +71,37 @@ for task in tasks.ready():
 Read the [agent guide](docs/agents.md) for the full surface, and
 [work and life](docs/work-and-life.md) for how Daymark relates to code-centred
 trackers such as Beads and what it does differently.
+
+## Managing a project
+
+A project can be run as a board. Give it stages, or let it read as To do,
+Waiting and Done; put tasks in it in your own order; mark milestones.
+
+```console
+$ daymark project "Website relaunch" --id site --stages "todo:To do,doing:Doing,done:Done:completed:green"
+$ daymark add "Draft the sitemap" --project site --stage doing --plan 2030-04-10 --target 2030-04-20
+$ daymark add "Launch" --project site --milestone --due 2030-05-10
+$ daymark move dm-k3f9 --first
+$ daymark plan site
+site  Website relaunch  [0/2 done (0%), 2030-04-10 to 2030-05-10, 1 milestone]
+TO DO (1)  [todo: open]
+  dm-k3f9  Launch  [due 2030-05-10; milestone]  ?..2030-05-10
+DOING (1)  [doing: open]
+  dm-y2yj  Draft the sitemap  [plan 2030-04-10]  2030-04-10..2030-04-20
+DONE (0)  [done: completed]
+cursor 5
+```
+
+A stage carries a lifecycle status, so moving a card to Done completes the task,
+and `daymark done` moves the card. The plan reads start as the planned day (else
+the earliest start) and end as the target (else the deadline); dragging a plan
+never moves a deadline. `daymark plan --json`, `GET /v1/projects/{id}/plan` and
+`Store.plan` give the same view with roll-ups and an event cursor, and
+`daymark changes PROJECT --after N` says whether anything changed since.
+
+`toucan-source-daymark`, installed alongside `daymark`, lets a visual tool such as
+the toucan canvas show a project as a board, gantt, timeline or table and write
+back what a person drags. See [plans for toucan](docs/toucan.md).
 
 ## What it models
 

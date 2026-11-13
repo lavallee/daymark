@@ -58,6 +58,30 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A21 Scope | Optional `scope` slug, a filter within a workspace | `ready`, `agenda` and `summary` accept a scope, or the empty string for unscoped items. It is never a boundary and is never inferred. |
 | A22 Workspace isolation, stated | A workspace is the only boundary inside a database | Reads, references, history, exports, remembered facts and policy never cross. `Store.workspaces()` and `daymark workspaces` list them for local callers; the HTTP service exposes only the caller's own. |
 
+## Decisions for managed projects
+
+Decision date: 2026-11-13. Chosen by the implementing agent under the
+commissioner's delegated routine-decision authority, open to reversal. They make
+a project something a board, gantt or table elsewhere can show and edit, with
+Daymark as the system of record ([plans for toucan](toucan.md)). C08 and C11
+stand: this is a stored model with a read and write surface, not a scheduler,
+and the adapter promises no third-party round trip beyond its own fields.
+
+| Decision | Default chosen | Contract and limit |
+|---|---|---|
+| P01 Stages | A project may define up to 30 ordered stages `{id, label, status, color?}`; a task has an optional `stage` | Lifecycle status stays the truth for readiness; the stage is only where the card sits. A defined set needs at least one open and one completed stage. Colours come from a fixed thirteen-name vocabulary. |
+| P02 Default board | A project with no stages reads as To do (open), Waiting (waiting), Done (completed) | Derived, not stored: a task with no stored stage reads in the first stage for its status, so existing projects read as boards with no rewrite. |
+| P03 Stage and status, both ways | Moving to a stage sets the task's status to the stage's; a status change by any verb clears a stored stage that no longer fits | Complete, cancel, skip, reopen, wait, resume, accept, dismiss and undo all land the card in its status's first stage. A waiting task may stay in an open stage when the board has no waiting stage. A cancelled task with no cancelled stage is off the board. A proposal sits in no stage and is listed apart: it is not work yet. A new round of a repeating task starts with no stage. |
+| P04 Changing stages and projects | Removing a stage, or changing its status, clears the stage of the tasks it no longer fits | Their status never changes; each such task gets a version and a `stage.reset` event in the same transaction. Undoing the project's change restores its stages, not those tasks. A task that moves to another project loses its stage and rank unless the same write sets them. |
+| P05 Manual order | A per-task `rank`, a base-62 fractional-index key compared as text, set by the `place` action (`after` or `before` a neighbour, or `null` for first or last) | One reorder is one write of one task, computed inside the write transaction, so concurrent placements serialize. Unranked tasks follow ranked ones, oldest first, so new tasks go last. The first placement in a project with unranked tasks ranks them once, in their current order, which moves their versions. Neighbours must be unarchived tasks in the same project and workspace. |
+| P06 Milestones | A `milestone` flag on a task, dated by its own temporal fields | No separate kind and no date of its own. |
+| P07 Plan dates | start = `planned`, else `earliest_start`; end = `latest_target`, else `deadline`; the deadline is also given on its own | A plan write sets `planned` and `latest_target` only, so dragging never moves a hard deadline. A write that would put the start after the end, or `latest_target` before `earliest_start`, is refused, never clamped. |
+| P08 Plan read and project feed | `Store.plan` reads a project, its stages, tasks in order with resolved stage and dates, in-project dependencies (and a note of outside ones), the workspace's people and labels, roll-ups and the head cursor, in one transaction | `Store.changes(project, after)` answers whether the project, a task in it, a task entering or leaving it, or a person or label changed after a cursor. A cursor ahead of the head reads as changed. Roll-ups are counts: no effort-weighted progress (C15 stands). |
+| P09 Batch writes | `Store.batch`: up to 100 operations in one transaction, each with its own operation ID, expected version and receipt | `atomic=True` (default) writes all or nothing and reports the rest `aborted`; `atomic=False` rolls back only the refused ones. Refusals are results, not exceptions; HTTP answers 200 with them. A replay replays each operation by its ID. |
+| P10 Externally owned projects | An optional `managed_by` on a project names the system that rewrites it | Advisory: Daymark accepts writes as before; plan editors (the toucan adapter) read the project as read-only and refuse writes with `forbidden`. Never inferred. |
+| P11 Assigning by name | `--assignee` takes a person's ID or exact name, ignoring case | An unknown name is refused, not created; several matches are refused with their IDs. Workspace isolation (A22) is unchanged. |
+| P12 Adapter database | `toucan-source-daymark` opens `--db`, `$DAYMARK_DB`, else the per-user database | It does not search the working directory for `.daymark/`, and never creates a database. A mutation becomes operation ID `toucan:MUTATION`, so replays write once. |
+
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
 impact and a regression test, rather than inherit a vendor's label without its

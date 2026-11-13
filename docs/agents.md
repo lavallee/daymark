@@ -43,6 +43,8 @@ on later runs.
 | `daymark show ID` | One entity: the four dates with the phrase originally used, blockers, what it unblocks, children, reminders, notes, history. |
 | `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. |
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
+| `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
+| `daymark plan PROJECT` | One project as a board: each stage with its tasks in the project's order, dates, owners, and what blocks them from outside. |
 
 A task is **ready** when it is open and not archived, its `--start` date has
 arrived, every task it comes `--after` is completed, cancelled or archived, it
@@ -94,6 +96,56 @@ the date it resolved to, so `show` can report what was actually said.
 `mon,thu`, or an RRULE body such as `FREQ=MONTHLY;BYMONTHDAY=1`.
 
 **Priority** runs from 1 (most important) to 4; 0 means not set.
+
+## Projects
+
+A project is a board: an ordered list of stages, each tied to a lifecycle
+status. Tasks join it with `--project`.
+
+```sh
+daymark project "Website relaunch" --id site \
+  --stages "todo:To do:open:grey,doing:Doing:open:blue,done:Done:completed:green"
+daymark add "Ada" --kind person --id ada
+daymark add "Draft the sitemap" --project site --stage doing --assignee Ada --plan +1w
+daymark add "Launch" --project site --milestone --due 2030-05-10
+daymark move dm-k3f9 --stage done --after dm-y2yj
+daymark plan site
+```
+
+| Command | Effect |
+| --- | --- |
+| `project "Title" [--stages SPEC] [--managed-by SYSTEM]` | Create a project. Without stages it reads as To do, Waiting and Done. |
+| `stages PROJECT SPEC` | Replace the stages; `""` restores the defaults. Tasks in a stage that is gone move to their status's first stage; no status changes. |
+| `move ID [--stage S] [--after X \| --before X \| --first \| --last]` | Put a task in a stage, at a place in the project's order, or both, in one write. |
+| `add`/`edit ... --stage S --milestone` | The same at capture; `--no-milestone` unmarks. |
+| `changes PROJECT --after N` | Whether anything in the project changed after an event cursor (`plan --json` gives the cursor). |
+
+**Stages and status move together.** Moving a task to a stage sets its status to
+that stage's status, as `done`, `cancel` or `reopen` would. Completing,
+cancelling or reopening a task by the usual verbs moves it to the first stage
+for its new status. A waiting task stays in an open stage when the board has no
+waiting stage. A cancelled task leaves the board unless there is a cancelled
+stage. A proposal is on no board: `plan` lists it apart until a person accepts it.
+Readiness never looks at the stage, only at the status.
+
+**Stage specs** are comma-separated `id:label:status:color`. Status is `open`,
+`waiting`, `completed` or `cancelled` (default open), and a set needs one open and
+one completed stage. Colours are black, grey, light-violet, violet, blue,
+light-blue, yellow, orange, green, light-green, light-red, red or white.
+
+**Order** is the project's own: `move --after`, `--before`, `--first`, `--last`.
+New tasks go last. **Dates** read as a plan: start is `--plan`, else `--start`;
+end is `--target`, else `--due`. Moving a plan never moves a deadline.
+
+**`--assignee`** takes a person's ID or exact name. An unknown name is refused;
+add the person first (`daymark add "Name" --kind person`).
+
+**Managed projects.** `--managed-by SYSTEM` marks a project another system
+rewrites. Daymark still accepts writes, but plan editors such as the toucan
+adapter treat it as read-only. Do not set or clear it without the person.
+
+Other tools can show and edit a project through `toucan-source-daymark`; see
+[plans for toucan](toucan.md).
 
 ## Workspaces and scopes
 
@@ -160,15 +212,19 @@ that was broken. With `--json` the same content is a JSON object.
 `daymark mcp` speaks the Model Context Protocol over stdio with no dependency
 beyond Daymark itself. It offers six tools (`daymark_prime`, `daymark_view`,
 `daymark_add`, `daymark_edit`, `daymark_act`, `daymark_remember`) whose
-definitions total about 4.7 kB, so they cost little context to carry. Results
-are the same lean text as the command line.
+definitions total about 5.5 kB, so they cost little context to carry. Results
+are the same lean text as the command line. `daymark_view` also reads
+`projects` and `plan` (with `id` the project); `daymark_act` with
+`action: move` takes `stage` and `place` (`after:ID`, `before:ID`, `first` or
+`last`).
 
 ## Python
 
 `daymark.Tasks` wraps a `Store` or the HTTP `Client` with the same verbs:
 `add`, `propose`, `ready`, `agenda`, `show`, `claim`, `release`, `note`,
 `done`, `skip`, `wait`, `resume`, `defer`, `edit`, `block`, `unblock`,
-`accept`, `dismiss`, `remind`, `remember`, `find`. It reads the current version
+`accept`, `dismiss`, `remind`, `remember`, `find`, and for projects `project`,
+`set_stages`, `move`, `plan`, `projects`, `changes`. It reads the current version
 itself and retries when another writer got there first. A refusal that is not
 a stale read, such as a live claim held by someone else, is raised unchanged.
 

@@ -2,6 +2,24 @@
 
 Changes are recorded here using semantic versions. Until 1.0, review release notes carefully before upgrading an embedded application or stored database.
 
+## [Unreleased]
+
+### Added
+
+- Managed projects. A project can define its stages (`daymark project TITLE --stages SPEC`, `daymark stages PROJECT SPEC`); one that defines none reads as To do, Waiting and Done. A task has a `stage`, kept consistent with its status in both directions, a manual-order `rank`, and a `milestone` flag.
+- `daymark move ID [--stage S] [--after X|--before X|--first|--last]`, `--stage` and `--milestone/--no-milestone` on `add` and `edit`, and the `place` engine action. `--assignee` also accepts a person's exact name.
+- `daymark plan PROJECT` and `daymark projects`; `Store.plan` and `Store.projects` read a project in one transaction with roll-ups and the head event cursor.
+- The project change feed: `Store.head`, `Store.changes`, `events(project=)`, `daymark changes PROJECT --after N`, `daymark events --head` and `--project`.
+- `Store.batch` and `POST /v1/operations/batch`: several operations in one transaction, all-or-nothing or keeping the successes, each with its own operation ID and expected version.
+- HTTP `GET /v1/projects`, `/v1/projects/{id}/plan`, `/v1/projects/{id}/changes`, `/v1/events/head`, and `?project=` on `/v1/events`, with matching client methods. MCP gains the `projects` and `plan` views and a `move` action.
+- `managed_by` on a project marks one another system owns; plan editors treat it as read-only.
+- `toucan-source-daymark`, a second console script in the core package: a Daymark project as a `toucan.plan/1` plan source ([docs/toucan.md](docs/toucan.md)).
+
+### Changed
+
+- The stored schema upgrades in place on first open (schema 5): every entity gains `stages`, `stage`, `rank`, `milestone` and `managed_by` with their defaults. Versions, events and receipts are untouched, and entities that use none of the new fields read, rank and render as before. Snapshots exported afterwards contain fields that 0.3.0 does not accept; back up before upgrading.
+- `--assignee` with a value that is neither a person's ID nor a person's name is refused with `invalid` and the fix, before the write (previously the engine refused the missing reference).
+
 ## [0.3.0] - 2026-11-10
 
 ### Added

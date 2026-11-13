@@ -50,7 +50,15 @@ local CLI may request global operational health.
 `expected_version`. `POST /v1/query` accepts `filters`. Reads are
 `GET /v1/entities`, `/v1/entities/{id}`, `/v1/events?after=0&limit=100`,
 `/v1/export`, and the derived views `/v1/ready`, `/v1/agenda`, `/v1/summary`
-and `/v1/context/{id}`. `POST /v1/import` accepts `snapshot`, `operation_id`, and
+and `/v1/context/{id}`. Projects read as plans: `GET /v1/projects` (each with its
+roll-up), `/v1/projects/{id}/plan` (stages, tasks in manual order, roll-up and the
+head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
+(`{"cursor", "changed"}`, cheap enough to poll). `GET /v1/events/head` gives the
+latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
+`POST /v1/operations/batch` takes `operations` (up to 100, each shaped like a
+single operation) and `atomic` (default true: all or nothing); it answers 200 with
+`committed` and one result per operation, so a refusal is a result, not an HTTP
+error. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
 reject conflicting existing identities rather than rewind newer state. Schema
 operation IDs remain stable within v1. Each write is recorded with the token's
