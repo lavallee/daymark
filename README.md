@@ -171,13 +171,13 @@ Daymark's fields.
 ## Install from source
 
 The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.3.0. Package registry publication is not yet promised. Requires
+release is 0.4.0. Package registry publication is not yet promised. Requires
 Python 3.11 or newer.
 
 To install the command line tool from the tagged release:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.3.0"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.4.0"
 ```
 
 Or from a checkout:

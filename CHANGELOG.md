@@ -4,6 +4,8 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Upgrading: read this first
 
 - **The schema upgrade is one-way.** The first time 0.4.0 opens a database it rewrites every stored entity in place (schema 5). Daymark 0.3.0 cannot open the file afterwards: it fails cleanly (`invalid`, unknown fields), and any long-running 0.3.0 process using the file stops working at that moment. Snapshots exported afterwards are refused by 0.3.0 too.
