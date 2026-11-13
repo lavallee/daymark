@@ -166,7 +166,9 @@ def schedule(task: dict | None, *, timezone: str = "UTC", **dates) -> dict:
     """The entity changes that put a task's plan dates where a plan view says.
 
     ``dates`` may carry ``start`` (written to planned), ``end`` (latest_target) and
-    ``deadline``, each a ``YYYY-MM-DD`` string or None to clear. A date equal to the
+    ``deadline``, each a ``YYYY-MM-DD`` string or None to clear (a None start clears
+    planned and earliest_start; a None end clears latest_target, and a deadline still
+    shows through as the end). A date equal to the
     current one changes nothing, so a timed value keeps its time; a moved timed value
     keeps its local clock time; a new value takes the zone of another date on the
     task, else ``timezone``. Only the dates given are checked: a start after an end
@@ -180,8 +182,12 @@ def schedule(task: dict | None, *, timezone: str = "UTC", **dates) -> dict:
     for name, value in dates.items():
         field = _DATE_TARGETS[name]
         if value is None:
-            if task[field] is not None:
-                out[field] = None
+            # Clearing a plan's start clears both dates it reads from, so it reads as
+            # unset. Clearing its end clears latest_target only: a deadline is never
+            # moved by a plan, so an end that falls back to one still shows it.
+            for target in ("planned", "earliest_start") if name == "start" else (field,):
+                if task[target] is not None:
+                    out[target] = None
             continue
         if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
             raise DomainError("invalid", f"{name} is a YYYY-MM-DD date or null")

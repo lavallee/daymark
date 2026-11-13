@@ -145,6 +145,10 @@ def test_schedule_maps_plan_dates_and_keeps_precision():
     code("invalid", plans.schedule, task, finish="2030-05-01")
     assert plans.schedule(None, start="2030-04-01", timezone="UTC")["planned"]["timezone"] == "UTC"
     assert plans.schedule(task, deadline=None) == {"deadline": None}
+    # A cleared start reads as unset; a cleared end still shows a deadline.
+    assert plans.schedule(task, start=None) == {"earliest_start": None}
+    assert plans.schedule(late, start=None) == {"planned": None, "earliest_start": None}
+    assert plans.schedule(task, end=None) == {}
 
 
 def test_schedule_verb_never_moves_a_deadline_by_moving_a_plan(tasks):
