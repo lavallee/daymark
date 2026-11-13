@@ -970,6 +970,7 @@ class Store:
             if before:
                 self._invalidate_reminders(before, data, operation_id, now)
                 self._restage(before, data, operation_id, now)
+                self._detach_members(before, data, operation_id, now)
             self._validate_entity(data)
             self._event(workspace, operation_id, action, before, data)
             if data["recurrence"] and (
@@ -1118,6 +1119,12 @@ class Store:
                         sorted(declared),
                     )
                 self._check_value(raw["workspace"], declared[key], values[key])
+        if (
+            raw.get("milestone")
+            and raw.get("milestone_id")
+            and (raw["milestone_id"] != old.get("milestone_id") or not old.get("milestone"))
+        ):
+            invalid("A milestone does not belong to a milestone")
         if moved and raw.get("milestone_id") == old.get("milestone_id"):
             raw["milestone_id"] = None  # Membership is part of the project left behind.
         target = raw.get("milestone_id")
@@ -1264,11 +1271,12 @@ class Store:
         if set(payload) != {"id"}:
             invalid("Undo requires entity ID")
         row = self.db.execute(
-            "SELECT action,before_data,after_data FROM daymark_events WHERE workspace=? AND entity_id=? ORDER BY seq DESC LIMIT 1",
+            "SELECT action,before_data,after_data,operation_id FROM daymark_events WHERE workspace=? AND entity_id=? ORDER BY seq DESC LIMIT 1",
             (workspace, payload["id"]),
         ).fetchone()
         if row is None or row[1] is None:
             invalid("No prior state to restore")
+        undone = row[3]
         previous = json.loads(row[1])
         current = self.get(workspace, payload["id"]) if row[2] is not None else None
         version = current["version"] if current else previous["version"] + 1
@@ -1298,10 +1306,56 @@ class Store:
         if current:
             self._invalidate_reminders(current, restored, operation_id, now)
             self._restage(current, restored, operation_id, now)
+            if restored["kind"] == "project" and undone:
+                self._restore_stages(workspace, undone, operation_id, now)
         self._event(workspace, operation_id, "undo", current, restored)
         return restored
 
+    def _detach_members(self, before, data, operation_id, now):
+        """A milestone that moves to another project leaves its members behind: each
+        loses its membership, visibly, in the same transaction."""
+        if data["kind"] != "task" or before["project_id"] == data["project_id"]:
+            return
+        rows = self.db.execute(
+            "SELECT e.data FROM daymark_refs r JOIN daymark_entities e ON e.workspace=r.workspace "
+            "AND e.id=r.source_id WHERE r.workspace=? AND r.target_id=? AND r.field='milestone_id'",
+            (data["workspace"], data["id"]),
+        ).fetchall()
+        for (text,) in rows:
+            member = json.loads(text)
+            if member["project_id"] == data["project_id"]:
+                continue
+            updated = {**member, "milestone_id": None, "version": member["version"] + 1,
+                       "updated_at": now}  # fmt: skip
+            self._put(updated)
+            self._event(data["workspace"], operation_id, "milestone.detach", member, updated)
+
+    def _restore_stages(self, workspace, undone, operation_id, now):
+        """Undoing a project's configuration change also puts back the task stages
+        that change cleared, for each task nobody has written since."""
+        rows = self.db.execute(
+            "SELECT before_data,after_data FROM daymark_events WHERE workspace=? AND "
+            "operation_id=? AND action='stage.reset' ORDER BY seq",
+            (workspace, undone),
+        ).fetchall()
+        for before_text, after_text in rows:
+            before, after = json.loads(before_text), json.loads(after_text)
+            try:
+                task = self.get(workspace, after["id"])
+            except DomainError:
+                continue
+            if task["version"] != after["version"]:
+                continue  # Written since: leave it as it is now.
+            updated = {**task, "stage": before["stage"], "version": task["version"] + 1,
+                       "updated_at": now}  # fmt: skip
+            self._settle_stage(updated, None, {})
+            if updated["stage"] == task["stage"]:
+                continue
+            self._put(updated)
+            self._event(workspace, operation_id, "stage.restore", task, updated)
+
     def _successor(self, data, operation_id):
+        now = normalize_now().isoformat()
         recurrence = Recurrence.model_validate(data["recurrence"])
         index = recurrence.occurrence_index + 1
         series = data["series_id"] or data["id"]
