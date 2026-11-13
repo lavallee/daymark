@@ -352,7 +352,7 @@ def _value_warning(field, value, people):
     return None
 
 
-def _warnings(task, types, decls, members, by_id, people):
+def _warnings(task, types, decls, members, in_project, by_id, people):
     """Guard rails reported as facts, never enforced: structure that no longer fits."""
     out = []
 
@@ -374,7 +374,7 @@ def _warnings(task, types, decls, members, by_id, people):
             warn("milestone_invalid", task["milestone_id"])
     parent = by_id.get(task["parent_id"]) if task["parent_id"] else None
     if parent is not None and parent["kind"] == "task":
-        if parent["id"] not in members:
+        if parent["id"] not in in_project:
             warn("parent_elsewhere", parent["id"])
         elif any(t["container"] for t in types.values()):
             kind = types.get(parent["type"]) if parent["type"] else None
@@ -388,9 +388,12 @@ def _build(project, tasks, by_id, people, labels, goals, now):
     board = plans.stages(project)
     types = {t["id"]: t for t in project["types"]}
     decls = {f["id"]: f for f in project["fields"]}
+    # Archived tasks in the project are not on the plan, but they still answer for
+    # what refers to them: an archived dependency releases its dependents (A02).
+    in_project = {t["id"]: t for t in tasks}
     tasks = sorted((t for t in tasks if not t["archived"]), key=plans.order_key)
     members = {t["id"]: t for t in tasks}
-    lookup = {**by_id, **members}
+    lookup = {**by_id, **in_project}
     person_ids = {p["id"] for p in people}
     cards, proposed, off_board = [], [], 0
     for task in tasks:
@@ -427,10 +430,10 @@ def _build(project, tasks, by_id, people, labels, goals, now):
             "status": _status(lookup.get(ref)),
             "dependents": [t["id"] for t in tasks if ref in t["depends_on"]],
         }
-        for ref in sorted({r for t in tasks for r in t["depends_on"] if r not in members})
+        for ref in sorted({r for t in tasks for r in t["depends_on"] if r not in in_project})
     ]
     conflicts = []
-    for card in cards:
+    for card in (c for c in cards if c["status"] in LIVE_WORK):  # Finished work has none.
         for ref in card["depends_on"]:
             blocker = lookup.get(ref)
             if blocker is None or _status(blocker) == "cancelled":
@@ -445,11 +448,18 @@ def _build(project, tasks, by_id, people, labels, goals, now):
                         "blocker_end": ends,
                     }
                 )
-    warnings = [w for t in tasks for w in _warnings(t, types, decls, members, lookup, person_ids)]
+    warnings = [
+        w
+        for t in tasks
+        for w in _warnings(t, types, decls, members, in_project, lookup, person_ids)
+    ]
     milestones = []
-    for marker in (c for c in cards if c["milestone"]):
+    # Every unarchived milestone is listed with its status, including a proposed or
+    # cancelled one that is not on the board, so its members are never orphaned.
+    for marker in (t for t in tasks if t["milestone"]):
         belongs = [c for c in cards if c["milestone_id"] == marker["id"]]
-        when = marker["plan"]["end"] or marker["plan"]["start"]
+        dated = plans.plan_dates(marker)
+        when = dated["end"] or dated["start"]
         late = [
             c["id"]
             for c in belongs
@@ -460,6 +470,7 @@ def _build(project, tasks, by_id, people, labels, goals, now):
             {
                 "id": marker["id"],
                 "title": marker["title"],
+                "status": marker["status"],
                 "date": when,
                 "reached": marker["status"] == "completed",
                 "items_done": bool(counted) and all(c["status"] == "completed" for c in counted),
@@ -471,8 +482,14 @@ def _build(project, tasks, by_id, people, labels, goals, now):
     for card in cards:
         if card["parent_id"] in members:
             children.setdefault(card["parent_id"], []).append(card)
+    # Every parent in the project rolls up its children, whatever its own status: a
+    # cancelled epic's children are still work. The parent's status says which it is.
     parents = {
-        pid: {"children": [c["id"] for c in kids], **_summary(kids, decls)}
+        pid: {
+            "status": members[pid]["status"],
+            "children": [c["id"] for c in kids],
+            **_summary(kids, decls),
+        }
         for pid, kids in children.items()
     }
     summary = _summary(cards, decls)
