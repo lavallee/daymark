@@ -29,8 +29,14 @@ with tempfile.TemporaryDirectory() as d:
     t.add("Sam", kind="person", id="sam")
     t.add("Garden", kind="project", id="garden")
     t.add("Buy seeds", id="seeds", project="garden", due="2030-04-10", priority=2, assignee="sam")
-    t.add("Plant seeds", id="plant", project="garden", after="seeds", plan="2030-04-12",
-          target="2030-04-20")
+    t.add(
+        "Plant seeds",
+        id="plant",
+        project="garden",
+        after="seeds",
+        plan="2030-04-12",
+        target="2030-04-20",
+    )
     t.add("Water the beds", id="water", project="garden", every="3 days", after_completion=True)
     t.done("water")
     t.add("Rake leaves", id="rake", project="garden", note="Use the green rake")

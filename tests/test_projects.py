@@ -14,19 +14,23 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from daymark import DomainError, Store, Tasks
+from daymark import DomainError, Store, Tasks, plans
 from daymark.api import create_app
 from daymark.cli import main
 from daymark.client import Client
 from daymark.mcp import TOOLS, handle
-from daymark.plans import DIGITS, rank_between
+from daymark.plans import rank_between, valid_rank
 from daymark.render import compact, line
+from daymark.store import canonical
 
 NOW = datetime(2030, 4, 3, 15, 0, tzinfo=UTC)  # A Wednesday.
 ZONE = "Europe/London"
 BOARD = "todo:To do:open:grey,doing:Doing:open:blue,done:Done:completed:green"
 FIXTURE = Path(__file__).parent / "fixtures" / "daymark-0.3.0.sql"
-NEW_FIELDS = {"stages": [], "stage": None, "rank": None, "milestone": False, "managed_by": None}
+NEW_FIELDS = {
+    "stages": [], "stage": None, "rank": None, "milestone": False, "managed_by": None,
+    "milestone_id": None, "types": [], "fields": [], "type": None, "values": {}, "measure": None,
+}  # fmt: skip
 
 
 def code(expected, call, *args, **kwargs):
@@ -181,57 +185,65 @@ def test_removing_a_stage_moves_its_tasks_home_without_changing_status(tasks):
     assert tasks.plan("site")["default_stages"] is True
 
 
-def test_a_task_that_changes_project_loses_its_stage_and_place(tasks):
+def test_a_task_that_changes_project_loses_its_stage_and_goes_last(tasks):
     site(tasks, BOARD, "a", "b", "c")
     tasks.project("Other", id="other", stages="later:Later,fin:Finished:completed")
     tasks.add("Other task", id="o", project="other")
     tasks.move("a", stage="doing", first=True)
     moved = tasks.edit("a", project="other")
-    assert (moved["stage"], moved["rank"]) == (None, None)
-    # Nobody has ordered "other", so it reads in creation order.
-    assert order(tasks, "other") == ["a", "o"]
-    tasks.move("o", first=True)  # Now it is ordered; a newcomer goes last.
+    assert moved["stage"] is None and moved["rank"] is not None
+    assert order(tasks, "other") == ["o", "a"]
     tasks.edit("c", project="other")
     assert order(tasks, "other") == ["o", "a", "c"]
     moved = tasks.edit("b", project="other", stage="later")
-    assert moved["stage"] == "later"
+    assert moved["stage"] == "later" and order(tasks, "other")[-1] == "b"
     code("invalid", tasks.edit, "b", project="site", stage="later")
     left = tasks.edit("b", project="")
-    assert (left["project_id"], left["stage"]) == (None, None)
+    assert (left["project_id"], left["stage"], left["rank"]) == (None, None, None)
 
 
 # -- manual order
 
 
-def test_rank_keys_stay_ordered_under_random_insertion():
+def test_rank_keys_stay_ordered_and_short():
     rng = random.Random(7)
     keys = []
-    for _ in range(600):
+    for _ in range(2000):
         i = rng.randint(0, len(keys))
         low = keys[i - 1] if i else None
         high = keys[i] if i < len(keys) else None
         key = rank_between(low, high)
         assert (low is None or low < key) and (high is None or key < high)
-        assert key[-1] != "0" and set(key) <= set(DIGITS)
+        assert valid_rank(key)
         keys.insert(i, key)
     assert keys == sorted(keys) and len(set(keys)) == len(keys)
-    # Repeatedly putting something first grows keys slowly.
-    first = None
-    for _ in range(300):
+    # Appending and prepending grow keys logarithmically.
+    last = first = None
+    for _ in range(20_000):
+        last = rank_between(last, None)
         first = rank_between(None, first)
-    assert len(first) < 80
-    code("invalid", rank_between, "b", "a")
+    assert len(last) <= 4 and len(first) <= 5 and valid_rank(last) and valid_rank(first)
+    # Inserting at one spot lengthens the fraction slowly: about a character per six.
+    low, high = "a0", "a1"
+    for _ in range(2000):
+        high = rank_between(low, high)
+    assert low < high and len(high) < 400 and valid_rank(high)
+    # Equal or reversed bounds (damaged data) still give a key after the lower one.
+    assert rank_between("a5", "a5") > "a5" and rank_between("a7", "a3") > "a7"
+    assert not valid_rank("a50") and not valid_rank("0a") and valid_rank("a5V")
 
 
-def test_place_puts_one_task_after_another_with_one_write(tasks):
+def test_place_writes_only_the_task_that_moves(tasks):
     site(tasks, BOARD, "a", "b", "c")
     assert order(tasks) == ["a", "b", "c"]  # New tasks go last, oldest first.
-    tasks.move("c", first=True)  # Ranks the unranked tasks in their current order.
-    assert order(tasks) == ["c", "a", "b"]
     versions = {x: tasks.get(x)["version"] for x in "abc"}
+    head = tasks.engine.head("w")
+    tasks.move("c", first=True)
+    assert order(tasks) == ["c", "a", "b"]
+    assert {x: tasks.get(x)["version"] for x in "abc"} == {**versions, "c": versions["c"] + 1}
+    assert [e["entity_id"] for e in tasks.engine.events("w", after=head)] == ["c"]
     tasks.move("a", after="b")
     assert order(tasks) == ["c", "b", "a"]
-    assert {x: tasks.get(x)["version"] for x in "abc"} == {**versions, "a": versions["a"] + 1}
     tasks.move("c", before="a")
     assert order(tasks) == ["b", "c", "a"]
     tasks.move("b", last=True)
@@ -240,6 +252,44 @@ def test_place_puts_one_task_after_another_with_one_write(tasks):
     assert order(tasks) == ["c", "a", "b", "d"]
     tasks.move("d", stage="doing", after="c")
     assert order(tasks) == ["c", "d", "a", "b"] and board(tasks)["doing"] == ["d"]
+    tasks.move("b", after="c")  # Between a placed task and one never placed.
+    assert order(tasks) == ["c", "b", "d", "a"]
+
+
+def test_rank_changes_only_through_place(tasks):
+    site(tasks, BOARD, "a", "b")
+    error = code("invalid", tasks.edit, "a", rank="a5")
+    assert "order" in str(error)
+    code("invalid", tasks.add, "Ranked", project="site", rank="a5")
+    code("invalid", tasks.add, "Bad", project="site", stage="todo", values={"x": 1})
+    tasks.move("b", first=True)
+    assert tasks.edit("b", title="B2")["rank"] == tasks.get("b")["rank"]  # Unchanged is fine.
+
+
+def test_repeating_rounds_and_archived_tasks_never_duplicate_a_rank(tasks):
+    site(tasks, BOARD, "a", "b")
+    tasks.add("Weekly", id="weekly", project="site", every="week", plan="2030-04-03",
+              is_milestone=True, type=None)  # fmt: skip
+    tasks.move("weekly", first=True)
+    tasks.done("weekly")
+    successor = tasks.get("weekly.1")
+    assert successor["rank"] > tasks.get("weekly")["rank"] and successor["milestone"] is True
+    assert order(tasks)[:2] == ["weekly", "weekly.1"]
+    tasks.archive("a")
+    tasks.move("b", after="weekly.1")
+    tasks.reopen("a")  # Back to its old place; no key collides with it.
+    ranks = [plans.effective_rank(tasks.get(x)) for x in order(tasks)]
+    assert len(set(ranks)) == len(ranks) and ranks == sorted(ranks)
+    # Damaged data with equal ranks does not stop a placement.
+    store = tasks.engine
+    raw = json.loads(
+        store.db.execute("SELECT data FROM daymark_entities WHERE id='b'").fetchone()[0]
+    )
+    raw["rank"] = tasks.get("weekly.1")["rank"]
+    store.db.execute("UPDATE daymark_entities SET data=? WHERE id='b'", (canonical(raw),))
+    tasks.add("C", id="c", project="site")
+    moved = tasks.move("c", after="weekly.1")
+    assert moved["rank"] > raw["rank"]
 
 
 def test_place_refuses_neighbours_outside_the_project_or_workspace(tasks):
@@ -248,6 +298,9 @@ def test_place_refuses_neighbours_outside_the_project_or_workspace(tasks):
     code("invalid", tasks.move, "a", after="loose")
     code("invalid", tasks.move, "loose", first=True)
     code("invalid", tasks.move, "a", after="a")
+    tasks.add("Shelved", id="shelved", project="site")
+    tasks.archive("shelved")
+    code("invalid", tasks.move, "a", after="shelved")
     other = Tasks(tasks.engine, "elsewhere", actor="bob", timezone=ZONE, now=NOW)
     other.project("Same name", id="site")
     other.add("Foreign", id="foreign", project="site")
@@ -281,7 +334,7 @@ def test_concurrent_places_from_two_writers_both_land(tmp_path):
     assert errors == []
     result = order(setup)
     assert result[0] == "anchor" and set(result[1:3]) == {"x", "y"} and result[3] == "tail"
-    ranks = [setup.get(x)["rank"] for x in result]
+    ranks = [plans.effective_rank(setup.get(x)) for x in result]
     assert ranks == sorted(ranks) and len(set(ranks)) == 4
     # A stale version is refused, not merged.
     current = setup.get("x")["version"]
@@ -328,7 +381,8 @@ def test_plan_read_resolves_dates_dependencies_people_and_rollups(tasks):
     assert view["rollup"] == {
         "stages": {"todo": 2, "doing": 1, "done": 0}, "total": 3, "done": 0,
         "percent_done": 0, "earliest_start": "2030-04-10", "latest_end": "2030-05-10",
-        "overdue": 1, "milestones": 1, "proposed": 0, "off_board": 0,
+        "overdue": 1, "milestones": 1, "proposed": 0, "off_board": 0, "estimate_minutes": None,
+        "sums": {},
     }  # fmt: skip
     assert view["cursor"] == tasks.engine.head("w")
     tasks.done("map")
@@ -358,7 +412,10 @@ def test_assigning_by_name_finds_the_person_and_never_invents_one(tasks):
     tasks.add("Grace", kind="person", id="grace2")
     assert code("invalid", tasks.add, "Five", assignee="Grace").details == ["grace", "grace2"]
     edited = tasks.edit(made["id"], assignee="Ada Lovelace")
-    assert edited["assignee_id"] == "ada" and tasks.edit(made["id"], assignee="")["assignee_id"] is None
+    assert (
+        edited["assignee_id"] == "ada"
+        and tasks.edit(made["id"], assignee="")["assignee_id"] is None
+    )
 
 
 # -- the change feed
@@ -518,9 +575,10 @@ def assert_upgraded(store, db, snapshot):
         now = store.get(workspace, id)
         assert now == {**data, **NEW_FIELDS} and now["version"] == version
     assert db.execute("SELECT * FROM daymark_events ORDER BY seq").fetchall() == snapshot["events"]
-    assert db.execute("SELECT * FROM daymark_event_cursors ORDER BY seq").fetchall() == snapshot[
-        "cursors"
-    ]
+    assert (
+        db.execute("SELECT * FROM daymark_event_cursors ORDER BY seq").fetchall()
+        == snapshot["cursors"]
+    )
     assert db.execute("SELECT * FROM daymark_operations").fetchall() == snapshot["operations"]
     # Behaviour for records that use none of the new fields is unchanged.
     tasks = Tasks(store, "home", actor="alice", timezone=ZONE, now=NOW)
@@ -552,9 +610,10 @@ def test_a_0_3_0_database_upgrades_inside_a_caller_owned_connection(tmp_path):
     connection, snapshot = old_database(tmp_path / "old.db")
     store = Store(connection)
     connection.rollback()  # The caller can still discard the upgrade.
-    assert connection.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone()[
-        0
-    ] == "4"
+    assert (
+        connection.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone()[0]
+        == "4"
+    )
     store = Store(connection)
     connection.commit()
     assert_upgraded(store, connection, snapshot)
@@ -582,18 +641,18 @@ def cli(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_manages_a_project(cli):
-    assert cli("project", "Website relaunch", "--id", "site", "--stages", BOARD)[0] == 0
+    assert cli("project", "add", "Website relaunch", "--id", "site", "--stages", BOARD)[0] == 0
     assert cli("add", "Ada", "--kind", "person", "--id", "ada")[0] == 0
     status, _, err = cli("add", "Orphan", "--project", "site", "--assignee", "Nobody")
     assert status == 5 and "No person" in err
     out = cli("add", "Sitemap", "--id", "map", "--project", "site", "--stage", "doing",
-              "--assignee", "Ada", "--milestone")[1]  # fmt: skip
+              "--assignee", "Ada", "--is-milestone")[1]  # fmt: skip
     assert out.startswith("map  Sitemap  [") and "stage:doing" in out and "milestone" in out
     assert cli("add", "Copy", "--id", "copy", "--project", "site")[0] == 0
     assert "stage" not in cli("add", "Plain", "--id", "plain")[1]
     assert cli("move", "copy", "--first")[0] == 0
     assert cli("move", "map", "--stage", "done", "--after", "copy")[0] == 0
-    assert cli("edit", "map", "--no-milestone", "--json")[1].count("milestone") == 0
+    assert cli("edit", "map", "--no-is-milestone", "--json")[1].count("milestone") == 0
     text = cli("plan", "site")[1]
     assert text.splitlines()[0].startswith("site  Website relaunch  [1/2 done (50%)")
     assert "TO DO (1)" in text and "DONE (1)" in text and "owner Ada" in text
@@ -603,7 +662,7 @@ def test_cli_manages_a_project(cli):
     assert "1/2 done" in cli("projects")[1]
     cursor = view["cursor"]
     assert cli("changes", "site", "--after", str(cursor))[1].strip().endswith("unchanged")
-    cli("stages", "site", "todo:To do,done:Done:completed")
+    cli("project", "stages", "site", "todo:To do,done:Done:completed")
     assert json.loads(cli("changes", "site", "--after", str(cursor), "--json")[1])["changed"]
     status, _, err = cli("move", "copy", "--stage", "nowhere")
     assert status == 5 and "Unknown stage" in err
@@ -611,10 +670,12 @@ def test_cli_manages_a_project(cli):
     assert json.loads(out)["cursor"] > cursor
     status, out, _ = cli("events", "--project", "site", "--after", str(cursor))
     assert {e["entity_id"] for e in json.loads(out)} == {"site"}
-    assert cli("edit", "site", "--managed-by", "rev")[0] == 0
+    assert cli("project", "set", "site", "--managed-by", "rev")[0] == 0
     assert "managed by rev: read-only" in cli("plan", "site")[1]
     assert "managed by rev" in cli("projects")[1]
-    assert json.loads(cli("edit", "site", "--managed-by", "", "--json")[1]).get("managed_by") is None
+    assert (
+        json.loads(cli("edit", "site", "--managed-by", "", "--json")[1]).get("managed_by") is None
+    )
 
 
 def test_mcp_reads_plans_and_moves_cards(tasks):
