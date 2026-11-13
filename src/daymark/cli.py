@@ -415,6 +415,40 @@ def _copy_database(source: Path, destination: Path) -> None:
             raise
 
 
+def _stored_schema(path):
+    """The schema marker of an existing Daymark database, read without writing:
+    None for a new or empty file, "" for Daymark tables without a marker."""
+    if path == ":memory:" or not Path(path).is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+            tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "daymark_entities" not in tables:
+                return None
+            if "daymark_scheduler" not in tables:
+                return ""
+            row = db.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone()
+            return row[0] if row else ""
+    except sqlite3.Error:
+        return None
+
+
+def _open_store(path):
+    """Open a Store the way every command does: upgrading an older database in place.
+    The upgrade is one-way, so the first one is announced on standard error."""
+    from .store import RELEASE, SCHEMA, Store
+
+    before = _stored_schema(path)
+    store = Store(path)
+    if before is not None and before != SCHEMA:
+        print(
+            f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
+            f"(Daymark {RELEASE}); older versions can no longer open it",
+            file=sys.stderr,
+        )
+    return store
+
+
 def _init(args) -> int:
     explicit = args.db or os.environ.get("DAYMARK_DB")
     target = (
@@ -424,9 +458,8 @@ def _init(args) -> int:
     )
     existed = target.is_file()
     target.parent.mkdir(parents=True, exist_ok=True)
-    from .store import Store
 
-    Store(str(target)).close()
+    _open_store(str(target)).close()
     os.chmod(target, 0o600)
     print(f"{'Using existing' if existed else 'Created'} {target}")
     print("Next: `daymark prime` for the workflow; `daymark onboard` for an AGENTS.md snippet.")
@@ -705,9 +738,8 @@ def main(argv: list[str] | None = None) -> int:
             import uvicorn
 
             from .api import create_app
-            from .store import Store
 
-            store = Store(args.db)
+            store = _open_store(args.db)
             app = create_app(store, _json_file(args.auth_file))
             # Uvicorn access logs include private URL/query values; never enable them here.
             try:
@@ -724,10 +756,8 @@ def main(argv: list[str] | None = None) -> int:
 
             engine = Client(args.url, os.environ.get(args.token_env, ""))
         else:
-            from .store import Store
-
             fresh = args.db != ":memory:" and not Path(args.db).exists()
-            engine = Store(args.db)
+            engine = _open_store(args.db)
             if fresh:
                 os.chmod(args.db, 0o600)  # Task data is private by default.
         try:

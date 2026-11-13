@@ -45,6 +45,11 @@ def invalid(message):
 SCHEMA = "5"
 # The first release that writes this schema. A file at this schema needs it or newer.
 RELEASE = "0.4.0"
+STALE = (
+    f"This database needs an upgrade to schema {SCHEMA}: open it once with daymark-core "
+    f"{RELEASE} or newer (any `daymark` command does), and commit the upgrade if you own "
+    "the connection"
+)
 
 REFS = {
     "assignee_id": {"person", "principal"},
@@ -128,11 +133,18 @@ class Store:
             return
         if not self._has_schema():
             raise DomainError("conflict", "No Daymark data in this database; run `daymark init`")
-        raise DomainError(
-            "conflict",
-            f"This database needs an upgrade to schema {SCHEMA} (daymark-core {RELEASE} or "
-            "newer); open it once with `daymark` to upgrade it in place",
-        )
+        raise DomainError("conflict", STALE)
+
+    def _refuse_stale(self):
+        """Reads never interpret an older stored shape; they refuse with the one
+        message every surface uses. An old schema holding no entities has nothing to
+        misread and lists as empty."""
+        if (
+            self._has_schema()
+            and not self._current()
+            and self.db.execute("SELECT 1 FROM daymark_entities LIMIT 1").fetchone()
+        ):
+            raise DomainError("conflict", STALE)
 
     def _ensure_schema(self):
         """Create or upgrade Daymark's tables inside the current transaction."""
@@ -231,6 +243,7 @@ class Store:
         with self._lock:
             if not self._has_schema():
                 raise DomainError("not_found", "Entity not found")
+            self._refuse_stale()
             row = self.db.execute(
                 "SELECT data FROM daymark_entities WHERE workspace=? AND id=?", (workspace, id)
             ).fetchone()
@@ -242,6 +255,7 @@ class Store:
         with self._lock:
             if not self._has_schema():
                 return []
+            self._refuse_stale()
             return self._rows(workspace, kind=kind, include_archived=include_archived)
 
     def _rows(self, workspace, kind=None, status=None, include_archived=False):
@@ -1835,7 +1849,7 @@ class Store:
                 narrowed.setdefault(node["field"], node["value"])
         with self._lock:
             if not self._current():
-                return [item for item in self.list(workspace) if test(item)]
+                return [item for item in self.list(workspace) if test(item)]  # Empty or refused.
             status = [narrowed["status"]] if "status" in narrowed else None
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]

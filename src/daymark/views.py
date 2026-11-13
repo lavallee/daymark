@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import plans
 from .models import DomainError, Temporal, normalize_now
+from .store import STALE
 
 LIVE = ("proposed", "open", "waiting")
 DONE = ("completed", "cancelled")
@@ -51,9 +52,7 @@ def _usable(store):
     if not store._has_schema():
         return False
     if not store._current():
-        raise DomainError(
-            "conflict", "Stored schema is not current; open a Store and commit its upgrade"
-        )
+        raise DomainError("conflict", STALE)
     return True
 
 
@@ -581,9 +580,7 @@ def _named(store, workspace, preloaded=None):
 def _read(store):
     """Refuse a schema this code cannot read rather than upgrading during a read."""
     if store._has_schema() and not store._current():
-        raise DomainError(
-            "conflict", "Stored schema is not current; open a Store and commit its upgrade"
-        )
+        raise DomainError("conflict", STALE)
 
 
 def plan(store, workspace, project_id, *, now=None):
