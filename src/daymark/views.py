@@ -786,3 +786,79 @@ def tree(store, workspace, root_id, *, depth=3):
             return out
 
         return node(root, 0)
+
+
+def explore(store, workspace, goal_id=None, *, now=None):
+    """Conditions and the work moving them, for one goal or the whole workspace.
+
+    A condition is on the **frontier** when it is not met and everything it
+    requires is met: it is where progress is possible now. A frontier condition
+    with no open, waiting or proposed task advancing it is a **gap**. Conditions
+    of a finished or shelved goal are on no frontier. Which frontier
+    condition is the real bottleneck is a judgement; this only states the facts.
+    """
+    with store._lock:
+        if not _usable(store):
+            return {"goal": None, "conditions": [], "frontier": [], "gaps": [], "unassessed": []}
+        goal = None
+        if goal_id is not None:
+            goal = store.get(workspace, goal_id)
+            if goal["kind"] != "goal":
+                raise DomainError("invalid", "Explore starts from a goal")
+        conditions = [
+            c
+            for c in store._rows(workspace, kind="condition")
+            if goal_id is None or c["goal_id"] == goal_id
+        ]
+        requires = {c["id"]: list(c["depends_on"]) for c in conditions}
+        statuses = _statuses(store, workspace, [r for refs in requires.values() for r in refs])
+        # A finished or shelved goal has no frontier: nothing is "next" for it.
+        goals = _statuses(store, workspace, [c["goal_id"] for c in conditions])
+        advancing: dict[str, list] = {c["id"]: [] for c in conditions}
+        if conditions:
+            rows = store.db.execute(
+                "SELECT r.target_id, e.data FROM daymark_refs r JOIN daymark_entities e ON "
+                "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
+                "r.field='advances' AND e.archived=0 ORDER BY e.id",
+                (workspace,),
+            ).fetchall()
+            for target, data in rows:
+                if target in advancing:
+                    task = json.loads(data)
+                    advancing[target].append(
+                        {"id": task["id"], "title": task["title"], "status": task["status"]}
+                    )
+    out, frontier, gaps, unassessed = [], [], [], []
+    for item in sorted(conditions, key=lambda c: (c["created_at"], c["id"])):
+        live = item["status"] == "open" and goals.get(item["goal_id"]) not in DONE
+        waiting_on = [r for r in requires[item["id"]] if statuses.get(r) not in DONE]
+        on_frontier = live and not waiting_on
+        # A proposed move counts: someone has already suggested what to do here.
+        moving = [t for t in advancing[item["id"]] if t["status"] in LIVE]
+        if on_frontier:
+            frontier.append(item["id"])
+            if not moving:
+                gaps.append(item["id"])
+        if live and item["condition"] == "unknown":
+            unassessed.append(item["id"])
+        out.append(
+            {
+                "id": item["id"],
+                "title": item["title"],
+                "state": "dropped" if item["status"] == "cancelled" else item["condition"],
+                "goal_id": item["goal_id"],
+                "requires": requires[item["id"]],
+                "waiting_on": waiting_on,
+                "frontier": on_frontier,
+                "advancing": advancing[item["id"]],
+                "evidence": [n["text"] for n in item["notes"][-3:]],
+            }
+        )
+    lean = {k: goal[k] for k in ("id", "title", "status")} if goal else None
+    return {
+        "goal": lean,
+        "conditions": out,
+        "frontier": frontier,
+        "gaps": gaps,
+        "unassessed": unassessed,
+    }

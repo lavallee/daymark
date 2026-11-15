@@ -21,7 +21,7 @@ from daymark.client import Client
 from daymark.mcp import TOOLS, handle
 from daymark.plans import rank_between, valid_rank
 from daymark.render import compact, line
-from daymark.store import canonical
+from daymark.store import SCHEMA, canonical
 
 NOW = datetime(2030, 4, 3, 15, 0, tzinfo=UTC)  # A Wednesday.
 ZONE = "Europe/London"
@@ -30,6 +30,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "daymark-0.3.0.sql"
 NEW_FIELDS = {
     "stages": [], "stage": None, "rank": None, "milestone": False, "managed_by": None,
     "milestone_id": None, "types": [], "fields": [], "type": None, "values": {}, "measure": None,
+    "condition": None, "advances": [],
 }  # fmt: skip
 
 
@@ -574,7 +575,9 @@ def old_database(target):
 
 
 def assert_upgraded(store, db, snapshot):
-    assert db.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone() == ("5",)
+    assert db.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone() == (
+        SCHEMA,
+    )
     for (workspace, id), (version, data) in snapshot["entities"].items():
         now = store.get(workspace, id)
         assert now == {**data, **NEW_FIELDS} and now["version"] == version
@@ -691,7 +694,7 @@ def test_mcp_reads_plans_and_moves_cards(tasks):
         result = handle(tasks, message)["result"]
         return result["isError"], result["content"][0]["text"]
 
-    assert len(json.dumps(TOOLS)) < 6000
+    assert len(json.dumps(TOOLS)) < 6200
     assert tool("daymark_act", action="move", id="b", stage="doing", place="first")[0] is False
     assert order(tasks) == ["b", "a"] and board(tasks)["doing"] == ["b"]
     assert tool("daymark_act", action="move", id="a", place="sideways")[0] is True

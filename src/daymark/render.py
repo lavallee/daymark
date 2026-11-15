@@ -63,6 +63,10 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.append("waiting on " + item["waiting_on"])
     if item["recurrence"]:
         tags.append("repeats")
+    if item["kind"] == "condition" and item["status"] != "cancelled":
+        tags.append(item["condition"].replace("_", " "))
+    if item["advances"]:
+        tags.append("advances " + ",".join(item["advances"]))
     if item["focus"]:
         tags.insert(0, f"focus {item['focus']}")
     if item["scope"]:
@@ -85,6 +89,86 @@ def line(item: dict, now=None, reason=True) -> str:
 
 def listing(items, now=None, empty="Nothing here.") -> str:
     return "\n".join(line(item, now) for item in items) if items else empty
+
+
+def explore_text(view: dict) -> str:
+    """Conditions in the order they were written, each with its state and what moves it."""
+    out = []
+    if view["goal"]:
+        out.append(f"{view['goal']['id']}  {view['goal']['title']}")
+    marks = {"met": "x", "partly_met": "~", "unmet": " ", "unknown": "?", "dropped": "-"}
+    for item in view["conditions"]:
+        tags = []
+        if item["frontier"]:
+            tags.append(
+                "next"
+                if item["advancing"] and item["id"] not in view["gaps"]
+                else "next; nothing moving it"
+            )
+        if item["waiting_on"]:
+            tags.append("needs " + ",".join(item["waiting_on"]))
+        out.append(
+            f"  [{marks[item['state']]}] {item['id']}  {item['title']}"
+            + (f"  [{'; '.join(tags)}]" if tags else "")
+        )
+        for task in item["advancing"]:
+            out.append(f"        {task['id']}  {task['title']}  [{task['status']}]")
+        for evidence in item["evidence"][-1:]:
+            out.append(f"        evidence: {evidence}")
+    if not view["conditions"]:
+        out.append('No conditions recorded. Add one with `daymark condition "..." --goal ID`.')
+    if view["unassessed"]:
+        out.append(
+            f"{len(view['unassessed'])} not yet assessed: {', '.join(view['unassessed'][:8])}"
+        )
+    return "\n".join(out)
+
+
+def advice_text(advice, now=None) -> str:
+    """Picks, then what the profile's strategies noticed."""
+    plain = advice.tone != "neutral"
+    out = []
+    for item in advice.picks:
+        # In the neutral tone the dates still show; the words "overdue" and "ago" do not.
+        out.append(line(item, now, reason=plain))
+        if item["id"] in advice.steps:
+            out.append(f"    next: {advice.steps[item['id']]}")
+    if not advice.picks:
+        out.append("Nothing is ready.")
+    if advice.held_back:
+        out.append(f"({advice.held_back} more ready; `daymark ready` shows all.)")
+    for note in advice.notes:
+        ids = (
+            f"  [{', '.join(note.ids[:8])}{', …' if len(note.ids) > 8 else ''}]" if note.ids else ""
+        )
+        out.append(f"- {note.text}{ids}")
+    return "\n".join(out)
+
+
+def profile_text(profile: dict) -> str:
+    out = [f"profile: {profile['name']}"]
+    for stage in profile["strategies"]:
+        settings = ", ".join(f"{k}={v}" for k, v in stage["with"].items())
+        out.append(f"  {stage['use']}" + (f"  ({settings})" if settings else ""))
+    if not profile["strategies"]:
+        out.append("  no strategies: `daymark ready` order, nothing held back, no notes")
+    for name in profile.get("skipped") or []:
+        out.append(f"  ! {name}: not available or misconfigured; left out. "
+                   f"Choose a profile again or `--drop {name}`.")  # fmt: skip
+    return "\n".join(out)
+
+
+def strategies_text(listed, profiles: dict) -> str:
+    out = ["Strategies (kind, how well supported):"]
+    for s in listed:
+        settings = ", ".join(f"{k}={p.default}" for k, p in s.params.items())
+        out.append(f"  {s.name}  [{s.kind}; {s.evidence}]  {s.summary}"
+                   + (f"  ({settings})" if settings else ""))  # fmt: skip
+    out.append("Profiles (adopt with `daymark profile NAME`):")
+    for name, profile in profiles.items():
+        uses = ", ".join(x["use"] for x in profile["strategies"]) or "none"
+        out.append(f"  {name}: {uses}")
+    return "\n".join(out)
 
 
 def agenda_text(view: dict, now=None) -> str:
@@ -418,6 +502,9 @@ Commands (add --json to any for structured output)
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
   daymark propose "Title" [...]     suggest; a person runs accept/dismiss
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
+  daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
+  daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
+  daymark advise                    what to offer and mention, by this workspace's profile
   daymark claim ID / release ID     take or give back a task
   daymark note ID "text"            progress or context for the next session
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)

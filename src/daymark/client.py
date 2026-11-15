@@ -109,6 +109,9 @@ class Client:
         params = self._params(now=now, days=days, scope=scope)
         return self._request("GET", "/v1/agenda", params=params)
 
+    def explore(self, goal: str | None = None, *, now: Any = None) -> Any:
+        return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now))
+
     def summary(self, *, now: Any = None, scope: str | None = None) -> Any:
         return self._request("GET", "/v1/summary", params=self._params(now=now, scope=scope))
 

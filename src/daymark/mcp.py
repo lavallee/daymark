@@ -30,7 +30,8 @@ _FIELDS = {
     "waiting_on": {"type": "string"},
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
-    "scope": {"type": "string", "description": "Part of life it belongs to, e.g. household."},
+    "scope": {"type": "string", "description": "Part of life, e.g. household."},
+    "advances": {"type": "array", "items": {"type": "string"}},
     "stage": {"type": "string", "description": "Board stage; sets status."},
     "milestone": {"type": "string", "description": "Milestone it counts toward."},
     "is_milestone": {"type": "boolean"},
@@ -44,7 +45,7 @@ _DATES = (
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
     "release", "note", "wait", "resume", "defer", "block", "unblock", "forget",
-    "focus", "unfocus", "move",
+    "focus", "unfocus", "move", "assess",
 ]  # fmt: skip
 
 TOOLS = [
@@ -66,6 +67,8 @@ TOOLS = [
                     "type": "string",
                     "enum": [
                         "ready",
+                        "advise",
+                        "explore",
                         "agenda",
                         "show",
                         "find",
@@ -130,6 +133,10 @@ TOOLS = [
                 "on": {"type": "string"},
                 "until": {"type": "string"},
                 "minutes": {"type": "integer"},
+                "state": {
+                    "type": "string",
+                    "description": "For assess: met, partly_met, unmet, unknown.",
+                },
                 "stage": {"type": "string"},
                 "place": {"type": "string", "description": "after:ID, before:ID, first or last"},
                 "op": {"type": "string", "description": "Repeat to retry safely."},
@@ -172,6 +179,15 @@ def call(tasks, name, args):
                 limit=args.get("limit", 20), move=args.get("move"), scope=args.get("scope")
             )
             return render.listing(items, now, "Nothing is ready.")
+        if view == "explore":
+            return render.explore_text(tasks.explore(args.get("id")))
+        if view == "advise":
+            from . import strategies
+
+            advice = strategies.advise(
+                tasks, strategies.stored_profile(tasks), scope=args.get("scope")
+            )
+            return render.advice_text(advice, now)
         if view == "agenda":
             return render.agenda_text(
                 tasks.agenda(args.get("days", 7), scope=args.get("scope")), now
@@ -215,6 +231,8 @@ def call(tasks, name, args):
             item = tasks.defer(id, args["until"], op=op)
         elif action in {"block", "unblock"}:
             item = getattr(tasks, action)(id, args["on"], op=op)
+        elif action == "assess":
+            item = tasks.assess(id, args["state"], evidence=args.get("text"), op=op)
         elif action == "claim":
             item = tasks.claim(id, minutes=args.get("minutes", 60), op=op)
         elif action == "move":

@@ -44,6 +44,8 @@ command list and the current state in about 3,000 characters. `daymark onboard
 | Finish, or pass over one round of a repeating task | `daymark done ID`, `daymark skip ID` |
 | Park on someone else, or hide until a date | `daymark wait ID --on WHO`, `daymark defer ID D` |
 | Keep a durable fact | `daymark remember "fact"` |
+| Apply the person's way of working | `daymark advise` |
+| See what must be true for a goal, and what is stuck | `daymark explore GOAL` |
 | Put a task on the person's own short list | `daymark focus ID` |
 | See only one part of life | `daymark ready --scope household` |
 | Run a project as a board, in your own order | `daymark plan P`, `daymark move ID --stage S --after X` |
@@ -146,6 +148,17 @@ cheaply whether anything changed since; `Store.batch` writes several changes in
 one transaction; and `daymark.plans.schedule` turns a plan's dates back into
 Daymark's fields.
 
+## A kernel and ways of working
+
+Daymark is built in layers. The **kernel** stores what is true and enforces
+what must hold. **Strategies** sit above it: small, switchable opinions about
+what to offer and what to mention, bundled into profiles (`plain`,
+`assistant`, `gentle`, `dense`) that a workspace adopts in one step. A
+strategy only advises; it never writes. Other packages can add their own.
+Read the [architecture](docs/architecture.md) for the contract and the
+[research digest](docs/research/working-methods.md) for the evidence behind
+each strategy.
+
 ## What it models
 
 - **Four kinds of time.** `deadline` is a hard cutoff. `planned` is an
@@ -171,13 +184,13 @@ Daymark's fields.
 ## Install from source
 
 The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.4.0. Package registry publication is not yet promised. Requires
+release is 0.5.0. Package registry publication is not yet promised. Requires
 Python 3.11 or newer.
 
 To install the command line tool from the tagged release:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.4.0"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
 ```
 
 Or from a checkout:

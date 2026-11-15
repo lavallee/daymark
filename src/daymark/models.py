@@ -388,6 +388,7 @@ class Entity(Model):
         "filter",
         "reminder",
         "memory",
+        "condition",
     ]
     version: int = Field(default=1, ge=1)
     title: str = Field(default="", max_length=2000)
@@ -442,6 +443,13 @@ class Entity(Model):
     # field id. Values are checked against the project when they are written.
     type: str | None = Field(default=None, min_length=1, max_length=64, pattern=SLUG)
     values: dict[str, Any] = Field(default_factory=dict, max_length=50)
+    # A condition is something that has to be true for a goal to be reached. It is a
+    # state of the world, judged from evidence, not an action that gets ticked off.
+    # Its status follows from this: "met" reads as completed, anything else as open,
+    # so whatever depends on a condition waits until it is met.
+    condition: Literal["met", "partly_met", "unmet", "unknown"] | None = None
+    # The conditions a task is meant to move toward being met.
+    advances: list[str] = Field(default_factory=list, max_length=50)
     # A goal's optional single measure: where it stands against a target.
     measure: Measure | None = None
     # The system that owns and rewrites this project (for example "ledger"). Tools that
@@ -542,6 +550,18 @@ class Entity(Model):
             raise ValueError("stage, rank, type, values and milestones belong to tasks")
         if self.kind != "goal" and self.measure is not None:
             raise ValueError("a measure belongs to a goal")
+        if (self.kind == "condition") != (self.condition is not None):
+            raise ValueError("a condition, and only a condition, has a condition state")
+        if self.kind == "condition":
+            if not self.goal_id:
+                raise ValueError("a condition belongs to a goal")
+            if self.recurrence:
+                raise ValueError("a condition does not repeat")
+            follows = "completed" if self.condition == "met" else "open"
+            if self.status not in (follows, "cancelled"):
+                raise ValueError("a condition's status follows its state")
+        if self.kind != "task" and self.advances:
+            raise ValueError("only a task advances conditions")
         for name, items in (("type", self.types), ("field", self.fields)):
             if len({x.id for x in items}) != len(items):
                 raise ValueError(f"{name} ids must be unique")
