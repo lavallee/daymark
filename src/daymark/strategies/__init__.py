@@ -38,6 +38,7 @@ KINDS = (
 )
 EVIDENCE = ("clinical", "practitioner", "folk", "convention")
 SETTING = "profile"
+READY_LIMIT = 1000  # the most the kernel's ready view returns in one read
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,7 @@ def validate_profile(profile: Any) -> dict:
     """A profile is ``{"name": str, "strategies": [{"use": name, "with": {...}}, ...]}``."""
     if (
         not isinstance(profile, dict)
-        or set(profile) - {"name", "strategies"}
+        or set(profile) - {"name", "strategies", "skipped"}
         or not isinstance(profile.get("name", ""), str)
         or not isinstance(profile.get("strategies"), list)
         or len(profile["strategies"]) > 30
@@ -191,7 +192,7 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
     for setting in settings:
         target, _, raw = setting.partition("=")
         name, _, param = target.partition(".")
-        if not name or (param and not raw):
+        if not name or bool(param) != bool(raw) or ("=" in setting and not raw):
             raise DomainError("invalid", "Use STRATEGY or STRATEGY.PARAM=VALUE")
         stage = next((x for x in stages if x["use"] == name), None)
         if stage is None:
@@ -214,13 +215,14 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
 def snapshot(tasks, *, scope: str | None = None) -> Snapshot:
     """Read what strategies may see through the plain-verb layer, in four reads."""
     agenda = tasks.agenda(days=0, scope=scope)
+    ready = tasks.ready(limit=READY_LIMIT, scope=scope)
     opened = [x for x in tasks.find(status="open", limit=10**6)]
     if scope is not None:
         opened = [x for x in opened if (x["scope"] or "") == scope]
     return Snapshot(
         now=tasks.now(),
         timezone=tasks.timezone,
-        ready=tuple(tasks.ready(limit=1000, scope=scope)),
+        ready=tuple(ready),
         open=tuple(opened),
         waiting=tuple(x for x in agenda["waiting"] + agenda["overdue"] if x["status"] == "waiting"),
         proposed=tuple(agenda["proposed"]),
@@ -232,27 +234,57 @@ def advise(tasks, profile: dict | None = None, *, scope: str | None = None) -> A
     """Run a profile over the current state. Reads only; returns advice."""
     from .profiles import PROFILES
 
+    skipped = list((profile or {}).get("skipped") or [])
     profile = validate_profile(profile or PROFILES["plain"])
     view = snapshot(tasks, scope=scope)
     advice = Advice(picks=list(view.ready))
+    if skipped:
+        advice.notes.append(
+            Note("profile", "The profile names strategies that could not be used: "
+                 + ", ".join(skipped) + ". Fix with `daymark profile`.", [])
+        )  # fmt: skip
+    if len(view.ready) == READY_LIMIT:
+        advice.notes.append(
+            Note(
+                "profile",
+                f"More than {READY_LIMIT} tasks are ready; advice covers the first {READY_LIMIT}.",
+                [],
+            )
+        )
     for stage in profile["strategies"]:
         get(stage["use"]).apply(view, advice, stage["with"])
     return advice
 
 
 def stored_profile(tasks) -> dict:
-    """The workspace's chosen profile, or the plain one. Local stores only."""
+    """The workspace's chosen profile, or the plain one. Local stores only.
+
+    A saved profile can outlive what it names: a plugin is uninstalled, a
+    parameter is renamed. Such entries are left out and listed under
+    ``skipped`` so the workspace keeps working and the person can see why.
+    """
     from .profiles import PROFILES
 
     reader = getattr(tasks.engine, "setting", None)
     saved = reader(*tasks._ws, SETTING) if reader else None
-    return validate_profile(saved) if saved else PROFILES["plain"]
+    if not isinstance(saved, dict) or not isinstance(saved.get("strategies"), list):
+        return PROFILES["plain"]
+    stages, skipped = [], []
+    for stage in saved["strategies"]:
+        try:
+            strategy = get(stage["use"])
+            known = {k: v for k, v in (stage.get("with") or {}).items() if k in strategy.params}
+            stages.append({"use": strategy.name, "with": resolve(strategy, known)})
+        except (DomainError, KeyError, TypeError, AttributeError):
+            skipped.append(str(stage.get("use") if isinstance(stage, dict) else stage))
+    profile = {"name": str(saved.get("name") or "custom"), "strategies": stages}
+    return {**profile, "skipped": skipped} if skipped else profile
 
 
 def store_profile(tasks, profile: dict) -> dict:
     writer = getattr(tasks.engine, "set_setting", None)
     if writer is None:
         raise DomainError("invalid", "Profiles are set on a local database")
-    profile = validate_profile(profile)
+    profile = validate_profile({k: v for k, v in profile.items() if k != "skipped"})
     writer(*tasks._ws, SETTING, profile)
     return profile

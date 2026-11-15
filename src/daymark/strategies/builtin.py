@@ -147,14 +147,23 @@ register(
 
 
 def _lookahead(view: Snapshot, advice: Advice, params: dict) -> None:
+    coming = []
     for item in view.open:
         if not item["deadline"] or item["planned"]:
             continue
         days = _days_until(item["deadline"], view.now)
         if 0 < days <= params["days"]:
-            advice.notes.append(
-                Note("lookahead", f"Due in {days} days with no day planned for it.", [item["id"]])
-            )
+            coming.append((days, item["id"]))
+    coming.sort()
+    for days, id in coming[: params["limit"]]:
+        advice.notes.append(
+            Note("lookahead", f"Due in {days} days with no day planned for it.", [id])
+        )
+    if len(coming) > params["limit"]:
+        rest = [id for _, id in coming[params["limit"] :]]
+        advice.notes.append(
+            Note("lookahead", f"{len(rest)} more due soon with no day planned.", rest[:50])
+        )
 
 
 register(
@@ -164,7 +173,10 @@ register(
         summary="Find deadlines coming up that have no day set aside to work on them.",
         evidence="practitioner",  # assistants plan backward from fixed dates
         apply=_lookahead,
-        params={"days": Param(14, "How far ahead to look", 1, 365)},
+        params={
+            "days": Param(14, "How far ahead to look", 1, 365),
+            "limit": Param(10, "Deadlines to mention one by one", 1, 100),
+        },
     )
 )
 

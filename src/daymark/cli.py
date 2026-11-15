@@ -572,8 +572,11 @@ def _simple(args, engine) -> int:
                     raise DomainError("not_found", "Unknown profile", [", ".join(PROFILES)])
                 current = PROFILES[args.name]
             if args.name or args.set or args.drop:
+                # Dropping a strategy the profile could not load is how to clear it.
+                gone = set(current.get("skipped") or [])
+                drops = [name for name in args.drop if name not in gone]
                 current = strategies.store_profile(
-                    tasks, strategies.edit_profile(current, args.set, args.drop)
+                    tasks, strategies.edit_profile(current, args.set, drops)
                 )
             out(current, render.profile_text(current))
         else:

@@ -458,6 +458,9 @@ class Tasks:
                 out["next_move"] = value or None
             elif key in {"scope", "stage", "managed_by", "type"}:
                 out[key] = value or None
+            elif key == "advances":
+                names = [value] if isinstance(value, str) else list(value)
+                out["advances"] = [x for x in names if x]  # "" clears
             elif key == "milestone" and not isinstance(value, bool):
                 out["milestone_id"] = value or None  # Membership: the milestone it counts toward.
             elif key in {"milestone", "is_milestone"}:

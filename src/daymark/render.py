@@ -152,6 +152,9 @@ def profile_text(profile: dict) -> str:
         out.append(f"  {stage['use']}" + (f"  ({settings})" if settings else ""))
     if not profile["strategies"]:
         out.append("  no strategies: `daymark ready` order, nothing held back, no notes")
+    for name in profile.get("skipped") or []:
+        out.append(f"  ! {name}: not available or misconfigured; left out. "
+                   f"Choose a profile again or `--drop {name}`.")  # fmt: skip
     return "\n".join(out)
 
 

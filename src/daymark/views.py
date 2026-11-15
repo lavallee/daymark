@@ -793,7 +793,8 @@ def explore(store, workspace, goal_id=None, *, now=None):
 
     A condition is on the **frontier** when it is not met and everything it
     requires is met: it is where progress is possible now. A frontier condition
-    with no open or waiting task advancing it is a **gap**. Which frontier
+    with no open, waiting or proposed task advancing it is a **gap**. Conditions
+    of a finished or shelved goal are on no frontier. Which frontier
     condition is the real bottleneck is a judgement; this only states the facts.
     """
     with store._lock:
@@ -811,6 +812,8 @@ def explore(store, workspace, goal_id=None, *, now=None):
         ]
         requires = {c["id"]: list(c["depends_on"]) for c in conditions}
         statuses = _statuses(store, workspace, [r for refs in requires.values() for r in refs])
+        # A finished or shelved goal has no frontier: nothing is "next" for it.
+        goals = _statuses(store, workspace, [c["goal_id"] for c in conditions])
         advancing: dict[str, list] = {c["id"]: [] for c in conditions}
         if conditions:
             rows = store.db.execute(
@@ -827,10 +830,11 @@ def explore(store, workspace, goal_id=None, *, now=None):
                     )
     out, frontier, gaps, unassessed = [], [], [], []
     for item in sorted(conditions, key=lambda c: (c["created_at"], c["id"])):
-        live = item["status"] == "open"
+        live = item["status"] == "open" and goals.get(item["goal_id"]) not in DONE
         waiting_on = [r for r in requires[item["id"]] if statuses.get(r) not in DONE]
         on_frontier = live and not waiting_on
-        moving = [t for t in advancing[item["id"]] if t["status"] in {"open", "waiting"}]
+        # A proposed move counts: someone has already suggested what to do here.
+        moving = [t for t in advancing[item["id"]] if t["status"] in LIVE]
         if on_frontier:
             frontier.append(item["id"])
             if not moving:

@@ -42,8 +42,8 @@ does, that is debt (see below).
 **Rules for kernel changes.** A field enters the kernel only if at least three
 independent methods or clients need it stored, or if an invariant depends on
 it. Anything one method needs belongs to a plugin. A kernel change comes with
-an in-place upgrade, a test against a database from the previous release, and
-a note for embedding applications.
+an in-place upgrade, a test that upgrades a stored database written by the
+previous release (`tests/fixtures/`), and a note for embedding applications.
 
 ## Strategies
 
@@ -81,7 +81,8 @@ layer is organised around them:
 **Profiles** bundle strategies so a way of working is adopted in one step
 (`daymark profile gentle`) and then adjusted
 (`daymark profile --set shortlist.size=5`). A profile belongs to a workspace.
-`plain`, the default, changes nothing. `assistant` behaves as a good assistant
+A saved profile that names a strategy no longer installed keeps working
+without it and says so. `plain`, the default, changes nothing. `assistant` behaves as a good assistant
 would unasked. `gentle` offers few choices, one small step each, and no red
 ink. `dense` shows everything and adds the checks that keep a large system
 honest. A profile is a starting point, not a diagnosis.
@@ -128,7 +129,8 @@ move  Move house
 
 The kernel states two facts. A condition is on the **frontier** when it is not
 met and everything it requires is: progress is possible there now. A frontier
-condition with no live task advancing it is a **gap**. Which frontier
+condition with no open, waiting or proposed task advancing it is a **gap**.
+Conditions of a finished goal are on no frontier. Which frontier
 condition is the real bottleneck, and what to do about it, is judgement, so it
 is a strategy's job; `frontier-first` leads with work that moves the frontier
 and names the gaps.

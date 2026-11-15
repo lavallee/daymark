@@ -45,7 +45,7 @@ _DATES = (
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
     "release", "note", "wait", "resume", "defer", "block", "unblock", "forget",
-    "focus", "unfocus", "move",
+    "focus", "unfocus", "move", "assess",
 ]  # fmt: skip
 
 TOOLS = [
@@ -133,6 +133,10 @@ TOOLS = [
                 "on": {"type": "string"},
                 "until": {"type": "string"},
                 "minutes": {"type": "integer"},
+                "state": {
+                    "type": "string",
+                    "description": "For assess: met, partly_met, unmet, unknown.",
+                },
                 "stage": {"type": "string"},
                 "place": {"type": "string", "description": "after:ID, before:ID, first or last"},
                 "op": {"type": "string", "description": "Repeat to retry safely."},
@@ -227,6 +231,8 @@ def call(tasks, name, args):
             item = tasks.defer(id, args["until"], op=op)
         elif action in {"block", "unblock"}:
             item = getattr(tasks, action)(id, args["on"], op=op)
+        elif action == "assess":
+            item = tasks.assess(id, args["state"], evidence=args.get("text"), op=op)
         elif action == "claim":
             item = tasks.claim(id, minutes=args.get("minutes", 60), op=op)
         elif action == "move":

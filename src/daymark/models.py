@@ -552,6 +552,14 @@ class Entity(Model):
             raise ValueError("a measure belongs to a goal")
         if (self.kind == "condition") != (self.condition is not None):
             raise ValueError("a condition, and only a condition, has a condition state")
+        if self.kind == "condition":
+            if not self.goal_id:
+                raise ValueError("a condition belongs to a goal")
+            if self.recurrence:
+                raise ValueError("a condition does not repeat")
+            follows = "completed" if self.condition == "met" else "open"
+            if self.status not in (follows, "cancelled"):
+                raise ValueError("a condition's status follows its state")
         if self.kind != "task" and self.advances:
             raise ValueError("only a task advances conditions")
         for name, items in (("type", self.types), ("field", self.fields)):

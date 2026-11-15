@@ -662,7 +662,10 @@ class Store:
             or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) is None
         ):
             invalid("Setting needs a workspace and a short lowercase name")
-        text = None if value is None else canonical(value)
+        try:
+            text = None if value is None else canonical(value)
+        except (TypeError, ValueError):
+            invalid("A setting is plain JSON")
         if text is not None and len(text) > 65_536:
             invalid("Setting exceeds 64 kB")
         key = f"setting:{workspace}:{name}"
@@ -958,7 +961,13 @@ class Store:
                     raw.update(status="cancelled", completed_at=None)
                 elif action == "reopen":
                     raw.update(status="open", completed_at=None, archived=False)
-                    if before["kind"] == "condition" and before["condition"] == "met":
+                    # Reopening a met condition says it no longer holds. Bringing back an
+                    # archived or dropped one keeps the last assessment.
+                    if (
+                        before["kind"] == "condition"
+                        and before["status"] == "completed"
+                        and not before["archived"]
+                    ):
                         raw["condition"] = "unmet"
             elif action == "note":
                 if set(payload) - {"id", "text", "author"}:
@@ -1003,8 +1012,13 @@ class Store:
             # A condition's status is never set directly: it follows its state, unless
             # the condition has been cancelled as no longer necessary.
             raw["condition"] = raw.get("condition") or "unknown"
+            follows = "completed" if raw["condition"] == "met" else "open"
+            asked = payload.get("status") if action in {"create", "update"} else None
+            if asked not in (None, follows, "cancelled"):
+                # Refuse, not ignore: a condition is assessed, never ticked off or parked.
+                invalid("A condition's status follows its state; assess it instead")
             if raw.get("status") != "cancelled":
-                raw["status"] = "completed" if raw["condition"] == "met" else "open"
+                raw["status"] = follows
         data = self._validated(raw)
         if data["status"] == "completed" and not data["completed_at"]:
             data["completed_at"] = now

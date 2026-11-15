@@ -21,7 +21,8 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ### Changed
 
-- `depends_on` accepts conditions as well as tasks. A condition's status follows its state and cannot be set directly.
+- `depends_on` accepts conditions as well as tasks. A condition's status follows its state and cannot be set directly; it belongs to a goal and cannot be proposed, parked or made to repeat.
+- MCP: an `assess` action with `state`.
 
 ## [0.4.0] - 2026-11-13
 

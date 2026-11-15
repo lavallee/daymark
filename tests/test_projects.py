@@ -694,7 +694,7 @@ def test_mcp_reads_plans_and_moves_cards(tasks):
         result = handle(tasks, message)["result"]
         return result["isError"], result["content"][0]["text"]
 
-    assert len(json.dumps(TOOLS)) < 6000
+    assert len(json.dumps(TOOLS)) < 6200
     assert tool("daymark_act", action="move", id="b", stage="doing", place="first")[0] is False
     assert order(tasks) == ["b", "a"] and board(tasks)["doing"] == ["b"]
     assert tool("daymark_act", action="move", id="a", place="sideways")[0] is True

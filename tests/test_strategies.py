@@ -253,7 +253,20 @@ def test_condition_rules(tasks):
     code("invalid", tasks.explore, "t")
     code("invalid", tasks.condition, "Loop", goal="g", id="loop", requires=["loop"])
     # Status cannot be set past the state; completing a condition means it is met.
-    assert tasks.edit("c", status="completed")["status"] == "open"
+    code("invalid", tasks.edit, "c", status="completed")
+    code("invalid", tasks.wait, "c", "someone")
+    code(
+        "invalid",
+        tasks.propose,
+        "Proposed condition",
+        kind="condition",
+        goal="g",
+        condition="unknown",
+    )
+    code("invalid", tasks.add, "No goal", kind="condition", condition="unmet")
+    code(
+        "invalid", tasks.add, "Repeats", kind="condition", goal="g", condition="unmet", every="day"
+    )
     assert tasks.done("c")["condition"] == "met"
     assert tasks.reopen("c")["condition"] == "unmet"
     dropped = tasks.cancel("c")
@@ -305,3 +318,99 @@ def test_explore_on_the_command_line(tmp_path, monkeypatch, capsys):
     assert "[x] buyer" in out and "evidence: Countersigned" in out
     assert "keys  Keys are in hand  [next; nothing moving it]" in out
     assert json.loads(cli("explore", "--json")[1])["gaps"] == ["keys"]
+
+
+# -- regressions from independent review
+
+
+def test_a_stale_stored_profile_never_locks_a_workspace_out(tasks):
+    tasks.add("One", id="one")
+    broken = {"name": "old", "strategies": [
+        {"use": "uninstalled-plugin"},
+        {"use": "shortlist", "with": {"size": 1, "renamed_away": 9}},
+    ]}  # fmt: skip
+    tasks.engine.set_setting("w", "profile", broken)
+    profile = strategies.stored_profile(tasks)
+    assert profile["skipped"] == ["uninstalled-plugin"]
+    assert profile["strategies"] == [{"use": "shortlist", "with": {"size": 1}}]
+    advice = strategies.advise(tasks, profile)
+    assert "could not be used: uninstalled-plugin" in advice.notes[0].text
+    assert "! uninstalled-plugin" in __import__("daymark.render", fromlist=["x"]).profile_text(
+        profile
+    )
+    fixed = strategies.store_profile(tasks, profile)
+    assert "skipped" not in fixed and strategies.stored_profile(tasks) == fixed
+    tasks.engine.set_setting("w", "profile", "nonsense")
+    assert strategies.stored_profile(tasks)["name"] == "plain"
+    code("invalid", tasks.engine.set_setting, "w", "profile", {1, 2})
+    code("invalid", strategies.edit_profile, PROFILES["gentle"], ["stale=3"], [])
+    code("invalid", strategies.edit_profile, PROFILES["gentle"], ["stale.days="], [])
+
+
+def test_a_condition_keeps_status_and_state_together_on_every_path(tasks):
+    tasks.goal("Goal", id="g")
+    tasks.condition("Holds", goal="g", id="c", state="met")
+    tasks.archive("c")
+    back = tasks.reopen("c")  # Un-archiving keeps the assessment.
+    assert (back["condition"], back["status"], back["archived"]) == ("met", "completed", False)
+    tasks.cancel("c")
+    again = tasks.reopen("c")
+    assert (again["condition"], again["status"]) == ("met", "completed")
+    assert tasks.reopen("c")["condition"] == "unmet"  # Reopening a met one says it no longer holds.
+    snapshot = tasks.engine.export("w")
+    forged = [dict(e, status="completed") if e["id"] == "c" else e for e in snapshot["entities"]]
+    other = Store(":memory:")
+    code("invalid", other.import_snapshot, "w", {**snapshot, "entities": forged},
+         operation_id="import", expected_version=0)  # fmt: skip
+
+
+def test_explore_ignores_finished_goals_and_counts_a_proposed_move(tasks):
+    tasks.goal("Done goal", id="old")
+    tasks.condition("Left over", goal="old", id="left")
+    tasks.goal("Live goal", id="live")
+    tasks.condition("Needs a move", goal="live", id="need")
+    assert tasks.explore()["gaps"] == ["left", "need"]
+    tasks.done("old")
+    assert tasks.explore()["gaps"] == ["need"]
+    tasks.propose("A suggested move", advances=["need"])
+    assert tasks.explore()["gaps"] == [] and tasks.explore()["frontier"] == ["need"]
+    assert run(tasks, ("frontier-first", {})).suggestions == []
+    task = tasks.add("Real work", id="work", advances=["need"])
+    assert tasks.edit("work", advances="")["advances"] == [] and task["advances"] == ["need"]
+
+
+def test_lookahead_stays_bounded(tasks):
+    for index in range(30):
+        tasks.add(f"Due soon {index}", id=f"d{index:02d}", due="+3d")
+    notes = run(tasks, ("lookahead", {"limit": 4})).notes
+    assert len(notes) == 5 and "26 more due soon" in notes[-1].text
+
+
+def test_a_0_4_0_database_upgrades_in_place(tmp_path):
+    import sqlite3
+
+    from daymark.store import SCHEMA
+
+    path = tmp_path / "from-0.4.0.sqlite3"
+    db = sqlite3.connect(path)
+    db.executescript((Path(__file__).parent / "fixtures" / "daymark-0.4.0.sql").read_text())
+    before = {
+        row[0]: json.loads(row[1]) for row in db.execute("SELECT id, data FROM daymark_entities")
+    }
+    events = db.execute("SELECT count(*) FROM daymark_events").fetchone()[0]
+    db.commit()
+    db.close()
+    store = Store(str(path))
+    for id, old in before.items():
+        new = store.get(old["workspace"], id)
+        assert new == {**old, "condition": None, "advances": []}
+    check = sqlite3.connect(path)
+    assert check.execute("SELECT count(*) FROM daymark_events").fetchone()[0] == events
+    assert check.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone() == (
+        SCHEMA,
+    )
+    check.close()
+    upgraded = Tasks(store, "fixture", timezone=ZONE)
+    upgraded.condition("Works after upgrade", goal="fixture-goal", id="works")
+    assert upgraded.explore("fixture-goal")["frontier"] == ["works"]
+    store.close()
