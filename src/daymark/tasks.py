@@ -700,6 +700,32 @@ class Tasks:
         extra = {} if scope is None else {"scope": scope}
         return self.engine.summary(*self._ws, now=self._now, **extra)
 
+    def condition(self, statement, *, goal, requires=None, state="unknown", id=None, op=None):
+        """Record something that must be true for a goal to be reached."""
+        return self.add(
+            statement,
+            kind="condition",
+            goal=goal,
+            after=list(requires or []) or None,
+            condition=state,
+            id=id,
+            op=op,
+        )
+
+    def assess(self, id, state, *, evidence=None, op=None):
+        """Say how a condition stands, with the evidence for saying so."""
+        current = self.get(id)
+        if current["kind"] != "condition":
+            raise DomainError("invalid", "Only a condition can be assessed")
+        item = self._act(id, "update", {"condition": state}, op=op)
+        if evidence:
+            item = self.note(id, evidence, op=(op + ":evidence") if op else None)
+        return item
+
+    def explore(self, goal=None):
+        """Conditions behind a goal, which are next, and where nothing is moving."""
+        return self.engine.explore(*self._ws, goal, now=self._now)
+
     def focus(self, id, rank=None, *, op=None):
         """Put a task on the person's short list. Without a rank it goes last."""
         if rank is None:

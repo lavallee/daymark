@@ -19,7 +19,7 @@ from daymark import DomainError, Store, Tasks, plans, ranks
 from daymark.api import create_app
 from daymark.cli import main
 from daymark.client import Client
-from daymark.store import STALE, canonical
+from daymark.store import RELEASE, SCHEMA, STALE, canonical
 
 NOW = datetime(2030, 4, 3, 15, 0, tzinfo=UTC)
 ZONE = "Europe/London"
@@ -263,7 +263,7 @@ def test_the_command_line_announces_an_upgrade_once(cli, tmp_path):
     db.close()
     status, out, err = cli("--db", str(old), "--workspace", "home", "ready")
     assert status == 0 and "Buy seeds" in out
-    assert err == (f"daymark: upgraded {old} from schema 4 to 5 (Daymark 0.4.0); "
+    assert err == (f"daymark: upgraded {old} from schema 4 to {SCHEMA} (Daymark {RELEASE}); "
                    "older versions can no longer open it\n")  # fmt: skip
     assert cli("--db", str(old), "--workspace", "home", "ready")[2] == ""
     fresh = tmp_path / "fresh.sqlite3"

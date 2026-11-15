@@ -32,7 +32,7 @@ SIMPLE = {
     "reopen", "archive", "undo", "accept", "dismiss", "claim", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
     "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
-    "tree",
+    "tree", "advise", "profile", "strategies", "condition", "assess", "explore",
 }  # fmt: skip
 
 
@@ -85,6 +85,9 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     item.add_argument("--waiting-on", metavar="WHO")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
     item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
+    item.add_argument(
+        "--advances", action="append", metavar="ID", help="A condition this moves (repeatable)"
+    )
     item.add_argument("--minutes", type=int, help="Estimated effort")
     item.add_argument("--stage", metavar="S", help="Stage on the project's board; sets the status")
     item.add_argument(
@@ -114,6 +117,9 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
         item.add_argument("--id", help="Choose the ID instead of a generated short one")
 
 
+STATES = ["met", "partly_met", "unmet", "unknown"]
+
+
 def _simple_commands(sub) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="Compact JSON instead of text")
@@ -128,6 +134,18 @@ def _simple_commands(sub) -> None:
     add("prime", "Print the workflow guide and current state; read this first")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
     onboard.add_argument("--write", metavar="FILE", help="Insert or refresh the snippet in FILE")
+    advise = add("advise", "What to offer and what to mention, by the workspace's profile")
+    advise.add_argument("--profile", metavar="NAME", help="Try a profile without adopting it")
+    advise.add_argument("--scope", metavar="NAME", help="Only this scope")
+    advise.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+    profile = add("profile", "Show or choose the way of working for this workspace")
+    profile.add_argument("name", nargs="?", help="Adopt this profile (see `daymark strategies`)")
+    profile.add_argument(
+        "--set", action="append", default=[], metavar="STRATEGY.PARAM=VALUE",
+        help="Adjust one strategy in the current profile; adds the strategy if absent",
+    )  # fmt: skip
+    profile.add_argument("--drop", action="append", default=[], metavar="STRATEGY")
+    add("strategies", "List strategies and profiles, with how well each idea is supported")
     ready = add("ready", "Tasks that can be done now, most pressing first")
     ready.add_argument("-n", "--limit", type=int, default=20)
     ready.add_argument("--move", choices=["person", "answer", "agent"], help="Only this next move")
@@ -279,6 +297,18 @@ def _simple_commands(sub) -> None:
     changes = add("changes", "Whether a project changed after an event cursor")
     changes.add_argument("project")
     changes.add_argument("--after", type=int, required=True, metavar="CURSOR")
+    condition = add("condition", "Record what must be true for a goal to be reached", writes=True)
+    condition.add_argument("statement")
+    condition.add_argument("--goal", required=True, metavar="ID")
+    condition.add_argument("--requires", action="append", metavar="ID", help="Needs this first")
+    condition.add_argument("--state", choices=STATES, default="unknown")
+    condition.add_argument("--id", help="Choose the ID")
+    assess = add("assess", "Say how a condition stands, with evidence", writes=True)
+    assess.add_argument("id")
+    assess.add_argument("state", choices=STATES)
+    assess.add_argument("--evidence", metavar="TEXT", help="What shows it")
+    explore = add("explore", "A goal's conditions: what is met, what is next, where nothing moves")
+    explore.add_argument("goal", nargs="?", help="Goal ID (default: every goal)")
     sub.add_parser("workspaces", help="List the workspaces in this database")
     sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
 
@@ -500,6 +530,8 @@ def _simple(args, engine) -> int:
     def entity(item):
         out(render.compact(item), render.line(item, now))
 
+    from .models import DomainError
+
     scope = "" if getattr(args, "unscoped", False) else getattr(args, "scope", None)
 
     if name == "prime":
@@ -515,6 +547,43 @@ def _simple(args, engine) -> int:
             print(
                 render.prime_text(tasks, where=f"{args.db or args.url}, workspace {args.workspace}")
             )
+    elif name in {"advise", "profile", "strategies"}:
+        from . import strategies
+        from .strategies.profiles import PROFILES
+
+        if name == "strategies":
+            listed = strategies.available()
+            out(
+                {
+                    "strategies": [
+                        {"name": s.name, "kind": s.kind, "summary": s.summary,
+                         "evidence": s.evidence,
+                         "params": {k: p.default for k, p in s.params.items()}}
+                        for s in listed
+                    ],
+                    "profiles": {k: [x["use"] for x in v["strategies"]] for k, v in PROFILES.items()},
+                },
+                render.strategies_text(listed, PROFILES),
+            )  # fmt: skip
+        elif name == "profile":
+            current = strategies.stored_profile(tasks)
+            if args.name:
+                if args.name not in PROFILES:
+                    raise DomainError("not_found", "Unknown profile", [", ".join(PROFILES)])
+                current = PROFILES[args.name]
+            if args.name or args.set or args.drop:
+                current = strategies.store_profile(
+                    tasks, strategies.edit_profile(current, args.set, args.drop)
+                )
+            out(current, render.profile_text(current))
+        else:
+            if args.profile and args.profile not in PROFILES:
+                raise DomainError("not_found", "Unknown profile", [", ".join(PROFILES)])
+            chosen = PROFILES[args.profile] if args.profile else strategies.stored_profile(tasks)
+            advice = strategies.advise(tasks, chosen, scope=scope)
+            lean = advice.to_dict()
+            lean["picks"] = [render.compact(x) for x in advice.picks]
+            out({"profile": chosen["name"], **lean}, render.advice_text(advice, now))
     elif name == "ready":
         items = tasks.ready(limit=args.limit, move=args.move, scope=scope)
         out(
@@ -540,7 +609,8 @@ def _simple(args, engine) -> int:
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
-                 "minutes", "scope", "stage", "milestone", "is_milestone", "type")  # fmt: skip
+                 "minutes", "scope", "stage", "milestone", "is_milestone", "type",
+                 "advances")  # fmt: skip
         fields = {key: getattr(args, key) for key in names if getattr(args, key) is not None}
         if args.values:
             project = args.project if args.project is not None else (
@@ -574,6 +644,18 @@ def _simple(args, engine) -> int:
     elif name in {"skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "release",
                   "resume", "forget", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
+    elif name == "condition":
+        entity(
+            tasks.condition(
+                args.statement, goal=args.goal, requires=args.requires, state=args.state,
+                id=args.id, op=op,
+            )
+        )  # fmt: skip
+    elif name == "assess":
+        entity(tasks.assess(args.id, args.state, evidence=args.evidence, op=op))
+    elif name == "explore":
+        view = tasks.explore(args.goal)
+        out(view, render.explore_text(view))
     elif name == "focus":
         entity(tasks.focus(args.id, args.rank, op=op))
     elif name == "claim":

@@ -14,7 +14,7 @@ from pydantic import ConfigDict, ValidationError, create_model
 
 from daymark import DomainError, Store, Tasks, plans
 from daymark.models import Entity
-from daymark.store import SCHEMA
+from daymark.store import RELEASE, SCHEMA
 
 NOW = datetime(2030, 4, 3, 15, 0, tzinfo=UTC)
 ZONE = "Europe/London"
@@ -178,7 +178,7 @@ def test_a_read_only_connection_on_an_old_schema_gets_a_clear_refusal(tmp_path):
     assert "read-only" in str(error)
     reader.close()
     error = code("conflict", Store, str(path), upgrade=False)
-    assert "0.4.0" in str(error)
+    assert RELEASE in str(error)
     check = sqlite3.connect(path)
     assert check.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone() == (
         "4",
@@ -223,7 +223,7 @@ def test_release_0_3_0_cannot_read_an_upgraded_file(tmp_path):
     old_database(path).close()
     Store(path).close()
     added = {"stages", "stage", "rank", "milestone", "managed_by", "milestone_id", "types",
-             "fields", "type", "values", "measure"}  # fmt: skip
+             "fields", "type", "values", "measure", "condition", "advances"}  # fmt: skip
     old_model = create_model(
         "Entity030",
         __config__=ConfigDict(extra="forbid"),

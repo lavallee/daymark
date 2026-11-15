@@ -4,6 +4,25 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-15
+
+### Upgrading
+
+- The schema upgrade to 6 is one-way, as in 0.4.0: back up with the version you run now (`daymark backup --file BEFORE.sqlite3`) before installing 0.5.0. Entities that use none of the new fields read as before.
+
+### Added
+
+- **The strategy layer** (`daymark.strategies`): named, parameterised ways of working that read the kernel's public views and return advice, never a write. Nine built-ins (`shortlist`, `first-step`, `stale`, `waiting-check`, `overbooked`, `lookahead`, `decisions-first`, `frontier-first`, `neutral-aging`), each labelled with how well its idea is supported.
+- **Profiles**: `plain` (the default, which changes nothing), `assistant`, `gentle` and `dense`. `daymark profile [NAME] [--set STRATEGY.PARAM=VALUE] [--drop STRATEGY]`, `daymark advise [--profile NAME]`, `daymark strategies`, and an `advise` view in MCP. A profile belongs to a workspace.
+- **Plugins**: a package offers strategies under the `daymark.strategies` entry-point group; one is imported only when a profile names it.
+- **Conditions**: a `condition` kind for what must be true for a goal to be reached, with a state (met, partly met, unmet, unknown) and evidence; `advances` on tasks; tasks and conditions may wait on conditions. `daymark condition`, `daymark assess`, `daymark explore [GOAL]`, `--advances`, `Store.explore`, `GET /v1/explore`, an `explore` view in MCP.
+- `Store.setting` and `Store.set_setting`: small per-workspace configuration values.
+- [docs/architecture.md](docs/architecture.md) and [docs/research/working-methods.md](docs/research/working-methods.md).
+
+### Changed
+
+- `depends_on` accepts conditions as well as tasks. A condition's status follows its state and cannot be set directly.
+
 ## [0.4.0] - 2026-11-13
 
 ### Upgrading: read this first

@@ -177,6 +177,44 @@ milestone per iteration (dated, work counts toward it) or an option field
 system rewrites. Daymark still accepts writes, but applications that edit plans
 should treat it as read-only. Do not set or clear it without the person.
 
+## Ways of working
+
+`daymark ready` is the plain fact: everything that can be done now. A
+workspace can also have a **profile**, a bundle of strategies that shapes what
+you offer the person:
+
+```sh
+daymark strategies            # what exists, and how well each idea is supported
+daymark profile gentle        # adopt one: plain, assistant, gentle, dense
+daymark profile --set shortlist.size=5 --drop first-step
+daymark advise                # picks, then what the strategies noticed
+```
+
+`advise` never writes. Its notes are things to raise with the person ("3
+waiting on a decision; ask them together", "due in 9 days with no day planned
+for it"), and a note names the tasks it is about. If the profile holds tasks
+back it says how many. Choose or change a profile only when the person asks:
+it is their way of working, not yours.
+
+## Goals and what must be true
+
+Some planning is about what must be *true*, not what must be done. Record that
+as a condition on a goal, say how it stands, and link the work that moves it:
+
+```sh
+daymark condition "A buyer has signed" --goal move --id buyer
+daymark condition "Keys are in hand" --goal move --requires buyer
+daymark add "Chase the solicitor" --advances buyer
+daymark assess buyer met --evidence "Contract countersigned"
+daymark explore move
+```
+
+`explore` marks each condition met `[x]`, partly `[~]`, unmet `[ ]` or unknown
+`[?]`, shows which are next, and says where nothing is moving one. A task that
+comes `--after` a condition is not ready until the condition is met. Assess a
+condition only from evidence, and say what the evidence is; "unknown" is an
+honest state.
+
 ## Workspaces and scopes
 
 A **workspace** is a hard boundary. Every command works in exactly one

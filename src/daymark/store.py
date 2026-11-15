@@ -42,9 +42,9 @@ def invalid(message):
 
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
-SCHEMA = "5"
+SCHEMA = "6"
 # The first release that writes this schema. A file at this schema needs it or newer.
-RELEASE = "0.4.0"
+RELEASE = "0.5.0"
 STALE = (
     f"This database needs an upgrade to schema {SCHEMA}: open it once with daymark-core "
     f"{RELEASE} or newer (any `daymark` command does), and commit the upgrade if you own "
@@ -59,7 +59,9 @@ REFS = {
     "goal_id": {"goal"},
     "label_ids": {"label"},
     "context_ids": {"context"},
-    "depends_on": {"task"},
+    # A task or condition can wait on tasks and on conditions being met.
+    "depends_on": {"task", "condition"},
+    "advances": {"condition"},
     "milestone_id": {"task"},
     "task_id": {"task"},
     "recipient_id": {"person", "principal"},
@@ -639,6 +641,41 @@ class Store:
             )
         return value
 
+    def setting(self, workspace, name):
+        """A named workspace setting (a small JSON value), or None. Settings are
+        configuration, not records: they have no history and are not exported."""
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return None
+            row = self.db.execute(
+                "SELECT value FROM daymark_scheduler WHERE key=?",
+                (f"setting:{workspace}:{name}",),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def set_setting(self, workspace, name, value):
+        """Store or, with None, remove a workspace setting of at most 64 kB."""
+        if (
+            not isinstance(workspace, str)
+            or not 1 <= len(workspace) <= 128
+            or not isinstance(name, str)
+            or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) is None
+        ):
+            invalid("Setting needs a workspace and a short lowercase name")
+        text = None if value is None else canonical(value)
+        if text is not None and len(text) > 65_536:
+            invalid("Setting exceeds 64 kB")
+        key = f"setting:{workspace}:{name}"
+        with self._transaction():
+            if text is None:
+                self.db.execute("DELETE FROM daymark_scheduler WHERE key=?", (key,))
+            else:
+                self.db.execute(
+                    "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, text),
+                )
+        return value
+
     def execute(self, workspace, operation_id, action, payload, expected_version=None, actor=None):
         """Apply one operation. ``actor`` names who is acting; it is recorded on the
         resulting events and checked against the workspace policy for decisions."""
@@ -915,10 +952,14 @@ class Store:
                     raw["archived"] = True
                 elif action == "complete":
                     raw.update(status="completed", completed_at=payload.get("completed_at", now))
+                    if before["kind"] == "condition":
+                        raw["condition"] = "met"
                 elif action in {"cancel", "skip"}:
                     raw.update(status="cancelled", completed_at=None)
                 elif action == "reopen":
                     raw.update(status="open", completed_at=None, archived=False)
+                    if before["kind"] == "condition" and before["condition"] == "met":
+                        raw["condition"] = "unmet"
             elif action == "note":
                 if set(payload) - {"id", "text", "author"}:
                     invalid("Unexpected note fields")
@@ -958,6 +999,12 @@ class Store:
             self._settle_stage(raw, before, payload, operation_id, now)
         if action in {"create", "update"}:
             self._check_structure(raw, before)
+        if raw.get("kind") == "condition":
+            # A condition's status is never set directly: it follows its state, unless
+            # the condition has been cancelled as no longer necessary.
+            raw["condition"] = raw.get("condition") or "unknown"
+            if raw.get("status") != "cancelled":
+                raw["status"] = "completed" if raw["condition"] == "met" else "open"
         data = self._validated(raw)
         if data["status"] == "completed" and not data["completed_at"]:
             data["completed_at"] = now
@@ -1711,6 +1758,8 @@ class Store:
             "archived",
             "priority",
             "next_move",
+            "condition",
+            "advances",
             "focus",
             "scope",
             "stage",
@@ -1867,6 +1916,13 @@ class Store:
         from . import views
 
         return views.agenda(self, workspace, now=now, days=days, scope=scope)
+
+    def explore(self, workspace, goal_id=None, *, now=None):
+        """The conditions behind a goal (or every goal): what is met, what is next,
+        and where nothing is moving. See views.explore."""
+        from . import views
+
+        return views.explore(self, workspace, goal_id, now=now)
 
     def workspaces(self):
         """Every workspace in this database with its entity count. Local callers only:

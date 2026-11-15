@@ -30,7 +30,8 @@ _FIELDS = {
     "waiting_on": {"type": "string"},
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
-    "scope": {"type": "string", "description": "Part of life it belongs to, e.g. household."},
+    "scope": {"type": "string", "description": "Part of life, e.g. household."},
+    "advances": {"type": "array", "items": {"type": "string"}},
     "stage": {"type": "string", "description": "Board stage; sets status."},
     "milestone": {"type": "string", "description": "Milestone it counts toward."},
     "is_milestone": {"type": "boolean"},
@@ -66,6 +67,8 @@ TOOLS = [
                     "type": "string",
                     "enum": [
                         "ready",
+                        "advise",
+                        "explore",
                         "agenda",
                         "show",
                         "find",
@@ -172,6 +175,15 @@ def call(tasks, name, args):
                 limit=args.get("limit", 20), move=args.get("move"), scope=args.get("scope")
             )
             return render.listing(items, now, "Nothing is ready.")
+        if view == "explore":
+            return render.explore_text(tasks.explore(args.get("id")))
+        if view == "advise":
+            from . import strategies
+
+            advice = strategies.advise(
+                tasks, strategies.stored_profile(tasks), scope=args.get("scope")
+            )
+            return render.advice_text(advice, now)
         if view == "agenda":
             return render.agenda_text(
                 tasks.agenda(args.get("days", 7), scope=args.get("scope")), now

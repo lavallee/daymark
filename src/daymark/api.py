@@ -263,6 +263,14 @@ def create_router(store: Any) -> APIRouter:
     ) -> Any:
         return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope)
 
+    @router.get("/explore", operation_id="daymark_v1_explore")
+    def explore(
+        request: Request,
+        goal: str | None = Query(None, max_length=128),
+        now: str | None = Query(None, max_length=40),
+    ) -> Any:
+        return _invoke(store.explore, identity(request).workspace, goal, now=now)
+
     @router.get("/summary", operation_id="daymark_v1_summary")
     def summary(
         request: Request,

@@ -90,6 +90,22 @@ surface, not a scheduler, and there is no third-party interchange guarantee.
 | P18 Iterations | No sprint entity | A time box is a milestone (dated; work counts toward it) or an option field. |
 | P19 Schema upgrades are one-way (amended) | The command line upgrades a file on any command and announces the first upgrade on standard error; the library's reads never upgrade | Back up with the release you are leaving, before installing the new one (`daymark backup` copies without opening a Store). A newer schema is refused, never downgraded. Library reads on a schema the caller has not upgraded refuse with one `conflict` message. `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict`. |
 
+## Decisions for the kernel and strategy split
+
+Decision date: 2026-11-15. [Architecture](architecture.md) gives the design and
+[the research digest](research/working-methods.md) the evidence.
+
+| Decision | Default chosen | Contract and limit |
+|---|---|---|
+| S01 Three layers | Kernel, strategies, plugins | The kernel stores facts and enforces invariants. Ways of working live above it and can be swapped per workspace. |
+| S02 Strategies advise | A strategy returns an ordering, notes and suggestions; it never writes | A suggestion becomes a task only through `propose`. A test forbids the strategy package from importing the engine. |
+| S03 Evidence labels | Every strategy states clinical, practitioner, folk or convention | Shown by `daymark strategies`. A label describes the idea, not Daymark's implementation of it. |
+| S04 Plain is the default | With no profile chosen, `advise` equals `ready` | Adopting a way of working is always a choice; `ready` remains the unranked kernel fact for comparison. |
+| S05 Profiles per workspace | Stored as a workspace setting | Settings are configuration: no history, not exported, local callers only. |
+| S06 Plugins load by name | Entry points in `daymark.strategies`, imported only when a profile names one | Installing a package never runs its code by itself. No hook may rewrite a write. |
+| S07 Conditions | A `condition` kind with a judged state; its status follows the state | "Met" reads as completed, so existing dependency rules apply unchanged. Frontier and gap are kernel facts; choosing the bottleneck is a strategy's judgement. |
+| S08 Kernel admission | A field enters the kernel when three independent methods or clients need it stored, or an invariant depends on it | Otherwise it is plugin data. Existing fields that fail this test are listed as debt in the architecture document. |
+
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
 impact and a regression test, rather than inherit a vendor's label without its
