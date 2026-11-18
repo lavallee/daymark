@@ -323,7 +323,8 @@ daymark --db restored.sqlite3 --workspace example export --output restored.json
 
 Backup uses SQLite's online backup API, including committed WAL data, and checks
 the integrity of the copied snapshot. Restore writes a new database and
-refuses to overwrite an existing path. It restores all workspace decider
+refuses to overwrite an existing path. If the destination already exists, choose
+a new filename with `--file` for backup or `--db` for restore. Restore carries all workspace decider
 lists, policy revisions and successful policy receipts as of backup time.
 Review the restored list before switching clients to that file. Start a
 fresh review after switching to an earlier backup. Stop workers and writers before the

@@ -238,6 +238,45 @@ def test_cli_help_and_backup_restore(tmp_path, capsys):
     assert "test" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command,option", [("backup", "--file"), ("restore", "--db")])
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "dangling"])
+def test_snapshot_cli_identifies_occupied_destination(tmp_path, capsys, command, option, kind):
+    source = tmp_path / "source.db"
+    destination = tmp_path / "occupied"
+    target = tmp_path / "link-target"
+    assert main(["--db", str(source), "init"]) == 0
+    capsys.readouterr()
+    if kind == "file":
+        destination.write_bytes(b"existing")
+    elif kind == "directory":
+        destination.mkdir()
+        (destination / "keep").write_bytes(b"existing")
+    else:
+        if kind == "symlink":
+            target.write_bytes(b"existing")
+        try:
+            destination.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"Symlinks unavailable: {exc}")
+
+    db, file = (source, destination) if command == "backup" else (destination, source)
+    assert main(["--db", str(db), command, "--file", str(file)]) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "destination_exists" in captured.err and f"unused path for {option}" in captured.err
+    assert str(tmp_path) not in captured.err
+    if kind == "file":
+        assert destination.read_bytes() == b"existing"
+    elif kind == "directory":
+        assert (destination / "keep").read_bytes() == b"existing"
+    else:
+        assert destination.readlink() == target
+        if kind == "symlink":
+            assert target.read_bytes() == b"existing"
+        else:
+            assert not target.exists()
+
+
 def test_serve_closes_database_if_service_setup_fails(tmp_path, monkeypatch):
     import sqlite3
 

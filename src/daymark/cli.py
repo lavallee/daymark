@@ -1134,7 +1134,13 @@ def main(argv: list[str] | None = None) -> int:
                 if args.command == "backup"
                 else (Path(args.file), Path(args.db))
             )
-            _copy_database(source, destination)
+            try:
+                _copy_database(source, destination)
+            except FileExistsError:
+                option = "--file" if args.command == "backup" else "--db"
+                return _fail(
+                    args, "destination_exists", f"Destination already exists. Choose an unused path for {option}."
+                )
             _print({"status": "ok"})
             return 0
         if args.command == "serve":
