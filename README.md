@@ -1,17 +1,19 @@
 # Daymark
 
-**Daymark helps a person and their agents decide what can be done now.** It keeps
-deadlines, intentions, dependencies and suggestions distinct, so a new session
-can pick up a project without asking the person to reconstruct it. It runs on
-one SQLite file and needs no account or model.
+**Daymark helps a person and their agents decide what can be done now.**
+It keeps deadlines, plans, dependencies and suggestions distinct so a new
+session can pick up the work. It needs one SQLite file and no account or model.
 
-Already using an issue tracker? Keep the code fix there. Daymark can hold
-the person's follow-up, such as booking a proof once the fix is verified.
-[Working alongside an existing tracker](docs/work-and-life.md#what-daymark-learned-from-beads)
+Keep code fixes in your existing tracker. Daymark can hold your follow-up,
+such as booking a proof after the fix is verified.
+[Tracker example](docs/work-and-life.md#what-daymark-learned-from-beads)
 
-A venue deposit has a deadline. Drafting the invitation is a plan. Approving it
-must wait until someone has drafted it. An idea for a poster is still a suggestion.
-Here is how that looks in Daymark.
+You choose shared [settings](docs/working-preferences.md). Everyone using
+that workspace can see them. For two options once, just ask. For the whole
+afternoon, that choice belongs in your assistant’s private settings for you.
+
+A venue deposit has a deadline. Drafting an invitation is a plan. Approval
+waits for the draft. An idea for a poster stays a suggestion.
 
 ## Try it in an empty folder
 
