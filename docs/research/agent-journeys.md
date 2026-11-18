@@ -5,6 +5,19 @@ workspace is this? Which tasks can I act on? What changed since I left? A
 person deciding what to do may have a different question, such as “what fits
 in the next twenty minutes?” Both need the same underlying commitments.
 
+| A question to try | What we compared |
+| --- | --- |
+| [What still matters after a week away?](#asking-what-still-matters-after-a-week-away) | Two fresh clients reading 201 tasks with hard deadlines, old plans and outstanding replies. |
+| [Where did the last worker stop?](#returning-after-an-interruption) | A new session using an attributed handoff among later filing notes. |
+| [Can two people use the same agent differently?](#two-personal-views-of-the-same-workspace) | A host applying private preferences while both people share a Daymark actor. |
+| [What will happen to my reminders?](#will-resuming-this-task-cancel-its-reminders) | The agent's prediction checked against actually resuming the waiting task. |
+| [Can I reproduce these requests?](#repeating-the-journeys-with-your-own-client) | A disposable workspace and a read-only scorer for eight requests. |
+
+To assess your own routine, start with one project and a natural interruption.
+The [field trial worksheet](trying-daymark.md) records which facts the person
+had to repeat and whether they could choose the next action. The trials on
+this page used synthetic records and agent clients.
+
 ## First session and return
 
 The Beads README leads a reader through creation, dependencies, ready work,
@@ -368,6 +381,20 @@ The revised local command carried the database, workspace, actor, time zone
 and scope, and asked for 30 rows. Running it returned five additional IDs.
 The MCP suggestion carries ready arguments for its existing connection.
 This is a fresh bounded read, so intervening task changes can change the order.
+
+A third fixture put 1,000 hour-long tasks ahead of seven five-minute tasks
+with later deadlines. A fresh read-only MCP session requested a five-minute
+window and one choice. Before the change, the global answer had zero picks
+and explained the 1,000-task limit only in prose. With the revised wheel, a
+deterministic reader of the official Python SDK's structured response counted
+1,000 reviewed, 1,007 available and seven unreviewed. A second fresh session
+selected the scope containing the shorter tasks, received one choice and
+completed the review without a coverage warning. Both runs used the same
+SQLite records. This checks what a host can establish from response fields.
+A tagged v0.5.0 service returned a ready count of 1,000 for both the whole
+fixture and a scope with exactly 1,000 tasks. The current client reported a
+full page and an unconfirmed total in both cases. The seven-task scope
+returned one choice from the requested shortlist.
 
 ## Six requests in installed agent hosts
 

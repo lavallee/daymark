@@ -403,7 +403,59 @@ def saved_profiles_text(entries) -> str:
     ) or "No saved profiles. Create one with `daymark profile --save-as NAME`."
 
 
+def agenda_data(view, now=None, *, brief=False):
+    window = view.get("window")
+
+    def row(item):
+        data = compact(list_record(item, now) if brief or window else item)
+        if window:
+            deadline = item["deadline"]
+            data["deadline_exact"] = {key: deadline[key] for key in ("date", "at", "timezone") if deadline.get(key)}
+            if deadline.get("at"):
+                data["viewer_deadline"] = when({"at": deadline["at"], "timezone": window["timezone"]})
+        return data
+
+    result = {}
+    for key, value in view.items():
+        if key in {"upcoming", "civil_dates"}:
+            result[key] = {day: [row(item) for item in items] for day, items in value.items()}
+        elif isinstance(value, list):
+            result[key] = [row(item) for item in value]
+        else:
+            result[key] = value
+    return result
+
+
+def _local_agenda_text(view, now):
+    data = agenda_data(view, now)
+    window = data["window"]
+    out = [f"Hard deadlines in {window['timezone']}, {window['from']} through {window['through']}."]
+    sections = [
+        ("OVERDUE", data["overdue"]), ("TODAY", data["today"]), *data["upcoming"].items(),
+        *[(f"DATE ONLY · {day}", items) for day, items in data["civil_dates"].items()],
+    ]
+    for heading, items in sections:
+        if items:
+            out.append(f"{heading} ({len(items)})")
+        for item in items:
+            zone = item["deadline_exact"]["timezone"]
+            if "viewer_deadline" in item:
+                timing = item["viewer_deadline"]
+                if zone != window["timezone"]:
+                    timing += " (recorded " + item["deadline"] + ")"
+            else:
+                timing = item["deadline"] + " " + zone + " (date only)"
+            status = f" [{item['status']}]" if item["status"] != "open" else ""
+            title = item["title"] or f"({item['kind']})"
+            out.append(_single_line(f"  {item['id']}  {title}  {timing}{status}"))
+    if len(out) == 1:
+        out.append("No hard deadlines in this window.")
+    return "\n".join(out)
+
+
 def agenda_text(view: dict, now=None) -> str:
+    if "window" in view:
+        return _local_agenda_text(view, now)
     now = normalize_now(now)
     today, earlier = [], []
     for item in view["today"]:
@@ -969,7 +1021,8 @@ MCP_GUIDE = (
     'daymark_prime takes scope. For studio '
     'decisions, daymark_view with view=ready, scope=studio and move=answer lists the relevant '
     'items. Keep the answer within the requested scope.\n'
-    '• Read agenda with deadlines=true for hard cutoffs, including waiting work. Use show with '
+    '• Read agenda with deadlines=true for hard cutoffs, including waiting work. For the person’s '
+    'day use local_day=true and days=0. Use show with '
     'id or source for details, brief=true for recent notes and review_token. For a prior '
     'activity checkpoint, read activity after that checkpoint.\n'
     '• For a short check-in, present the advice picks and count held back. '
@@ -1010,8 +1063,10 @@ Commands (add --json to any for structured output)
   daymark where                     explain database selection without opening it
   daymark prime --brief             current session without the command guide
   daymark onboard --skill           full agent skill for the installed CLI
+  daymark onboard --mcp-config claude|codex  print a read-only editor configuration
   daymark ready [--project ID] [--scope NAME] [--context ID] [--brief | --explain]   actionable work and holding reasons
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
+      --local-day --days 0          timed hard cutoffs in the session timezone and overlapping civil dates
     --deadlines                     hard deadlines only, including waiting and blocked tasks
   daymark show ID [--since-version N]   current detail or changes since a reviewed version
     A circular wait names the child and prerequisite links to review.
@@ -1022,10 +1077,15 @@ Commands (add --json to any for structured output)
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
   daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-review TOKEN]
+  daymark policy --versioned       review local proposal deciders and their version
+    policy --deciders NAME,NAME --if-version N --operation-id ID replaces the list.
+    Use --clear in place of --deciders NAME,NAME to allow any writer.
+    Repeat the same write to recover a lost result. Read again to see the current list.
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL] [--scope NAME]   what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
   daymark advise [--context ID] [--set shortlist.size=3]   show picks and the count held back
+      On a truncated review, ready_coverage reports how many ready tasks were reviewed and available.
   daymark strategies [NAME]   discover methods and inspect a parameter range
   daymark profile --saved           inspect named choices locally or on a current service
       advise runs service built-ins for the authenticated workspace. Save preferences locally.
@@ -1046,6 +1106,7 @@ Commands (add --json to any for structured output)
   daymark block ID --on OTHER / unblock ID --on OTHER
   daymark find TEXT [--kind memory] [--page]   match titles and descriptions; --page gives compact hits
   daymark find --source SYSTEM:KIND:ID --scope NAME   check a source inside a scope
+  daymark import accepts native Daymark workspace JSON. Verify original IDs before CSV capture.
   daymark find --status proposed    list tasks awaiting acceptance
   daymark find TEXT --archived [--kind memory]   search archived records only
   daymark --as WORKER find --claimed   recover this worker’s active claims, including held work

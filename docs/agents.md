@@ -7,6 +7,11 @@ Check `daymark --version`. This guide accompanies `0.6.0.dev0`.
 For the tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 For a first integration, start with the session and reading sections below.
+To connect an editor, run `daymark onboard --mcp-config claude` or
+`daymark onboard --mcp-config codex` from the project folder after initialization.
+Both print a read-only configuration for the current installation and workspace.
+[Connect two agents](mcp.md#connect-two-agents-in-five-minutes)
+
 For common follow-up requests, use these entry points.
 
 | The person asks | Read |
@@ -16,6 +21,7 @@ For common follow-up requests, use these entry points.
 | “Who has the next move?” | [Writing](#writing) and [goals and conditions](#goals-and-what-must-be-true) |
 | “Can you recover my archived item?” | [Bring an archived record back](#bring-an-archived-record-back) |
 | “Did that write go through?” | [Retrying safely](#retrying-safely) |
+| “Can we bring over two tasks from my Todoist export?” | [Review the CSV and verify the original task IDs](todoist-csv.md) |
 
 ## Start of a session
 
@@ -55,6 +61,21 @@ it to `activity --after CHECKPOINT` to read subsequent changes. The UTC
 instant in `as_of` governs dates and leases. Older services compose separate
 reads and can omit the checkpoint. The full `prime --json` form lists active
 memory titles.
+
+For “which hard deadlines are left tonight in Honolulu?”, use
+`daymark --tz Pacific/Honolulu agenda --local-day --days 0`. Timed cutoffs
+in `today` run from the evaluation instant to the end of the viewer's day,
+ordered by the actual instant. Earlier cutoffs stay in `overdue`. The JSON
+rows preserve the recorded clock and zone and include `viewer_deadline` in
+the selected zone. A repeated hour includes its offset.
+
+Date-only cutoffs have no clock. Upcoming and current civil days appear
+under `civil_dates` when any part of that originating day overlaps the
+window. On a Tuesday evening in Honolulu this can include a Wednesday
+date in Tokyo. A civil date that has ended in its own zone is overdue.
+Use `--days N` to include the next N viewer dates and keep any scope or
+context filters. The ordinary `--deadlines` agenda counts days in each
+record's own zone.
 
 To give a host the matching skill, use `daymark onboard --skill`. For a
 project instruction file, `daymark onboard` prints a short startup snippet
@@ -328,7 +349,10 @@ daymark advise                # picks, then what the strategies noticed
 
 `advise` never writes. Its notes are things to raise with the person (how many tasks need a decision and which fit this discussion batch, or a deadline
 in nine days with no day planned for it), and a note names the tasks it is about. If the profile holds tasks
-back it says how many. Choose or change a profile only when the person asks:
+back it says how many. When `ready_coverage` is present, the profile
+considered only `reviewed` of `available` ready tasks. An empty time-fit
+result then applies to that subset. A relevant scope or context can narrow
+a subsequent read. Choose or change a profile only when the person asks:
 it is their way of working, not yours.
 
 An authenticated service uses the active profile in the credential's workspace.
@@ -355,7 +379,7 @@ lists of strings. [Working with a person's preferences](working-preferences.md)
 gives examples of turning feedback into one reversible change.
 
 For a short check-in, present the picks and the count held back. If the person
-asks whether anything omitted is due today, check `agenda --deadlines --days 0`
+asks whether anything omitted is due today in their timezone, check `agenda --local-day --days 0`
 in the same scope. Name the verified exception separately. A date-only deadline
 has no recorded hour.
 
@@ -563,7 +587,11 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
   named actors; others get `forbidden` (exit 7). Over HTTP this is enforced
   against the authenticated principal. Locally it stops a well-behaved agent
   from deciding on a person's behalf by accident; it cannot stop a process that
-  lies about its name or edits the file. Only `daymark policy --clear` lifts the restriction on the CLI.
+  lies about its name or edits the file. For a local administrative handover,
+  read `policy --versioned`, then use `policy --deciders NAME,NAME --if-version N
+  --operation-id ID` (or replace `--deciders NAME,NAME` with `--clear` to allow
+  any writer). Repeat the same write to recover a lost result and read again
+  for current authority. [Local proposal deciders](operations.md#review-and-change-local-proposal-deciders)
 - Claims and `next_move` are coordination, not access control. An agent can
   still create an open task directly; proposing is a discipline the policy
   supports but does not force. General lifecycle changes and snapshot restore use

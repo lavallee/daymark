@@ -276,3 +276,20 @@ about the result of one skip, and each workspace export stayed unchanged.
 
 Each cell is one run. The repeated question exercised calendar consequences,
 not permission to skip or whether the person wanted a different deadline.
+
+
+## Different offices reaching the same civil date
+
+Four synthetic offices shared a workspace. Each task had a date-only start
+in its own US timezone, paired with a prior-day deadline and a local midnight
+reminder. Three observers used Tokyo, London and Los Angeles. At 05:23 UTC on
+November 18, only New York's start had arrived and its deadline was overdue.
+At 06:00:02 UTC Chicago joined it. At 07:00:02 UTC Denver joined them.
+All three observers agreed at every check. Los Angeles was still on the prior
+day at the last observation.
+
+Two simultaneous recording workers competed at each check. One recorded
+the newly eligible reminder and the other recorded none. Each eligible
+reminder had one attempt, and a separately started worker found no further
+claim. The Pacific reminder remained pending. This exercise used actual clock
+transitions and the included recording sink.

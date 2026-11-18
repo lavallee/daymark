@@ -57,6 +57,52 @@ def test_service_advice_verifies_requested_filters_before_returning_content(repl
         assert exc.value.code == "invalid" and "Synthetic" not in str(exc.value)
 
 
+def test_truncated_zero_fit_is_distinguishable_from_a_complete_review_across_service(monkeypatch):
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    with closing(Store(":memory:")) as store:
+        local = Tasks(store, "trial")
+        local.add("Long first task", id="long-a", priority=1, minutes=60)
+        local.add("Long second task", id="long-b", priority=1, minutes=60)
+        local.add("Quick check", id="short", priority=4, minutes=5, scope="studio")
+        with (TestClient(create_app(store, {"token": {"workspace": "trial", "principal": "reader"}})) as app,
+              Client("http://sample.invalid", "token", transport=app._transport) as client):
+            for reader in (local, Tasks(client)):
+                review = reader.advise(settings=["time-fit.minutes=5"])
+                assert review.picks == [] and review.held_back == 2
+                assert review.to_dict()["ready_coverage"] == {"reviewed": 2, "available": 3}
+                assert "checked 2 of 3" in next(n.text for n in review.notes if n.strategy == "time-fit")
+                narrowed = reader.advise(scope="studio", settings=["time-fit.minutes=5"]).to_dict()
+                assert [p["id"] for p in narrowed["picks"]] == ["short"] and "ready_coverage" not in narrowed
+                legacy = {k: v for k, v in review.to_dict().items() if k != "ready_coverage"}
+                assert strategies.Advice.from_result(legacy).to_dict() == legacy
+                with pytest.raises(DomainError, match="inconsistent ready coverage"):
+                    strategies.Advice.from_result({**legacy, "ready_coverage": {"reviewed": 3, "available": 2}})
+
+
+def test_saturated_client_preview_reports_the_observed_page_without_a_separate_count(monkeypatch):
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    calls = []
+    with closing(Store(":memory:")) as store:
+        local = Tasks(store)
+        rows = [local.add(f"Long action {i}", minutes=60) for i in range(2)]
+
+    def legacy(request):
+        calls.append(request.url.path)
+        if request.url.path == "/v1/advice":
+            return httpx.Response(404)
+        if request.url.path == "/v1/schema":
+            return httpx.Response(200, json={"paths": {}})
+        assert request.url.path == "/v1/ready"
+        return httpx.Response(200, json=rows)
+
+    with Client("https://sample.invalid", "token", transport=httpx.MockTransport(legacy)) as client:
+        result = Tasks(client).advise(profile="plain", settings=["time-fit.minutes=5"])
+        assert not result.picks and "ready_coverage" not in result.to_dict()
+        assert result.profile_source["execution"] == "legacy-client"
+        assert "At least 2 tasks were ready" in result.notes[0].text and "could not confirm" in result.notes[0].text
+    assert calls == ["/v1/advice", "/v1/schema", "/v1/ready"]
+
+
 def test_advice_retains_the_requested_context_when_only_three_context_ids_are_shown():
     with closing(Store(":memory:")) as store:
         tasks = Tasks(store, "trial")

@@ -66,6 +66,8 @@ access both workspaces. HTTP workspace selection follows the credential.
 
 ## Reconcile one external task
 
+For a runnable review of an existing project file, see [Bring one task over from a Todoist CSV](../todoist-csv.md).
+
 We downloaded Todoist’s linked sample CSV, read its 14 headers with
 Python’s CSV reader, and wrote two synthetic files using those headers.
 Two rows had the same task name and label. The second file reversed their

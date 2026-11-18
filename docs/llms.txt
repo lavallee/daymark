@@ -9,6 +9,7 @@ Check `daymark --version`. The tagged source release is 0.5.0. This development 
 - [Agent guide](agents.md) covers first use, dates, reading, writing, errors and safe retries.
 - [Tagged 0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md) matches the release install.
 - [MCP clients](mcp.md) covers a read-only first connection, scoped pickup, structured results and recovery after a lost reply.
+- [Review a Todoist CSV](todoist-csv.md) covers same-title rows, schedules and confirmed source links.
 - [Working with a person's preferences](working-preferences.md) covers one answer, a standing workspace choice and a personal choice that expires.
 - [Work and life](work-and-life.md) shows how Daymark can work beside Beads, Things and Todoist.
 - [Operations](operations.md) covers authenticated HTTP, recording reminders, transfers and restoring a backup.

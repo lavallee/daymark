@@ -9,6 +9,10 @@ This guide accompanies Daymark `0.6.0.dev0`. Check `daymark --version` when
 an editor uses a different executable. The tagged 0.5.0 release has its
 own [agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
+For editor setup, `daymark onboard --mcp-config claude` or
+`daymark onboard --mcp-config codex` prints a read-only launch configuration.
+Verify the workspace and actor inside the editor with `daymark_prime`.
+
 If the person names a scope, start with `daymark prime --scope NAME` or MCP
 `daymark_prime {"scope":"NAME"}`. This limits both task counts and remembered
 facts. Preserve the scope on any follow-up queue or search. For an exact external
@@ -77,12 +81,15 @@ read the record. For MCP, use `daymark_view` with `view: "find"` and
 
 When capturing:
 
+- `daymark import` expects native Daymark workspace JSON. For a third-party project CSV, review the rows and verify each selected original task ID before reusing a source across exports.
+
 - Use `--due` only for a real cutoff. Use `--plan` for an intention and
   `--start` for "not before".
 - Ask which offset the person means when a local clock time occurs twice. Ask for a different local time when the clock skips it.
 - Assign responsibility with `edit ID --assignee PERSON_ID` or MCP `daymark_edit` with `assignee`. Pass a supplied name as given to check people and principals together. For repeated names, ask which ID the person intends.
 - For a reviewed one-step undo, pass the observed version and review token. To restore one older field, check the intervening edits and change only that field.
 - For a pending proposal, full or brief detail reports whether the current actor passes the workspace decision policy. Get the person’s decision before acting.
+- For owner-directed local policy changes, use `policy --versioned` and write the complete list with `policy --deciders NAME,NAME --if-version N --operation-id ID`. Use `--clear` in place of `--deciders NAME,NAME` to allow any writer. After a conflict, review the new list before writing. Repeat the same command to recover a lost result, then read again for current authority.
 - Set `--tz` or `DAYMARK_TZ` to the agreed IANA timezone for local times.
 - Never invent a date or priority. If the person did not give one, leave it out.
 - If the person did not ask for the task, use `daymark propose`. Do not run
@@ -123,8 +130,11 @@ occurrence.
 
 For a short check-in, give the advice picks and the count held back. If the
 person asks about omitted deadlines today, verify them with
-`agenda --deadlines --days 0` in the same scope. A date alone has no
-recorded hour.
+`agenda --local-day --days 0` in their timezone and scope (MCP
+`local_day=true`). A civil deadline has an originating date and zone, with
+no recorded hour. When advice includes `ready_coverage`, only `reviewed` of
+`available` ready tasks were inspected for picks. Say how many were checked
+before concluding that nothing fits.
 
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and

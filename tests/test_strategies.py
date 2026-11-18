@@ -612,8 +612,11 @@ def test_readiness_limit_message_requires_actual_truncation(tasks, monkeypatch):
     tasks.add("One", id="a")
     tasks.add("Two", id="b")
     tasks.add("Other scope", id="c", scope="studio")
-    assert not tasks.advise(scope="").notes
-    assert "first 2 of 3" in tasks.advise().notes[0].text
+    unscoped = tasks.advise(scope="")
+    assert not unscoped.notes and "ready_coverage" not in unscoped.to_dict()
+    broader = tasks.advise()
+    assert broader.to_dict()["ready_coverage"] == {"reviewed": 2, "available": 3}
+    assert "first 2 of 3" in broader.notes[0].text and "scope or task context" in broader.notes[0].text
 
 
 def test_shortlist_reads_only_the_ready_view(tasks, monkeypatch):
@@ -666,6 +669,8 @@ def test_context_counts_and_fallback_keep_both_filters(tasks, monkeypatch):
     monkeypatch.setattr(strategies, "READY_LIMIT", 2)
     advice = tasks.advise(scope="print", context="desk", settings=["shortlist.size=1"])
     assert "first 2 of 3" in advice.notes[0].text
+    assert advice.ready_coverage == {"reviewed": 2, "available": 3}
+    assert "narrow the next review" not in advice.notes[0].text
     assert "daymark ready --scope print --context desk" in advice_text(advice)
     assert "No ready tasks tagged with context travel." in advice_text(
         tasks.advise(context="travel")

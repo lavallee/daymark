@@ -77,10 +77,16 @@ shortlist. The result uses the ordinary ready order and reflects the time
 and workspace state when that read runs.
 
 Advice reviews up to the first 1,000 ready tasks in the selected scope and
-context. If more qualify, the coverage note gives both counts. A time-fit
+context. If more qualify, the coverage note gives both counts. In JSON,
+`ready_coverage.reviewed` is the number inspected for picks and
+`ready_coverage.available` is the full ready count for that selection.
+Daymark includes this object only when the review is truncated. A time-fit
 result with zero picks can mean that the reviewed candidates were too long
 or lacked an estimate. In a larger queue, shorter tasks may sit farther
 down. Selecting a relevant scope or context changes the candidates reviewed.
+Advice computed on a client against a service reads its facts in separate
+requests. If it reaches the limit, it reports the number inspected and leaves
+the total unconfirmed. A v0.5.0 service also caps its ready count at 1,000.
 
 A context records an explicit relationship between a task and a place, tool or
 situation. Find context IDs with `daymark find --kind context --page`. A task

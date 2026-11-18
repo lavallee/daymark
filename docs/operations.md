@@ -176,6 +176,43 @@ this bearer-only service beyond a trusted local boundary without TLS termination
 and your own access policy. CORS is disabled. Request bodies are limited to 1 MiB;
 embedded apps may set a smaller limit with `create_app`.
 
+### Review and change local proposal deciders
+
+Use the same database and workspace for the read, write, and any retry.
+`--deciders` replaces the whole list. Use the actors' exact names as shown
+in their service identities. The list governs proposal decisions. Workspace
+access and service credentials are managed separately.
+
+```sh
+daymark --db example.sqlite3 --workspace example policy --versioned
+# {"deciders": ["owner-a"], "version": 1}
+daymark --db example.sqlite3 --workspace example policy --deciders owner-b --if-version 1 --operation-id handover-01
+# {"deciders": ["owner-b"], "version": 2}
+```
+
+An empty list allows any writer to accept or dismiss proposals. To return
+to that rule, read the current version and use `policy --clear --if-version N
+--operation-id ID` with a fresh ID.
+
+Keep the write command and choose its operation ID before running it. If
+the result is lost, repeat the exact command with the same ID and version.
+A committed write returns its original list and version, even if a later
+edit changed the list. Run `policy --versioned` to see the current state.
+On a version conflict (exit 4), read the current list, reconcile the intended
+change with the intervening edit, and submit the reviewed replacement with
+the new version and a fresh ID.
+
+Existing commands without these options still return only `deciders`.
+Legacy writes replace the list unconditionally, including from v0.5.0.
+After revision tracking is installed by a writable open, changes from
+those clients advance the revision and can invalidate a guarded edit.
+
+In a local six-process trial, all six administrators read the same policy
+version before concurrently proposing different replacements. In each of 12
+runs one edit succeeded and five received a conflict. After another reviewed
+change, replaying the winning operation returned its original version while
+a fresh policy read showed the later one.
+
 ### What the proposal policy enforces
 
 A decider list governs the recorded decision on a proposal. Choose a person’s
@@ -279,19 +316,25 @@ The service runs the recorder only and exposes no HTTP listener.
 ```sh
 daymark --db example.sqlite3 backup --file example-backup.sqlite3
 daymark --db restored.sqlite3 restore --file example-backup.sqlite3
+daymark --db restored.sqlite3 --workspace example policy --versioned
 daymark --db restored.sqlite3 --workspace example list
 daymark --db restored.sqlite3 --workspace example export --output restored.json
 ```
 
 Backup uses SQLite's online backup API, including committed WAL data, and checks
 the integrity of the copied snapshot. Restore writes a new database and
-refuses to overwrite an existing path. Stop workers and writers before the
+refuses to overwrite an existing path. It restores all workspace decider
+lists, policy revisions and successful policy receipts as of backup time.
+Review the restored list before switching clients to that file. Start a
+fresh review after switching to an earlier backup. Stop workers and writers before the
 final backup for a switch. Restoring an earlier backup can make a reminder
 pending again even if the source already delivered it. Keep backups and exports private (new files use mode 0600).
 A reminder recorded as delivered, acknowledged or dismissed retains that
 outcome after archiving and restoring visibility. Archiving a retryable failed
 delivery cancels its future attempt. Its original result remains in the
 operation receipt and its attempt count and last error remain on the record.
+For a project exported by Todoist, follow the [CSV review walkthrough](todoist-csv.md).
+
 Logical snapshot import also validates entity references and preserves history;
 including prior operation hashes/results so identical write retries remain
 replays after restore. Conflicting duplicate event/operation identities must be
@@ -308,8 +351,10 @@ must use the same workspace name. A snapshot includes the entire workspace,
 including history and receipts from its other actors. It is suitable for a
 person's separate workspace on a shared machine.
 
-Set the destination's decider policy before granting service access. A
-fresh workspace allows any writer to accept or dismiss a proposal until
+A logical snapshot carries entities, entity history and entity operation
+receipts. The destination keeps its own decider list, policy revision and
+policy receipts. Set the destination's decider policy before granting
+service access. A fresh workspace allows any writer to accept or dismiss a proposal until
 you configure deciders. Move profiles separately using
 [named profile files](working-preferences.md#keep-more-than-one-way-of-working).
 

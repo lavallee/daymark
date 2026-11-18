@@ -34,7 +34,7 @@ nav { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
 <body>
 <header class="article-masthead"><a class="article-masthead__name" href="#walkthrough">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
 <main class="article">
-<div class="article-header"><h1>What can we do now?</h1><p class="article-dek">Daymark keeps a person's commitments across agent sessions. A deadline, a day you hope to work, and an idea awaiting your decision each get their own place.</p><nav aria-label="Project links"><a href="#walkthrough">Try the walkthrough</a><a href="#situation">Try a short afternoon list</a><a href="#start">Install Daymark</a><a href="https://github.com/lavallee/daymark">Source</a><a href="https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md">0.5.0 agent guide</a><a href="llms.txt">llms.txt</a></nav></div>
+<div class="article-header"><h1>What can we do now?</h1><p class="article-dek">Daymark keeps a person's commitments across agent sessions. A deadline, a day you hope to work, and an idea awaiting your decision each get their own place.</p><nav aria-label="Project links"><a href="#walkthrough">Try the walkthrough</a><a href="#situation">Try a short afternoon list</a><a href="#start">Install Daymark</a><a href="#connect">Connect an assistant</a><a href="https://github.com/lavallee/daymark">Source</a><a href="https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md">0.5.0 agent guide</a><a href="llms.txt">llms.txt</a></nav></div>
 <!-- daymark:walkthrough -->
 <section aria-labelledby="walkthrough"><h2 id="walkthrough">Plan an event</h2>
 <p>It is May 1. The venue needs a deposit by May 8. The invitation needs a draft and an approval. Someone has suggested a poster. Explore the same workspace from four points of view.</p>
@@ -99,6 +99,12 @@ daymark init --here
 daymark add "Draft invitation" --id draft --plan tomorrow --move agent
 daymark add "Approve invitation" --id approve --after draft --move person
 daymark ready --move agent</code></pre><p><code>daymark prime</code> gives an agent the working rules, the commands and the current state in one call. <code>daymark mcp</code> serves the same verbs to an agent harness over MCP with no extra dependency.</p></section>
+<section aria-labelledby="connect"><h2 id="connect">Connect your assistant</h2>
+<p>In the development checkout, initialize a project database. Print the read-only configuration for the editor you use.</p>
+<pre><code>daymark init --here
+daymark --as reviewer onboard --mcp-config claude
+daymark --as planner onboard --mcp-config codex</code></pre>
+<p>Merge the matching entry into your editor configuration and reconnect. Ask the assistant to run <code>daymark_prime</code> and tell you which workspace and actor it sees. Two editors on the same machine can use the same file. Agents on different machines can share an authenticated service.</p></section>
 <section aria-labelledby="timing"><h2 id="timing">Four kinds of time</h2><p>A hard deadline, a plan, an earliest start and a soft target mean different things, and only a missed deadline is overdue. Repeats follow a fixed schedule or count from when the work was actually done; skipping a round is not completing it. Dates use a small fixed grammar. Daymark never guesses one.</p></section>
 <section aria-labelledby="ready"><h2 id="ready">One rule for what is ready</h2><p>The ready list shows open, visible tasks whose start has arrived, whose prerequisites are resolved, and whose child tasks have finished. A repeating task also waits for its planned day. A live claim reserves work for its holder until the claim expires. A handoff note tells the next session where to resume.</p></section>
 <section aria-labelledby="consent"><h2 id="consent">Who decides on a suggestion?</h2><p>An agent can record an idea as a proposal. Its reminders wait and it stays off the ready list while someone decides. A workspace can name who may accept or dismiss proposals.</p></section>

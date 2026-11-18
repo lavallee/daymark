@@ -6,6 +6,14 @@ the client already knows the commands. The full startup guide uses
 the tools this client can call. Pass a named scope on the first read. For an exact source inside that scope, use `find` with both `source` and
 `scope`. A direct `show` reads the full record.
 
+For timed deadlines on the person's own calendar day, use
+`{"view":"agenda","local_day":true,"days":0,"scope":"press","json":true}`.
+The session timezone determines day boundaries. Each timed row has its
+original `deadline_exact` and a `viewer_deadline`. Overlapping date-only
+cutoffs are grouped under `civil_dates` by their originating date and
+retain their timezone. The current service takes `day_zone` on
+`GET /v1/agenda`. A client verifies the service supports that filter.
+
 ## Connect two agents in five minutes
 
 The walkthrough uses the development CLI (`0.6.0.dev0`). The tagged
@@ -48,29 +56,27 @@ the project directory in this shell for the following steps.
    involved. `file_exists` checks presence; the primer checks that Daymark
    can read the database. If the selected file is missing, correct the path. To intentionally
    create a new file at a chosen path, use `daymark --db "$db" init`.
-3. **Open two read-only sessions.** Use the launch configuration below for
-   the first agent. Replace the executable and database placeholders with
-   absolute paths; a desktop editor may use a different PATH and working
-   directory. Copy the configuration for the second agent, changing only
-   `sample-reviewer` to `sample-planner`. Keep each argument separate. If your
-   host uses another configuration format, copy the executable and argument
-   list into its stdio server settings.
+3. **Open two read-only sessions.** From the project folder, print a launch
+   configuration for each editor. Use the same database and workspace in both.
 
-   ```json
-   {
-     "mcpServers": {
-       "daymark": {
-         "command": "/absolute/path/to/daymark",
-         "args": [
-           "--db", "/absolute/path/to/project/.daymark/daymark.sqlite3",
-           "--workspace", "sample-project",
-           "--as", "sample-reviewer",
-           "mcp", "--read-only"
-         ]
-       }
-     }
-   }
+   ```sh
+   daymark --db "$db" --workspace sample-project --as sample-reviewer onboard --mcp-config claude
+   daymark --db "$db" --workspace sample-project --as sample-planner onboard --mcp-config codex
    ```
+
+   The first command prints a `daymark` entry under `mcpServers` for Claude
+   Code's `.mcp.json`. The second prints a `[mcp_servers.daymark]` table for
+   Codex's user `config.toml`. A project-local Codex configuration is loaded
+   only for a trusted project. Review and merge the entry into the editor's existing
+   configuration. For two agents using the same editor, print the appropriate
+   format twice with distinct actor names. The commands print configuration
+   to standard output. They leave the editor files and task data alone.
+
+   Both launches use the Python installation that ran Daymark, the absolute
+   database path, the selected timezone and `mcp --read-only`. Keep that
+   installation available. For another stdio client, copy the executable and
+   individual arguments from the JSON. Each host configures stdio servers in
+   its own settings. [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp) · [Codex MCP configuration](https://developers.openai.com/codex/mcp/)
 
 4. **Verify from inside each agent.** List the tools: both should see
    `daymark_prime` and `daymark_view`. Call `daymark_prime` with
@@ -87,9 +93,11 @@ the project directory in this shell for the following steps.
 
 Install the `client` extra in the environment running the MCP executable.
 For a checkout, `uv sync --extra client` includes it. Configure the launch
-arguments as `--url URL --token-env DAYMARK_TOKEN mcp --read-only` and make
-the bearer token available in that process’s environment. Give cooperating
-agents credentials for distinct principals in the same workspace.
+arguments with `daymark --url URL --token-env DAYMARK_TOKEN onboard
+--mcp-config claude` or choose `codex`. The output names the credential's
+environment variable. Provide its value in the editor process's environment.
+Include any service mount path in the URL. Give cooperating agents credentials
+for distinct principals in the same workspace.
 
 `daymark --url URL where --json` reports the endpoint without contacting
 it. A successful handshake or tool list also proves only that the local

@@ -187,16 +187,10 @@ def read_view(tasks, args, *, read_only=False):
         data = tasks.agenda(
             args.get("days", 7), scope=args.get("scope"), context=args.get("context"),
             deadlines=args.get("deadlines", False),
+            local_day=args.get("local_day", False),
         )
         if structured:
-            sections = {
-                key: [_summary(x, now) for x in value] if isinstance(value, list) else value
-                for key, value in data.items()
-            }
-            sections["upcoming"] = {
-                day: [_summary(x, now) for x in items] for day, items in data["upcoming"].items()
-            }
-            return StructuredView(sections)
+            return StructuredView(render.agenda_data(data, now, brief=True))
         return render.agenda_text(data, now)
 
     if view == "plan":

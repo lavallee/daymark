@@ -289,14 +289,27 @@ class Client:
 
     def agenda(
         self, *, now: Any = None, days: int = 7, context: str | None = None,
-        scope: str | None = None, deadlines: bool = False,
+        scope: str | None = None, deadlines: bool = False, day_zone: str | None = None,
     ) -> Any:
+        if day_zone is not None:
+            self._require_filter(
+                "/v1/agenda", "day_zone",
+                recovery="Upgrade the service for a viewer-local deadline window. Ordinary agenda uses each record's zone.",
+            )
+            if scope is not None:
+                self._require_filter("/v1/agenda", "scope")
         if context is not None:
             self._require_filter("/v1/agenda", "context")
         if deadlines:
             self._require_filter("/v1/agenda", "deadlines")
-        params = self._params(now=now, days=days, scope=scope, context=context, deadlines=True if deadlines else None)
-        return self._request("GET", "/v1/agenda", params=params)
+        params = self._params(now=now, days=days, scope=scope, context=context, deadlines=True if deadlines else None, day_zone=day_zone)
+        data = self._request("GET", "/v1/agenda", params=params)
+        if day_zone is not None:
+            expected = self._params(timezone=day_zone, scope=scope, context=context)
+            window = data.get("window") if isinstance(data, dict) else None
+            if not isinstance(window, dict) or any(window.get(k) != v for k, v in expected.items()):
+                raise DomainError("invalid", "The service did not confirm the requested deadline window")
+        return data
 
     def explore(self, goal: str | None = None, *, now: Any = None, scope: str | None = None) -> Any:
         if scope is not None:

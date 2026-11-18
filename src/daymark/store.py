@@ -47,6 +47,24 @@ def invalid(message):
     raise DomainError("invalid", message)
 
 
+def validate_snapshot_envelope(snapshot, workspace=None):
+    """Check the native format before a CLI import opens its destination."""
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schema_version") != 1
+        or (workspace is not None and snapshot.get("workspace", workspace) != workspace)
+        or set(snapshot)
+        - {"schema_version", "workspace", "entities", "events", "operations"}
+    ):
+        invalid("Invalid snapshot envelope; use native Daymark JSON from daymark export")
+    for field in ("entities", "events", "operations"):
+        if (
+            not isinstance(snapshot.get(field, []), list)
+            or len(snapshot.get(field, [])) > 100_000
+        ):
+            invalid("Invalid snapshot collection")
+
+
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
 SCHEMA = "6"
@@ -59,16 +77,16 @@ STALE = (
     "the connection"
 )
 TRACKING_STALE = (
-    "This database needs setting revision tracking: open it with this Daymark build "
+    "This database needs {kind} revision tracking: open it with this Daymark build "
     "in writable mode, and commit the upgrade if you own the connection"
 )
 
 # v0.5.0 also writes schema 6. Both versions write the same scheduler rows,
 # so the database must own the counter once revision tracking is installed.
-SETTING_TRIGGERS = (
-    ("daymark_setting_insert", "INSERT", "NEW", "1", ""),
-    ("daymark_setting_update", "UPDATE OF value", "NEW", "2", " AND OLD.value <> NEW.value"),
-    ("daymark_setting_delete", "DELETE", "OLD", "2", ""),
+REVISION_TRIGGERS = (
+    ("insert", "INSERT", "NEW", "1", ""),
+    ("update", "UPDATE OF value", "NEW", "2", " AND OLD.value <> NEW.value"),
+    ("delete", "DELETE", "OLD", "2", ""),
 )
 
 REFS = {
@@ -137,7 +155,8 @@ class Store:
             # Use a root transaction even for schema so caller rollback includes schema.
             try:
                 with self._transaction():
-                    self._require_setting_tracking(install=True)
+                    self._require_revision_tracking("setting", install=True)
+                    self._require_revision_tracking("policy", install=True)
             except sqlite3.OperationalError as exc:
                 if "readonly" not in str(exc).replace(" ", "").replace("-", ""):
                     raise
@@ -271,22 +290,24 @@ class Store:
             (SCHEMA,),
         )
 
-    def _require_setting_tracking(self, *, install=False):
+    def _require_revision_tracking(self, kind, *, install=False):
         # Entity-only reads can open a v0.5 file without changing its schema.
+        prefix = kind + ":"
+        names = [f"daymark_{kind}_{suffix}" for suffix, *_ in REVISION_TRIGGERS]
         tracked = self.db.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (?, ?, ?)",
-            tuple(name for name, *_ in SETTING_TRIGGERS),
+            names,
         ).fetchone()[0]
-        if tracked == len(SETTING_TRIGGERS):
+        if tracked == len(names):
             return
         if not install or not self._upgrade:
-            raise DomainError("conflict", TRACKING_STALE)
-        for name, action, row, initial, condition in SETTING_TRIGGERS:
+            raise DomainError("conflict", TRACKING_STALE.format(kind=kind))
+        for name, (_, action, row, initial, condition) in zip(names, REVISION_TRIGGERS, strict=True):
             # A pre-tracking row without a revision already reads as version one.
             # Keep deletion revisions so an absent value cannot return to version zero.
             self.db.execute(
                 f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {action} ON daymark_scheduler "
-                f"WHEN substr({row}.key, 1, 8) = 'setting:'{condition} BEGIN "
+                f"WHEN substr({row}.key, 1, {len(prefix)}) = '{prefix}'{condition} BEGIN "
                 f"INSERT INTO daymark_scheduler VALUES('revision:' || {row}.key, {initial}) "
                 "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1; END"
             )
@@ -699,18 +720,25 @@ class Store:
             ).fetchone()
             return json.loads(row[0]) if row else {"deciders": []}
 
+    def policy_state(self, workspace):
+        """Read the authoritative list and its revision together."""
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return {"deciders": [], "version": 0}
+            self._check_schema(upgrading=False)
+            self._require_revision_tracking("policy")
+            data, version = self._scheduler_state("policy:" + workspace)
+        return {**(json.loads(data) if data is not None else {"deciders": []}), "version": version}
+
     def decision_access(self, workspace, actor):
         """Whether the workspace proposal policy admits this actor at the time of the read."""
         deciders = self.policy(workspace)["deciders"]
         return {"actor": actor, "policy_allows": not deciders or actor in deciders,
                 "rule": "named_deciders" if deciders else "any_writer"}
 
-    def set_policy(self, workspace, *, deciders):
-        """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
-
-        The check is only as strong as the actor name it is given. The HTTP
-        service supplies the authenticated principal; a local caller states its own.
-        """
+    @staticmethod
+    def validate_policy_change(workspace, deciders, expected_version=None, operation_id=None):
+        """Validate a policy change before opening a writable database."""
         if (
             not isinstance(workspace, str)
             or not 1 <= len(workspace) <= 128
@@ -719,13 +747,51 @@ class Store:
             or any(not isinstance(x, str) or not 1 <= len(x) <= 200 for x in deciders)
         ):
             invalid("Deciders must be a list of at most 100 actor names")
+        try:
+            workspace.encode("utf-8")
+            for name in deciders:
+                name.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("Policy workspace and deciders must be UTF-8 text")
+        if expected_version is not None or operation_id is not None:
+            if type(expected_version) is not int or expected_version < 0 or operation_id is None:
+                invalid("A guarded policy change needs an operation ID and a nonnegative expected version")
+            Store._setting_op_key(workspace, operation_id)
+
+    def set_policy(self, workspace, *, deciders, expected_version=None, operation_id=None):
+        """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
+
+        The check is only as strong as the actor name it is given. The HTTP
+        service supplies the authenticated principal; a local caller states its own.
+        """
+        self.validate_policy_change(workspace, deciders, expected_version, operation_id)
+        key = "policy:" + workspace
         value = {"deciders": sorted(set(deciders))}
-        with self._transaction():
-            self.db.execute(
-                "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("policy:" + workspace, canonical(value)),
-            )
-        return value
+        text = canonical(value)
+        if expected_version is None and operation_id is None:
+            with self._transaction():
+                self._write_scheduler_value(key, text)
+            return value
+
+        def apply():
+            self._require_revision_tracking("policy", install=True)
+            if self.policy_state(workspace)["version"] != expected_version:
+                raise DomainError(
+                    "conflict", "Proposal decision policy changed; read it again with policy --versioned"
+                )
+            self._write_scheduler_value(key, text)
+            return self.policy_state(workspace), {}
+
+        # The colon distinguishes policy from any valid setting name in shared receipts.
+        return self._configuration_operation(
+            workspace, "policy:", operation_id, [expected_version, value], apply
+        )
+
+    def _write_scheduler_value(self, key, text):
+        self.db.execute(
+            "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, text),
+        )
 
     @staticmethod
     def _setting_key(workspace, name):
@@ -749,17 +815,18 @@ class Store:
             if not self._has_schema("daymark_scheduler"):
                 return {"value": None, "version": 0}
             self._check_schema(upgrading=False)
-            self._require_setting_tracking()
-            data, revision = self.db.execute(
-                "SELECT (SELECT value FROM daymark_scheduler WHERE key=?),"
-                "(SELECT value FROM daymark_scheduler WHERE key=?)",
-                (key, "revision:" + key),
-            ).fetchone()
+            self._require_revision_tracking("setting")
+            data, version = self._scheduler_state(key)
+        return {"value": json.loads(data) if data is not None else None, "version": version}
+
+    def _scheduler_state(self, key):
+        data, revision = self.db.execute(
+            "SELECT (SELECT value FROM daymark_scheduler WHERE key=?),"
+            "(SELECT value FROM daymark_scheduler WHERE key=?)",
+            (key, "revision:" + key),
+        ).fetchone()
         # Older releases stored the value alone. Its first observed version is one.
-        return {
-            "value": json.loads(data) if data is not None else None,
-            "version": int(revision) if revision is not None else int(data is not None),
-        }
+        return data, int(revision) if revision is not None else int(data is not None)
 
     def setting(self, workspace, name):
         """A named workspace setting (a small JSON value), or None."""
@@ -787,7 +854,7 @@ class Store:
         if text is not None and len(text) > 65_536:
             invalid("Setting exceeds 65,536 JSON characters")
         with self._transaction():
-            self._require_setting_tracking(install=True)
+            self._require_revision_tracking("setting", install=True)
             state = self.setting_state(workspace, name)
             if expected_version is not None and expected_version != state["version"]:
                 raise DomainError("conflict", "Workspace setting changed; read it again")
@@ -796,10 +863,7 @@ class Store:
             if text is None:
                 self.db.execute("DELETE FROM daymark_scheduler WHERE key=?", (key,))
             else:
-                self.db.execute(
-                    "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (key, text),
-                )
+                self._write_scheduler_value(key, text)
         return value
 
     @staticmethod
@@ -821,6 +885,15 @@ class Store:
         value, including the distinction between an unset value and a default.
         """
         self._setting_key(workspace, name)
+
+        def perform():
+            self._require_revision_tracking("setting", install=True)
+            before = self.setting_state(workspace, name)
+            return apply(before), ({"before": before["value"]} if reversible else {})
+
+        return self._configuration_operation(workspace, name, operation_id, request, perform)
+
+    def _configuration_operation(self, workspace, name, operation_id, request, apply):
         key = self._setting_op_key(workspace, operation_id)
         try:
             digest = hashlib.sha256(canonical([name, request]).encode()).hexdigest()
@@ -837,12 +910,8 @@ class Store:
                         "conflict", "Configuration operation ID reused with a different request"
                     )
                 return receipt["result"]
-            self._require_setting_tracking(install=True)
-            before = self.setting_state(workspace, name)
-            result = apply(before)
-            receipt = {"name": name, "digest": digest, "result": result}
-            if reversible:
-                receipt["before"] = before["value"]
+            result, metadata = apply()
+            receipt = {"name": name, "digest": digest, "result": result, **metadata}
             self.db.execute("INSERT INTO daymark_scheduler VALUES(?,?)", (key, canonical(receipt)))
         return result
 
@@ -1968,20 +2037,7 @@ class Store:
                 return replay
             if expected_version != 0:
                 raise DomainError("conflict", "Import merge requires version zero")
-            if (
-                not isinstance(snapshot, dict)
-                or snapshot.get("schema_version") != 1
-                or snapshot.get("workspace", workspace) != workspace
-                or set(snapshot)
-                - {"schema_version", "workspace", "entities", "events", "operations"}
-            ):
-                invalid("Invalid snapshot envelope")
-            for field in ("entities", "events", "operations"):
-                if (
-                    not isinstance(snapshot.get(field, []), list)
-                    or len(snapshot.get(field, [])) > 100_000
-                ):
-                    invalid("Invalid snapshot collection")
+            validate_snapshot_envelope(snapshot, workspace)
             seen = set()
             for raw in snapshot.get("entities", []):
                 data = self._validated(raw)
@@ -2277,11 +2333,11 @@ class Store:
         return views.explain_ready(self, workspace, now=now, limit=limit,
                                    owner=owner, next_move=next_move, scope=scope, context=context, project=project)
 
-    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None, deadlines=False):
+    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None, deadlines=False, day_zone=None):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""
         from . import views
 
-        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context, deadlines=deadlines)
+        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context, deadlines=deadlines, day_zone=day_zone)
 
     def explore(self, workspace, goal_id=None, *, now=None, scope=None):
         """The conditions behind a goal (or every goal): what is met, what is next,

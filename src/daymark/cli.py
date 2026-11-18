@@ -201,6 +201,7 @@ def _simple_commands(sub) -> None:
     prime.add_argument("--brief", action="store_true", help="Skip the workflow guide")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
     mode = onboard.add_mutually_exclusive_group()
+    mode.add_argument("--mcp-config", choices=["claude", "codex"], help="Print a read-only MCP launch configuration for this installation")
     mode.add_argument("--skill", action="store_true", help="Print the full agent skill for this installed version")
     mode.add_argument("--write", metavar="FILE", help="Insert or refresh the snippet in FILE")
     mode.add_argument("--check", metavar="FILE", help="Check the snippet without writing (1 if missing or outdated)")
@@ -240,6 +241,7 @@ def _simple_commands(sub) -> None:
     agenda.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     agenda.add_argument("--days", type=int, default=7)
     agenda.add_argument("--deadlines", action="store_true", help="Only overdue and upcoming hard deadlines, including today")
+    agenda.add_argument("--local-day", action="store_true", help="Hard deadlines by day in the session timezone; separate civil dates")
     _scope_filter(agenda, "Only this scope")
     activity = add("activity", "Recent workspace changes and handoff notes")
     activity.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Read on from a saved cursor")
@@ -329,10 +331,21 @@ def _simple_commands(sub) -> None:
     remember.add_argument("text")
     remember.add_argument("--scope", metavar="NAME", help="Where this preference or fact applies")
     remember.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Exact source of this fact")
-    policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
+    policy = sub.add_parser(
+        "policy", help="Show or set who may accept and dismiss proposals",
+        description="Local workspace policy. A change replaces the entire list.",
+        epilog=(
+            "For a guarded change, read with --versioned, then supply --if-version N "
+            "and --operation-id ID with --deciders or --clear. Repeat the exact write "
+            "to recover its original result. Read again to see the current list."
+        ),
+    )
     policy_change = policy.add_mutually_exclusive_group()
     policy_change.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
     policy_change.add_argument("--clear", action="store_true", help="Let any writer decide again")
+    policy.add_argument("--versioned", action="store_true", help="Read the list and version for a guarded change")
+    policy.add_argument("--if-version", type=int, metavar="N", help="Require the version from policy --versioned")
+    policy.add_argument("--operation-id", "--op", metavar="ID", help="Keep this ID and repeat the same write if its result is lost")
     focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
     focus.add_argument("id")
     focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
@@ -503,9 +516,11 @@ def parser() -> argparse.ArgumentParser:
     export = sub.add_parser("export", help="Export current workspace snapshot to a new JSON file")
     export.add_argument("--output", required=True)
     imp = sub.add_parser(
-        "import", help="Import a validated workspace snapshot; retains identities/history"
+        "import", help="Import a native Daymark JSON workspace snapshot",
+        description="Merge a native workspace snapshot written by daymark export, retaining identities and history. "
+        "For a project CSV from another app, review the rows and capture the tasks you select.",
     )
-    imp.add_argument("--file", required=True)
+    imp.add_argument("--file", required=True, help="Native Daymark workspace JSON")
     imp.add_argument(
         "--operation-id", required=True, help="Stable identifier; reuse only for identical retries"
     )
@@ -640,6 +655,15 @@ def _init(args) -> int:
 def _onboard(args) -> int:
     from .render import ONBOARD
 
+    if args.mcp_config:
+        from .onboarding import mcp_config
+
+        print(mcp_config(
+            args.mcp_config, database=None if args.url else resolve_db(args.db),
+            workspace=args.workspace, actor=args.actor, timezone=args.tz,
+            url=args.url, token_env=args.token_env,
+        ))
+        return 0
     if args.write or args.check:
         from .onboarding import maintain
 
@@ -750,18 +774,8 @@ def _simple(args, engine) -> int:
                 render.listing(items, now, empty),
             )
     elif name == "agenda":
-        view = tasks.agenda(args.days, scope=scope, context=args.context, deadlines=args.deadlines)
-        lean = {
-            key: (
-                {day: [render.compact(x) for x in items] for day, items in value.items()}
-                if key == "upcoming"
-                else [render.compact(x) for x in value]
-                if isinstance(value, list)
-                else value
-            )
-            for key, value in view.items()
-        }
-        out(lean, render.agenda_text(view, now))
+        view = tasks.agenda(args.days, scope=scope, context=args.context, deadlines=args.deadlines, local_day=args.local_day)
+        out(render.agenda_data(view, now), render.agenda_text(view, now))
     elif name == "activity":
         page = tasks.activity(after=args.after, limit=args.limit)
         session = render.session_context(tasks, database=args.db, url=args.url)
@@ -1034,6 +1048,39 @@ def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
     )
 
 
+def _policy(args):
+    from .errors import DomainError
+    from .store import Store
+
+    if args.url:
+        raise DomainError("invalid", "Policy requires local database access")
+    writing = args.clear or args.deciders is not None
+    guarded = args.if_version is not None or args.operation_id is not None
+    if args.versioned and (writing or guarded):
+        raise DomainError("invalid", "Use --versioned to read, then --if-version N --operation-id ID to write")
+    if guarded and (not writing or args.if_version is None or args.operation_id is None):
+        raise DomainError("invalid", "Pair --if-version N with --operation-id ID and --deciders or --clear")
+    names = []
+    if writing:
+        names = [name.strip() for name in (args.deciders or "").split(",") if name.strip()]
+        if not names and not args.clear:
+            raise DomainError("invalid", "Supply at least one decision maker or use policy --clear")
+        Store.validate_policy_change(args.workspace, names, args.if_version, args.operation_id)
+
+    path = resolve_db(args.db) or "daymark.sqlite3"
+    with closing(_open_store(path, require_existing=not writing and path != ":memory:")) as engine:
+        if writing:
+            result = engine.set_policy(
+                args.workspace, deciders=names, expected_version=args.if_version, operation_id=args.operation_id
+            )
+        elif args.versioned:
+            result = engine.policy_state(args.workspace)
+        else:
+            result = engine.policy(args.workspace)
+    _print(result)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
@@ -1043,12 +1090,28 @@ def main(argv: list[str] | None = None) -> int:
     from .errors import ClientError, DomainError
 
     try:
+        if args.command == "import":
+            try:
+                snapshot = _json_file(args.file)
+            except OSError:
+                raise DomainError("invalid", "Cannot read the snapshot file. Check its path and permissions.") from None
+            except ValueError:
+                advice = ["For a third-party CSV, review the source rows before capturing selected tasks."]
+                raise DomainError(
+                    "invalid", "Supply a readable native Daymark JSON snapshot from daymark export.",
+                    advice if args.file.lower().endswith(".csv") else [],
+                ) from None
+            from .store import validate_snapshot_envelope
+
+            validate_snapshot_envelope(snapshot, None if args.url else args.workspace)
         if args.command == "where":
             return _where(args)
         if args.command == "init":
             return _init(args)
         if args.command == "onboard":
             return _onboard(args)
+        if args.command == "policy":
+            return _policy(args)
         if not args.url:
             found = resolve_db(args.db)
             if found is None and (args.command in SIMPLE or args.command == "workspaces"):
@@ -1100,9 +1163,7 @@ def main(argv: list[str] | None = None) -> int:
             ordinary_read = args.command == "workspaces" or (
                 args.command in SIMPLE and args.command != "mcp" and not _simple_write(args)
             )
-            inspect_existing = ordinary_read or args.command in {"get", "query", "events", "export", "health"} or (
-                args.command == "policy" and args.deciders is None and not args.clear
-            )
+            inspect_existing = ordinary_read or args.command in {"get", "query", "events", "export", "health"}
             engine = _open_store(args.db, read_only=getattr(args, "read_only", False),
                                  require_existing=inspect_existing and args.db != ":memory:")
         try:
@@ -1112,16 +1173,6 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Workspaces are listed on the local database")
                 _print({"database": args.db, "current": args.workspace,
                         "workspaces": engine.workspaces()})  # fmt: skip
-                return 0
-            if args.command == "policy":
-                if args.url:
-                    raise ValueError("Policy is set on the local database")
-                if args.clear or args.deciders is not None:
-                    names = [name.strip() for name in (args.deciders or "").split(",") if name.strip()]
-                    if not names and not args.clear:
-                        raise DomainError("invalid", "Supply at least one decision maker or use policy --clear")
-                    engine.set_policy(args.workspace, deciders=names)
-                _print(engine.policy(args.workspace))
                 return 0
             if args.command in SIMPLE:
                 return _simple(args, engine)
@@ -1146,7 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "import":
                 result = engine.import_snapshot(
                     *ws,
-                    _json_file(args.file),
+                    snapshot,
                     operation_id=args.operation_id,
                     expected_version=args.expected_version,
                 )

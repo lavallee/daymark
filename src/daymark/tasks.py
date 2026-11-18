@@ -68,8 +68,10 @@ def _explicit_timezone(name: str) -> str:
     return name
 
 
-def local_timezone() -> str:
-    """Honor Daymark's explicit zone, otherwise discover the host's IANA zone."""
+def local_timezone(explicit: str | None = None) -> str:
+    """Honor the call's zone, then the configured zone, then the host's IANA zone."""
+    if explicit is not None:
+        return _explicit_timezone(explicit)
     if configured := os.environ.get("DAYMARK_TZ"):
         return _explicit_timezone(configured)
     if host_zone := os.environ.get("TZ"):
@@ -341,7 +343,7 @@ class Tasks:
         self._take_identity = remote or actor is not None
         self.actor = "agent" if actor is None else actor
         self._who = {} if remote else {"actor": self.actor}
-        self.timezone = _explicit_timezone(timezone) if timezone is not None else local_timezone()
+        self.timezone = local_timezone(timezone)
         self._now = now
 
     # -- plumbing
@@ -996,12 +998,16 @@ class Tasks:
         """Orientation-sized records, in precisely the same order as ready."""
         return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, project=project, brief=True)
 
-    def agenda(self, days=7, *, context=None, scope=None, deadlines=False):
+    def agenda(self, days=7, *, context=None, scope=None, deadlines=False, local_day=False):
+        if type(local_day) is not bool:
+            raise DomainError("invalid", "local_day must be a boolean; set the viewer timezone on Tasks")
         extra = {} if scope is None else {"scope": scope}
         if context is not None:
             extra["context"] = context
         if deadlines:
             extra["deadlines"] = True
+        if local_day:
+            extra["day_zone"] = self.timezone
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
     @contextmanager
@@ -1012,6 +1018,11 @@ class Tasks:
         snapshot = getattr(self.engine, "read_snapshot", nullcontext)
         with snapshot():
             yield reader
+
+    @property
+    def supports_consistent_reads(self):
+        """Whether multiple factual reads can share a single engine snapshot."""
+        return callable(getattr(self.engine, "read_snapshot", None))
 
     def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None, brief=False):
         """Run the chosen profile with one-call adjustments, without saving them."""

@@ -66,9 +66,10 @@ def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
             message = f"1 task has an estimate of {minutes} minutes or less."
         else:
             message = f"{count} tasks have individual estimates of {minutes} minutes or less."
-        if considered < len(view.ready):
+        available = advice.ready_coverage["available"] if advice.ready_coverage else len(view.ready)
+        if considered < available:
             message = (
-                f"This step checked {considered} of {len(view.ready)} ready candidates. " + message
+                f"This step checked {considered} of {available} ready candidates. " + message
             )
         if longer:
             message += " 1 task needs more time." if longer == 1 else f" {longer} tasks need more time."

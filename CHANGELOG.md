@@ -13,14 +13,18 @@ remains `0.5.0`.
   and exits successfully. `daymark --help` lists every command and global option.
 - Local health, policy, export, and ordinary workspace reads return `no_database` for missing paths or SQLite files with no Daymark tables. Use `where` to check the selection and `init` to create a database.
 
+- CLI snapshot import checks for readable JSON before opening the destination. A CSV or malformed JSON file returns `invalid` with a native-format hint.
 - Concurrent first opens retry SQLite journal-mode contention before starting the task write.
 - Existing database permissions survive repeated initialization. JSON exports publish after serialization and preserve an existing destination. An empty decision-maker argument now directs administrators to the explicit `policy --clear` command.
 - A database with an unrecognized schema marker returns `conflict` before migration. Literal percent escapes in imported IDs round-trip on the oldest supported HTTP client.
 - Make a native SQLite backup before upgrading. The schema marker stays at
-  6. A writable open installs setting-revision tracking, including for later
+  6. A writable open installs setting and policy revision tracking, including for later
   writes by a v0.5.0 process. A caller-owned connection must commit this
   installation. An existing read-only database can still serve ordinary
   record views. [Upgrade and rollback](docs/operations.md#upgrading-between-releases)
+- Local administrators can use `policy --versioned` and pair `--if-version`
+  with `--operation-id` to protect a reviewed policy change and recover its
+  result. Legacy policy commands still return only the decider list.
 - An explicit one-off local clock time must exist and identify one instant.
   Supply an offset when the clock repeats. An invalid `--tz` or `DAYMARK_TZ`
   now returns an error. Relative reminder retries retain their original instant
@@ -49,6 +53,9 @@ remains `0.5.0`.
 - `agenda --deadlines --days N` shows agreed hard cutoffs, including work
   that is waiting or blocked. The ordinary text agenda separates earlier
   plans from work due or planned today.
+- `agenda --local-day` groups timed hard cutoffs in the viewer's session
+  timezone and lists overlapping date-only cutoffs in their originating
+  zones. JSON retains both the recorded timing and viewer-local clock.
 - `done` and `release` accept `--if-version N` (MCP `expected_version`).
   A returning tab can refuse a changed claim, including a renewal by the
   same actor. The check covers any closing or handoff note in the same write.
@@ -77,8 +84,9 @@ remains `0.5.0`.
 ### Preferences and consent
 
 - Try an advice profile or `--set` and `--drop` adjustments for one request.
-  Time-based choices use individual task estimates. Project review finds
-  active projects without actionable commitments and distinguishes projects
+  Time-based choices use individual task estimates. Truncated advice reports
+  ready tasks reviewed and available in `ready_coverage`. Project review finds
+  open projects with no open or waiting task and distinguishes projects
   whose proposals still need a decision. Decision batching reports the
   reviewed population and labels the options offered in the final batch.
   Deadline lookahead flags planned work that falls after its hard cutoff,
@@ -113,6 +121,8 @@ remains `0.5.0`.
   and cancels an outstanding retry.
 
 ### Installing and embedding
+
+- Print a read-only Claude Code or Codex launch configuration for the selected local workspace or authenticated HTTP service with `onboard --mcp-config`.
 
 - SQLite backups contain the committed WAL data and can be read from a sealed,
   read-only folder as a single file. A writable Daymark open selects WAL

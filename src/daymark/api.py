@@ -388,6 +388,7 @@ def create_router(store: Any) -> APIRouter:
         request: Request,
         days: int = Query(7, ge=0, le=366),
         deadlines: bool = Query(False),
+        day_zone: str | None = Query(None, min_length=1, max_length=128),
         scope: str | None = Query(None, max_length=100),
         context: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
@@ -395,6 +396,8 @@ def create_router(store: Any) -> APIRouter:
         filters = {"context": context} if context is not None else {}
         if deadlines:
             filters["deadlines"] = True
+        if day_zone is not None:
+            filters["day_zone"] = day_zone
         return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope, **filters)
 
     @router.get("/explore", operation_id="daymark_v1_explore")

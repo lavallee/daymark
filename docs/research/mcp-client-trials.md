@@ -378,6 +378,38 @@ operation IDs distinguished the original receipt, a fresh attempt with the
 stale version, and a fresh release of the new version. It left version 5
 and the one original note intact.
 
+## Hard deadlines on the person’s calendar day
+
+On Tuesday evening in Honolulu, a press workspace had two timed cutoffs
+still ahead that evening. Both were recorded on Wednesday, one in Los
+Angeles and one in Kathmandu. A Tokyo cutoff had only a Wednesday civil
+date. A Zurich deadline recorded for Wednesday afternoon fell at 02:00
+Wednesday in Honolulu. A past cutoff, a
+soft plan and another scope supplied controls.
+
+Two cold read-only clients were asked which hard deadlines still fell that
+evening and which cutoff had only a date. Both calculated the two timed
+answers correctly. One opened five complete task records to verify timing.
+The other relied on compact agenda rows and incorrectly said the Tokyo
+date had no timezone. A zero-day ordinary deadline agenda omitted the Los
+Angeles cutoff, since it was still Tuesday in Los Angeles, and included the
+Zurich cutoff, since it was already Wednesday there.
+
+With a viewer-day option, the same two prompts each took a scoped primer
+and one scoped agenda call. Both identified 22:30 and 23:00 Honolulu time
+and preserved the Tokyo date and zone. Neither assigned the civil date a
+cutoff hour. One worker also mentioned the Zurich task visible in its
+scoped primer. The viewer-day query itself excluded that task. Neither
+session changed the seven task events.
+
+Through an authenticated mounted service, the same option kept the supplied
+scope and context. Another credential with the same task ID saw its own
+workspace’s schedule. Both the tagged 0.5.0 service and an earlier
+development wheel refused the new window at schema inspection. The
+candidate's CLI and read-only stdio client agreed over HTTP. Fixed-instant
+checks cover the two occurrences of 01:30 during a New York fall-back,
+an exact midnight cutoff, and a civil date skipped by a date-line change.
+
 ## Undo after another worker has edited the task
 
 Two fresh MCP sessions were asked to undo only the previous worker's title

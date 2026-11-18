@@ -1,12 +1,17 @@
 """Maintain Daymark's marked section in an existing project instruction file."""
 
 import errno
+import json
 import os
 import re
+import site
 import stat
+import subprocess
+import sys
 import tempfile
 from importlib.resources import files
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .models import DomainError
 from .render import ONBOARD
@@ -21,6 +26,83 @@ def skill_text():
     if packaged.is_file():
         return packaged.read_text(encoding="utf-8")
     return (Path(__file__).resolve().parents[2] / "skills/daymark/SKILL.md").read_text(encoding="utf-8")
+
+
+def mcp_config(host, *, database, workspace, actor, timezone, url, token_env):
+    """Print-ready, read-only stdio configuration for the active installation."""
+    from .tasks import local_timezone
+
+    command = sys.executable
+    # Desktop hosts can start with another checkout on PYTHONPATH.
+    args = ["-E", "-P", "-m", "daymark.cli", f"--tz={local_timezone(timezone)}"]
+    if url:
+        try:
+            endpoint = urlsplit(url)
+            valid = (
+                endpoint.scheme in {"http", "https"} and endpoint.hostname
+                and endpoint.username is None and endpoint.password is None
+                and not endpoint.query and not endpoint.fragment
+                and not any(ord(char) < 32 or ord(char) == 127 for char in url)
+            )
+            _ = endpoint.port  # urlsplit validates the port on access.
+        except ValueError:
+            valid = False
+        if not valid:
+            raise DomainError("invalid", "Use an HTTP(S) service URL with no credentials, query or fragment")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise DomainError("invalid", "Use the environment variable name holding the service credential")
+        args.extend([f"--url={url}", f"--token-env={token_env}"])
+    else:
+        if not database or database == ":memory:" or not Path(database).is_file():
+            raise DomainError("no_database", "A read-only MCP launch needs an existing database file",
+                              ["Check daymark where or initialize a new workspace with daymark init --here."])
+        args.extend([f"--db={Path(database).absolute()}", f"--workspace={workspace}",
+                     f"--as={'agent' if actor is None else actor}"])
+    args.extend(["mcp", "--read-only"])
+    # The host may set a different Python user base. A user-site install
+    # needs the same one used by the process printing this configuration.
+    env = {}
+    if site.ENABLE_USER_SITE and site.getuserbase():
+        env["PYTHONUSERBASE"] = str(Path(site.getuserbase()).absolute())
+    if url and token_env in env:
+        raise DomainError("invalid", "Choose a separate environment variable for the service credential")
+    # A bare PYTHONPATH checkout is available to this shell only. Verify the
+    # launch interpreter can actually locate this installation without it.
+    probe = (
+        "import importlib.util, os, sys; spec = importlib.util.find_spec('daymark'); "
+        "sys.exit(0 if spec and spec.origin and os.path.samefile(spec.origin, sys.argv[1]) else 1)"
+    )
+    check = subprocess.run(
+        [command, "-B", "-E", "-P", "-c", probe, str(Path(__file__).with_name("__init__.py"))],
+        check=False, capture_output=True, timeout=10, env={**os.environ, **env},
+    )
+    if check.returncode:
+        raise DomainError("invalid", "This interpreter cannot locate the same Daymark installation from an editor",
+                          ["Install the checkout into a virtual environment, then print the configuration using its daymark command."])
+    if host == "claude":
+        if any("${" in value for value in (command, *args, *env.values())):
+            raise DomainError("invalid", "Claude Code expands variable references in launch arguments",
+                              ["Choose a path or identity without a literal ${ sequence."])
+        server = {"command": command, "args": args}
+        if url:
+            env[token_env] = "${" + token_env + ":-}"
+        if env:
+            server["env"] = env
+        return json.dumps({"mcpServers": {"daymark": server}}, ensure_ascii=False, indent=2)
+    # TOML also requires DEL to be escaped. Preserve non-BMP characters as UTF-8.
+    fields = [("command", command), ("args", args)]
+    if url:
+        fields.append(("env_vars", [token_env]))
+    lines = ["[mcp_servers.daymark]"]
+    for key, value in fields:
+        encoded = json.dumps(value, ensure_ascii=False).replace(chr(127), "\\u007f")
+        lines.append(f"{key} = {encoded}")
+    if env:
+        lines.append("[mcp_servers.daymark.env]")
+        for key, value in env.items():
+            encoded = json.dumps(value, ensure_ascii=False).replace(chr(127), "\\u007f")
+            lines.append(f"{key} = {encoded}")
+    return "\n".join(lines)
 
 
 def _section(original: bytes):

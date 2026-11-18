@@ -54,7 +54,9 @@ shows what is ready, what is waiting, and which facts earlier sessions kept.
 `daymark onboard --write AGENTS.md` to install them when they fit the project.
 To verify two agents share the intended workspace before creating a task,
 see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-minutes).
-Its enforced read-only sessions use the development checkout.
+Its enforced read-only sessions use the development checkout. From that checkout,
+`daymark onboard --mcp-config claude` or `daymark onboard --mcp-config codex`
+prints the launcher for the installation and workspace you selected.
 For commands supported by the tagged install above, see the
 [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 

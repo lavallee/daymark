@@ -91,10 +91,18 @@ class Advice:
     profile_source: dict | None = None
     context: str | None = None
     as_of: datetime | None = None
+    ready_coverage: dict[str, int] | None = None
 
     @classmethod
     def from_result(cls, data):
         """Reconstruct service-computed advice as data; no strategy lookup or execution."""
+        coverage = data.get("ready_coverage")
+        if coverage is not None:
+            reviewed = coverage.get("reviewed") if isinstance(coverage, dict) else None
+            available = coverage.get("available") if isinstance(coverage, dict) else None
+            if type(reviewed) is not int or type(available) is not int or not 0 < reviewed < available:
+                raise DomainError("invalid", "The service returned inconsistent ready coverage")
+            coverage = {"reviewed": reviewed, "available": available}
         return cls(
             picks=data["picks"],
             notes=[Note(**entry) for entry in data["notes"]],
@@ -107,6 +115,7 @@ class Advice:
             scope=data.get("scope"),
             context=data.get("context"),
             as_of=normalize_now(data["as_of"]) if data.get("as_of") else None,
+            ready_coverage=coverage,
         )
 
     def ready_query(self) -> dict:
@@ -132,6 +141,7 @@ class Advice:
             "notes": [{"strategy": n.strategy, "text": n.text, "ids": n.ids} for n in self.notes],
             "suggestions": self.suggestions,
             "held_back": self.held_back,
+            **({"ready_coverage": self.ready_coverage} if self.ready_coverage is not None else {}),
             **({"ready_query": self.ready_query()} if self.held_back else {}),
             "tone": self.tone,
             "steps": self.steps,
@@ -535,10 +545,13 @@ def _advise(tasks, requested, scope, context, source, *, brief=False):
         if source and not selection_is_current(reader, source):
             return None
         view = snapshot(reader, scope=scope, context=context, reads=reads, cards=cards)
-        total = (
-            reader.summary(scope=scope, context=context)["ready"]
-            if len(view.ready) == READY_LIMIT else len(view.ready)
-        )
+        reviewed = len(view.ready)
+        total = reviewed
+        if reviewed == READY_LIMIT:
+            # A separate HTTP count can describe another state. Older
+            # services also cap their count at the size of a ready page.
+            coherent = getattr(reader, "supports_consistent_reads", session is not None)
+            total = reader.summary(scope=scope, context=context)["ready"] if coherent else None
     advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope, context=context,
                     profile_source=source, as_of=view.now)
     if skipped:
@@ -566,10 +579,16 @@ def _advise(tasks, requested, scope, context, source, *, brief=False):
                 "Advice uses the installed strategy's effective parameters.",
             )
         )
-    if total > READY_LIMIT:
-        advice.notes.append(
-            Note("profile", f"Advice covers the first {READY_LIMIT} of {total} ready tasks.")
-        )
+    if total is None or total > reviewed:
+        if total is None:
+            text = f"At least {reviewed} tasks were ready. Advice inspected a full page and could not confirm the total."
+        else:
+            advice.ready_coverage = {"reviewed": reviewed, "available": total}
+            text = f"Advice covers the first {reviewed} of {total} ready tasks."
+        filters = [name for name, value in (("scope", scope), ("task context", context)) if value is None]
+        if filters:
+            text += f" A relevant {' or '.join(filters)} can narrow the next review."
+        advice.notes.append(Note("profile", text))
     for strategy, params in stages:
         strategy.apply(view, advice, params)
     for note in advice.notes:

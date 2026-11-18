@@ -60,7 +60,7 @@ TOOLS = [
     {
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
-        "description": 'json=true: data. scope "": unscoped. show id/source, forecast. ready project/explain. agenda deadlines. '
+        "description": 'json=data. scope ""=unscoped. show id/source/forecast. ready project/explain. agenda local_day. '
         "find source+scope. advise set/drop. profiles strategy.",
         "inputSchema": {
             "type": "object",
@@ -101,6 +101,7 @@ TOOLS = [
                 "status": {"type": "string"},
                 "days": {"type": "integer", "minimum": 0, "maximum": 366},
                 "deadlines": {"type": "boolean"},
+                "local_day": {"type": "boolean"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
                 "scope": {"type": "string"},
@@ -118,7 +119,7 @@ TOOLS = [
     },
     {
         "name": "daymark_add",
-        "description": "proposed=true: idea. assignee=person/principal ID or exact name. after=prerequisites. source=system:kind:id. " + _DATES + _DATE_FORMS + " every:day/week/month/year/weekdays/mon,thu.",
+        "description": "proposed:idea. assignee:person/principal ID/exact name. after:prerequisites. source:system:kind:id. " + _DATES + _DATE_FORMS + " every:day/week/month/year/weekdays/mon,thu.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -137,7 +138,7 @@ TOOLS = [
     },
     {
         "name": "daymark_edit",
-        "description": 'As add. Clear date="". Guard: show review_token.',
+        "description": 'As add. Clear date="". Guard:review_token.',
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -156,8 +157,8 @@ TOOLS = [
     {
         "name": "daymark_act",
         "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
-        "take:omit id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
-        "remind:when,recipient ID; local recording. use_profile:id=name or set/drop. restore_profile:receipt id+expected_version.",
+        "take:no id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
+        "remind:when,recipient ID; local recording. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -223,7 +224,7 @@ _READ_GUIDE = (
 _SHORT_CHECK_IN = (
     " For a short check-in, read advise with the agreed settings. Show its picks and how many more there are. "
     "Read or name the other tasks when the person asks to see them. "
-    "For requested hard deadlines, check agenda with deadlines=true. A date alone has no recorded hour."
+    "For hard cutoffs on the person's calendar day use agenda with local_day=true and days=0. A date alone has no recorded hour."
 )
 _TYPES = {"string": str, "boolean": bool, "integer": int, "array": list, "object": dict}
 
@@ -234,7 +235,7 @@ _VIEW_ARGS = {
     "advise": {"context", "scope", "profile", "set", "drop"},
     "profiles": {"profile", "strategy"},
     "explore": {"id", "scope"},
-    "agenda": {"days", "scope", "context", "deadlines"},
+    "agenda": {"days", "scope", "context", "deadlines", "local_day"},
     "activity": {"after", "limit"},
     "show": {"id", "source", "brief", "note", "before_note", "since_version", "forecast"},
     "find": {"source", "text", "limit", "after", "kind", "status", "scope", "claimed", "archived"},

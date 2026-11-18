@@ -10,6 +10,8 @@ import heapq
 import json
 import sqlite3
 from collections import deque
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import cursors, plans
 from .models import DomainError, Temporal, day_offset, normalize_now, start_has_arrived
@@ -518,7 +520,56 @@ def _agenda_bucket(item, now, days, *, deadlines=False):
     return None, None
 
 
-def agenda(store, workspace, *, now=None, days=7, scope=None, context=None, deadlines=False):
+def _end_of_day(day, zone):
+    """Last instant on or before the civil day, including a repeated or skipped midnight."""
+    wall = datetime.combine(day, time.max, zone)
+    early, late = sorted(wall.replace(fold=fold).astimezone(UTC) for fold in (0, 1))
+    if late.astimezone(zone).date() <= day:
+        return late
+    # The wall day ended in a forward clock jump. Its two possible offsets
+    # bracket the transition even when a whole civil day was skipped.
+    while late - early > timedelta.resolution:
+        middle = early + (late - early) // 2
+        if middle.astimezone(zone).date() <= day:
+            early = middle
+        else:
+            late = middle
+    return early
+
+
+def _local_deadline_bucket(item, now, zone, first, through, last_instant):
+    deadline = Temporal.model_validate(item["deadline"])
+    if deadline.date:
+        # A civil deadline represents its entire originating day. Keep
+        # overlapping dates visible without manufacturing a cutoff hour.
+        key = deadline.date.isoformat()
+        if deadline.is_before(now):
+            bucket = "overdue"
+        else:
+            origin = ZoneInfo(deadline.timezone)
+            last_date = last_instant.astimezone(origin).date()
+            overlaps = deadline.date <= last_date
+            if overlaps and deadline.date < last_date:
+                # A date-line move can skip a whole originating calendar date.
+                overlaps = _end_of_day(deadline.date, origin).astimezone(origin).date() == deadline.date
+            bucket = "civil_dates" if overlaps else None
+        return bucket, key, (1, key, deadline.timezone, item["id"])
+    instant = deadline.at.astimezone(UTC)
+    if instant > last_instant:
+        return None, None, (0, instant, item["id"])
+    day = instant.astimezone(zone).date()
+    if instant < now:
+        bucket = "overdue"
+    elif day == first:
+        bucket = "today"
+    elif day <= through:
+        bucket = "upcoming"
+    else:
+        bucket = None
+    return bucket, day.isoformat(), (0, instant, item["id"])
+
+
+def agenda(store, workspace, *, now=None, days=7, scope=None, context=None, deadlines=False, day_zone=None):
     """The shape of the days ahead: what is late, due, planned, waiting or proposed.
 
     Each task appears at most once. With deadlines=True, only open and waiting
@@ -529,6 +580,24 @@ def agenda(store, workspace, *, now=None, days=7, scope=None, context=None, dead
         raise DomainError("invalid", "Days must be between 0 and 366")
     now = normalize_now(now)
     out = {"overdue": [], "today": [], "upcoming": {}}
+    zone = None
+    if day_zone is not None:
+        try:
+            zone = ZoneInfo(day_zone)
+            first = now.astimezone(zone).date()
+            through = first + timedelta(days=days)
+            last_instant = _end_of_day(through, zone)
+        except (OSError, ZoneInfoNotFoundError, TypeError, ValueError, OverflowError):
+            raise DomainError("invalid", "Choose an IANA timezone and a representable agenda date window") from None
+        deadlines = True
+        out.update(civil_dates={}, window={
+            "timezone": day_zone, "from": first.isoformat(), "through": through.isoformat(),
+            "as_of": now.isoformat(),
+        })
+        if scope is not None:
+            out["window"]["scope"] = scope
+        if context is not None:
+            out["window"]["context"] = context
     if not deadlines:
         out.update(waiting=[], proposed=[], later_or_undated=0)
     statuses = ("open", "waiting") if deadlines else LIVE
@@ -541,19 +610,21 @@ def agenda(store, workspace, *, now=None, days=7, scope=None, context=None, dead
             for item in _task_fields(
                 store, workspace, statuses, fields, scope=scope, context=context, deadlines=deadlines
             ):
-                bucket, day = _agenda_bucket(item, now, days, deadlines=deadlines)
+                if zone is not None:
+                    bucket, day, order = _local_deadline_bucket(item, now, zone, first, through, last_instant)
+                else:
+                    bucket, day = _agenda_bucket(item, now, days, deadlines=deadlines)
                 if bucket is None:
                     if not deadlines:
                         out["later_or_undated"] += 1
                     continue
-                if deadlines:
-                    order = (day_offset(item["deadline"], now), item["created_at"], item["id"])
-                else:
-                    order = urgency(item, now)[0]
+                if zone is None:
+                    order = (day_offset(item["deadline"], now), item["created_at"], item["id"]) if deadlines else urgency(item, now)[0]
                 shown.append((order, item["id"], bucket, day))
-            full = _fetch(store, workspace, (id for _, id, _, _ in shown))
+            projection = {"fields": LIST_FIELDS + ("context_ids",)} if zone is not None else {}
+            full = _fetch(store, workspace, (id for _, id, _, _ in shown), **projection)
             for _, id, bucket, day in sorted(shown):
-                if bucket == "upcoming":
+                if bucket in {"upcoming", "civil_dates"}:
                     out[bucket].setdefault(day, []).append(full[id])
                 else:
                     out[bucket].append(full[id])

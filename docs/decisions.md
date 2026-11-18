@@ -20,7 +20,7 @@ records the procedure shipped with 0.5.0.
 | C08 Dependencies separate from hierarchy | Adopt | Explicit dependency edges with workspace/kind checks and cycle rejection. No critical-path planner, automatic rescheduling, effort estimation or resource leveling. |
 | C09 Saved views as authorized queries | Adopt | Bounded filter AST evaluates only authorized workspace records. No raw SQL, executable expressions, or view-granted permissions. Query semantics distinguish hard overdue from soft planned work. |
 | C10 Offline/conflict contract | Adopt conflict safety; defer replicated offline editing | Stable operation receipts and expected versions make replay and stale-write outcomes explicit. SQLite is the local authority. No CRDT, device sync or automatic collaborative merge claim. |
-| C11 Canonical export and loss reporting | Adopt canonical snapshots; defer third-party interchange | Native export/import preserves identities, versions, event history and operation replay receipts. Imports validate references atomically. Any application-specific downgrade must report/refuse semantic loss. No CalDAV/CSV/vendor round-trip guarantee. |
+| C11 Canonical export and loss reporting | Adopt canonical snapshots; defer third-party interchange | Native export/import preserves identities, versions, event history and operation replay receipts. Imports validate references atomically. Any application-specific downgrade must report/refuse semantic loss. The CLI checks that the input is readable JSON before opening the destination. No CalDAV/CSV/vendor round-trip guarantee. |
 | C12 Extensibility and adapters | Adopt | Typed core fields plus structured metadata and source references. Application adapters and delivery sinks are separate; core does not import private producers. No plug-in execution from untrusted imports. |
 | C13 Privacy/licensing | Adopt | MIT standalone source, synthetic examples, protected local state, redacted HTTP/worker errors. Source, dependencies and archives require privacy/security review. A successful secret scan does not establish absence of private data. |
 | C14 Personal overlays | Defer | Planning fields currently belong to the shared record. Private per-person planning overlays need separate visibility/version semantics. |
@@ -337,3 +337,18 @@ sessions.
 Local health, policy and export commands also require an existing database. A
 misspelled path previously produced a zero-item export or a decision policy naming
 no restrictions. Explicit initialization preserves the mode of an existing file.
+
+
+## Guarding local decider policy edits
+
+A policy handover replaces the full decider list. An editor working from the
+previous list can overwrite that handover by applying their earlier review.
+The opt-in local workflow carries the observed version and a stable operation
+ID. A retry returns the original write result. The default CLI output and
+unconditional writes remain available to existing callers.
+
+The policy row keeps its existing format and remains authoritative. SQLite
+tracks its revision even when an older client writes it. Existing local
+configuration receipts provide replay without a schema marker change. The
+native backup covers this state. Logical workspace imports keep destination
+authority and local policy receipts.
