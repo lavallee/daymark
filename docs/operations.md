@@ -54,7 +54,7 @@ and `/v1/context/{id}`. Projects read as plans: `GET /v1/projects` (each with it
 roll-up), `/v1/projects/{id}/plan` (stages, tasks in manual order, roll-up and the
 head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
 (`{"cursor", "changed"}`, cheap enough to poll). `GET /v1/events/head` gives the
-latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
+latest cursor and `/v1/events?project=ID` keeps the events that touch one project. The project change flag and its reported cursor share one SQLite snapshot, including the current set of external dependencies.
 Goals read as `GET /v1/goals` and `/v1/goals/{id}/plan`, and `GET /v1/tree/{id}?depth=3`
 gives an item with its children in order.
 
@@ -72,7 +72,18 @@ the results, numeric `activity_cursor` and portable `activity_checkpoint`. The f
 calendar and lease calculations. Continue the memory list with `next_memory`
 and workspace activity with `GET /v1/activity?after=CHECKPOINT`. When connecting to an
 older service the client composes its available views separately. That reply
-has no atomic checkpoint.
+has no atomic checkpoint. `GET /v1/orientation?scope=studio` returns the filter
+as `scope` and computes counts and previews from matching records. Scoped
+orientation omits the workspace-wide activity cursor and checkpoint.
+
+`POST /v1/advice` reads the credential's workspace and uses its principal for
+claim visibility. An empty object selects the active workspace profile.
+Optional `profile`, `set`, `drop`, `scope`, `context` and `now` apply to this
+request. The service evaluates built-in strategies after taking one local
+snapshot. Set `brief: true` for list-sized task rows with supporting notes
+and checklist steps. The MCP bridge uses this form. `GET /v1/profiles` lists active and saved choices. Use `view=active`,
+`view=saved&name=NAME` or `view=strategy&name=STRATEGY` to inspect one.
+Preference mutations require local database access.
 
 A checked activity page returns `checkpoint` for its last delivered event.
 It survives a consistent database backup or native JSON restore that preserves
@@ -80,7 +91,7 @@ the workspace name, event number and that event's metadata and contents.
 A missing or changed boundary event or a different workspace produces HTTP
 409. Reopen the intended workspace and read a fresh compact prime. A zero
 checkpoint is bound only to the workspace name, so it can start any history
-in that workspace. An integer cursor carries only a position.
+in that workspace. An integer cursor carries only a position. Clients that round large JSON integers can page by the checked string until a page contains fewer events than requested.
 
 A checkpoint checks a single event. Backfilled or replaced earlier events,
 new entities restored without events, and materialized state that differs
@@ -88,6 +99,20 @@ while the boundary matches can all escape detection. After a restore or
 merge, read a fresh prime and inspect the affected entities before resuming
 work. Use native export to compare the complete records, events and receipts
 when that level of verification is required.
+
+Entity history, undo and recurrence resolve event order by the workspace
+cursor retained in the snapshot. The order in which sparse pieces arrive
+does not change their chronology. Undo checks that the latest event's ending
+state matches the materialized record before restoring the previous state.
+A native merge can leave a record without that evidence. Finish restoring
+the corresponding events, or explicitly edit the observed record. A
+low-level undo of a hard deletion requires a matching deletion event, an
+absent current entity and the deletion's expected version.
+
+Native event numbers range from 1 through 9,223,372,036,854,775,807.
+Import rejects larger numbers. A workspace restored at the maximum remains
+readable, and existing operation receipts still replay. Creating another
+event returns a conflict and rolls back that write.
 
 Imported IDs can contain path punctuation. For an ID such as `crate/07`,
 pass the exact ID as a query parameter, for example
@@ -119,8 +144,12 @@ embedded apps may set a smaller limit with `create_app`.
 
 A decider list governs the recorded decision on a proposal. Choose a person’s
 authenticated service identity as a decider when an agent prepares proposals
-for that person. A reviewed version or review token binds the decision to the
-record the person inspected. A claim coordinates the work that follows.
+for that person. A reviewed version checks the current revision number. A
+review token also binds the decision to the observed event and its content
+across deletion, recreation and native transfer. A claim coordinates the
+work that follows. Unused review tokens issued by the metadata-only
+development build require a fresh read. Repeating an operation that already
+committed still returns its recorded receipt.
 
 | Operation | What the engine checks |
 | --- | --- |
@@ -156,9 +185,9 @@ transaction open. Finish that transaction according to your application's
 rules, read current state, then retry the operation if it is still appropriate.
 A Daymark write becomes visible to other connections when the caller commits.
 
-The synchronous Python
-`daymark.client.Client` accepts a base URL and bearer token, and supports context
-manager cleanup. The CLI uses `--url` and a credential from `DAYMARK_TOKEN` (or
+Install `daymark-core[client]` for a Python consumer of an existing service.
+The synchronous `daymark.Client` accepts a base URL and bearer token and
+supports context manager cleanup. The `service` extra also includes the client. The CLI uses `--url` and a credential from `DAYMARK_TOKEN` (or
 `--token-env`), avoiding credentials in command arguments.
 
 ## Recorder scheduler
@@ -292,6 +321,32 @@ same fields, events and capture replay.
 
 These checks cover the synthetic task and its history. A complete native
 backup is still necessary for settings, scheduling and delivery state.
+
+### Setting revisions on schema 6
+
+The candidate installs persistent SQLite triggers on the first writable
+Store open, including on a file already marked schema 6. A caller-owned
+connection must commit the installation. The schema marker stays at 6, so
+this installation alone does not print a CLI schema upgrade notice. An untouched v0.5.0 file still supports read-only task views and
+plain setting reads. Reading a guarded preference version requires the
+writable installation to commit first. Existing v0.5.0 connections can
+continue across installation.
+Its setting writes are unconditional, but each committed change advances
+the revision checked by later candidate writes. Same-value writes and
+deletes of absent settings keep the current revision.
+
+Use settings observations obtained after installation for guarded writes,
+and review any pre-installation change anew before reversing it. Installation
+preserves existing revisions and receipts. On untouched files, v0.5.0 left
+only the final setting value, so earlier changes and stale observations
+from before installation cannot be identified reliably.
+
+Native SQLite backup and restore carry the installed triggers, revisions,
+deleted-setting revisions and local receipts. A native copy of an untouched
+file still needs the writable open. Workspace JSON export and import carry
+entity history and receipts. Settings and their receipts are local to the
+database, and setting versions should be used with the database that issued
+them.
 
 ## Boundary review rationale
 

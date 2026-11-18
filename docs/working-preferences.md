@@ -5,6 +5,12 @@ morning they want to see the decisions holding up the team. Before a meeting
 they want two things they can start. The agent can change its answer for
 each situation.
 
+The examples use the development checkout. Check `daymark advise --help`
+for `--set` before trying them. On the tagged v0.5.0 CLI,
+`daymark advise --profile gentle` previews the built-in short list.
+To try the adjustable examples, install the checkout containing this guide.
+[Install from source](../README.md#install-from-source)
+
 | What the person says | What to try |
 | --- | --- |
 | “I can take the decisions now.” | `daymark advise --profile plain --set decisions-first` brings the first three ready items marked `answer` to the front. |
@@ -123,6 +129,8 @@ profiles. Entity exports omit settings, so use `--saved NAME --json` when
 moving a profile between installations. A full database backup includes settings
 and their replay and undo receipts. A portable profile JSON file records a
 configuration and imports as a new named copy in the destination workspace.
+When an extension is missing locally, the named export still contains its
+settings and stage order. Other stages remain usable and editable.
 If an installed extension no longer accepts a saved parameter, advice names
 it and the active profile shows its original value. Other preference edits
 preserve that value. Use `--drop STRATEGY.OLD_PARAMETER` only when the person
@@ -157,6 +165,22 @@ to the workspace default. That action copies the selected configuration, so
 a subsequent edit to the named copy leaves the active version intact.
 `remember` also writes to shared workspace state. A person's private preference
 belongs in a host setting with the intended audience.
+
+## Use the same preference through a service
+
+If the team sets a two-item workspace default on its database, a current
+authenticated service returns those two picks too. `advise --profile NAME`
+uses a saved copy and `advise --profile plain` previews the ordinary queue.
+Inspect the active version with `profile --json`. Profile changes are made
+on the local database.
+
+The service runs built-in stages. A saved extension stays in its recorded
+position for local installations. Service advice names any skipped stages.
+To use a strategy package installed on the client, choose an explicit
+built-in base, for example `advise --profile plain --set estimate-review`.
+The client runs only that requested preview on the service's task reads.
+A v0.5.0 service cannot report its workspace profiles. A current client
+identifies its plain fallback when using that older service.
 
 ## Review projects that have gone quiet
 
@@ -193,6 +217,13 @@ daymark advise --profile weekly --scope studio
 The routine covers one part of a GTD weekly review. The publisher also suggests
 checking calendars, waiting items and other lists. The cadence and scope are
 the person's choices. [GTD Weekly Review checklist](https://gettingthingsdone.com/wp-content/uploads/2014/10/Weekly_Review_Checklist.pdf)
+
+For a review of outstanding replies, add `--set waiting-check.days=5`.
+It asks about waiting tasks after five days without a task update. A dated
+`wait --until` postpones that follow-up until the recorded day or time.
+An earlier hard deadline still appears in the agenda. A note or an
+edit can reset the task's update time, so check the history before
+describing when someone last contacted the other party.
 
 ## Retry or reverse a standing choice
 

@@ -12,7 +12,7 @@ def _fold(text):
     return unicodedata.normalize("NFC", text.casefold())
 
 
-def _check(text, kind, status, scope, after, limit):
+def validate_filters(text, kind, status, scope, after, limit):
     for name, value, maximum in (
         ("text", text, 2000),
         ("kind", kind, 100),
@@ -28,9 +28,9 @@ def _check(text, kind, status, scope, after, limit):
         raise DomainError("invalid", "Limit must be between 1 and 1000")
 
 
-def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now):
-    sql = " FROM daymark_entities WHERE workspace=? AND kind=? AND archived=0"
-    args = [workspace, kind]
+def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now, *, archived):
+    sql = " FROM daymark_entities WHERE workspace=? AND kind=? AND archived=?"
+    args = [workspace, kind, int(archived)]
     if status is not None:
         sql += " AND status=?"
         args.append(status)
@@ -78,7 +78,7 @@ def _rows(store, workspace, kind, status, scope, after, search_description, clai
             yield row
 
 
-def _matches(rows, needle, limit):
+def _matches(rows, needle, limit, *, archived=False):
     out = []
     for id, kind, state, version, title, scope, description, *claim in rows:
         if needle and needle not in _fold(title) and needle not in _fold(description):
@@ -86,6 +86,8 @@ def _matches(rows, needle, limit):
         if len(out) == limit:
             return {"items": out, "next": out[-1]["id"]}
         hit = {"id": id, "kind": kind, "status": state, "version": version, "title": title}
+        if archived:
+            hit["archived"] = True
         if claim:
             hit.update(claimed_by=claim[0], claim_until=claim[1])
         if scope:
@@ -96,7 +98,7 @@ def _matches(rows, needle, limit):
 
 def legacy_page(client, text, *, kind, status, scope, after, limit):
     """An older HTTP server only supplies entity queries. Preserve the public page shape."""
-    _check(text, kind, status, scope, after, limit)
+    validate_filters(text, kind, status, scope, after, limit)
     clauses = [{"field": "kind", "op": "eq", "value": kind}]
     if status is not None:
         clauses.append({"field": "status", "op": "eq", "value": status})
@@ -128,22 +130,33 @@ def page(
     scope=None,
     after=None,
     limit=50,
+    archived=False,
     claimed_by=None,
     now=None,
 ):
-    _check(text, kind, status, scope, after, limit)
+    validate_filters(text, kind, status, scope, after, limit)
     if claimed_by is not None and (
         not isinstance(claimed_by, str) or not 1 <= len(claimed_by) <= 200
     ):
         raise DomainError("invalid", "A claim owner must contain 1 to 200 characters")
+    if type(archived) is not bool:
+        raise DomainError("invalid", "archived must be true or false")
+    if archived and claimed_by is not None:
+        raise DomainError("invalid", "Choose either archived records or live claims")
     if claimed_by is not None and kind != "task":
         raise DomainError("invalid", "Only tasks have work claims")
     instant = normalize_now(now) if claimed_by else None
     needle = _fold(text or "")
     with store._lock:
-        if not _usable(store):
-            return {"items": [], "next": None}
-        rows = _rows(
-            store, workspace, kind, status, scope, after, bool(needle), claimed_by, instant
-        )
-        return _matches(rows, needle, limit)
+        if _usable(store):
+            rows = _rows(
+                store, workspace, kind, status, scope, after, bool(needle), claimed_by, instant,
+                archived=archived,
+            )
+            result = _matches(rows, needle, limit, archived=archived)
+        else:
+            result = {"items": [], "next": None}
+    if archived:
+        # Even an empty remote page must confirm it searched the archive.
+        result["archived"] = True
+    return result

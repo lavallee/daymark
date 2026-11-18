@@ -28,10 +28,10 @@ def test_snapshot_keeps_work_memories_and_activity_together_across_a_writer(tmp_
         )
         memory_read = views._orientation_memories
 
-        def concurrent_write(store, workspace):
+        def concurrent_write(store, workspace, scope=None):
             sender.done("collect")
             sender.edit(first["id"], title="Use a complete legend")
-            return memory_read(store, workspace)
+            return memory_read(store, workspace, scope)
 
         with monkeypatch.context() as patch:
             patch.setattr(views, "_orientation_memories", concurrent_write)

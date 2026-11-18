@@ -758,3 +758,37 @@ def test_later_limits_remove_first_steps_of_omitted_tasks_from_all_surfaces(task
     assert "Next for first" not in advice_text(advice)
     empty = tasks.advise(settings=["first-step", "time-fit.minutes=2"])
     assert not empty.steps and not empty.picks
+
+
+@pytest.mark.parametrize(
+    ("until", "opens"),
+    [
+        ("2030-04-10", datetime(2030, 4, 9, 23, tzinfo=UTC)),  # midnight in London
+        ("2030-04-10 09:15", datetime(2030, 4, 10, 8, 15, tzinfo=UTC)),
+    ],
+)
+def test_waiting_check_respects_the_recorded_return_and_reports_only_task_update_age(
+    monkeypatch, until, opens
+):
+    from daymark.models import normalize_now
+
+    clock = datetime(2030, 4, 1, 9, tzinfo=UTC)
+    monkeypatch.setattr("daymark.store.normalize_now", lambda now=None: normalize_now(now or clock))
+    with closing(Store(":memory:")) as store:
+        writer = Tasks(store, "studio", timezone=ZONE, now=clock)
+        writer.add("Review proof", id="proof", due="2030-04-05")
+        writer.wait("proof", "the print shop", until=until)
+        clock += timedelta(days=2)
+        writer.note("proof", "Attachment filed.")
+        due_day = Tasks(store, "studio", timezone=ZONE, now=datetime(2030, 4, 5, 8, tzinfo=UTC))
+        waiting, = due_day.agenda()["waiting"]
+        assert waiting["id"] == "proof" and waiting["deadline"]["date"] == "2030-04-05"
+        before = Tasks(store, "studio", timezone="UTC", now=opens - timedelta(microseconds=1))
+        assert run(before, ("waiting-check", {"days": 5})).notes == []
+        assert [x["id"] for x in before.agenda()["overdue"]] == ["proof"]
+        assert not before.ready()
+        at_return = Tasks(store, "studio", timezone="UTC", now=opens)
+        note, = run(at_return, ("waiting-check", {"days": 5})).notes
+        assert note.ids == ["proof"] and "Waiting on the print shop." in note.text
+        assert f"No task update in {(opens - clock).days} days." in note.text
+        assert not at_return.ready()

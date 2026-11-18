@@ -57,7 +57,7 @@ def saved_profiles(tasks):
     return [entry for _, entry in sorted(library["profiles"].items())]
 
 
-def named_profile(tasks, name):
+def named_profile(tasks, name, *, for_edit=False):
     if not isinstance(name, str):
         raise DomainError("invalid", "A profile name must be text")
     if name in PROFILES:
@@ -71,28 +71,38 @@ def named_profile(tasks, name):
             "Unknown profile",
             ["See `daymark strategies` and `daymark profile --saved`."],
         )
-    return restore_profile(found["profile"]), {
+    return restore_profile(found["profile"], for_edit=for_edit), {
         "kind": "saved",
         "name": name,
         "version": found["version"],
     }
 
 
-def select_profile(tasks, name=None, *, settings=(), drops=()):
+def select_profile(tasks, name=None, *, settings=(), drops=(), for_edit=False):
     """Return the effective configuration and the same read's source information."""
     if name is None:
         state = _active_state(tasks)
-        base = restore_profile(state["value"])
+        base = restore_profile(state["value"], for_edit=for_edit)
         source = {
             "kind": "workspace" if state["value"] is not None else "default",
             "name": base["name"],
             **({"version": state["version"]} if state["version"] is not None else {}),
         }
     else:
-        base, source = named_profile(tasks, name)
+        base, source = named_profile(tasks, name, for_edit=for_edit)
     adjusted = has_adjustments(settings, drops)
     profile = edit_profile(base, settings, drops) if adjusted else base
     return profile, {**source, "adjusted": adjusted}
+
+
+def selection_is_current(tasks, source):
+    """Check the already-resolved settings inside the task read snapshot without loading code."""
+    if "version" not in source:
+        return True
+    if source["kind"] == "saved":
+        entry = _library(_read(tasks, _LIBRARY))["profiles"].get(source["name"])
+        return entry is not None and entry["version"] == source["version"]
+    return _active_state(tasks)["version"] == source["version"]
 
 
 def _active_result(tasks, value, version):
@@ -132,15 +142,11 @@ def active_profile(
             value = prior["value"]
         else:
             current = (
-                restore_profile(before["value"]) if name is None else named_profile(tasks, name)[0]
+                restore_profile(before["value"], for_edit=True)
+                if name is None
+                else named_profile(tasks, name, for_edit=True)[0]
             )
             current = edit_profile(current, settings, drops)
-            if current.get("skipped"):
-                raise DomainError(
-                    "invalid",
-                    "Drop unavailable strategies explicitly before saving",
-                    current["skipped"],
-                )
             value = persistent_profile(current)
         tasks.engine.set_setting(*tasks._ws, SETTING, value, expected_version=expected_version)
         after = _active_state(tasks)
@@ -212,22 +218,20 @@ def save_profile(tasks, name, *, profile=None, settings=(), drops=(), expected_v
             config = profile.get("profile", profile)
             if isinstance(config, dict):
                 # Outputs from inspecting an active choice also carry local metadata.
+                if config.get("execution") == "service":
+                    config = {k: v for k, v in config.items() if k != "execution"}
                 config = {
                     k: v
                     for k, v in config.items()
                     if k not in {"workspace", "version", "operation_id", "undo"}
                 }
-            validated = validate_profile(config)
+            validated = validate_profile(config, allow_unavailable=True)
             if config.get("skipped"):
                 validated["skipped"] = config["skipped"]
             candidate = edit_profile(validated, settings, drops)
         else:
-            candidate, _ = select_profile(tasks, profile, settings=settings, drops=drops)
-        if candidate.get("skipped"):
-            raise DomainError(
-                "invalid",
-                "Drop unavailable strategies explicitly before saving a copy",
-                candidate["skipped"],
+            candidate, _ = select_profile(
+                tasks, profile, settings=settings, drops=drops, for_edit=True
             )
         return _change_saved(tasks, name, candidate, expected_version, before)
 

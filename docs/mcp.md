@@ -46,6 +46,17 @@ When a 0.5.0 service cannot confirm the principal for a fresh embedded note,
 the current client leaves that note’s author empty. Its create event still
 records the submitting principal.
 
+When the person names a scope, `daymark_prime {"scope":"studio"}` gives
+counts, up to five ready tasks and up to five remembered facts from that
+scope in one snapshot. Use `{"scope":""}` for records with no scope. Memory
+continuations keep the filter. The scoped response omits the workspace-wide
+activity checkpoint and guide. A task can remain blocked by a prerequisite
+outside the scope; the primer includes only matching task and memory titles.
+A scope filters a read inside the selected workspace. It confers no separate
+authority. Older HTTP services must confirm support before a filtered primer
+can run. If the service lacks it, keep the same scope on the ready and
+memory-find views.
+
 ## Give a reviewer a read-only connection
 
 For questions such as “which task is blocking the shipment?”, configure the
@@ -64,7 +75,7 @@ prime identify the session as read-only.
 Locally, this opens an existing database with SQLite `mode=ro` and requires
 the current schema. Separate read calls see committed changes from other
 workers. An HTTP-backed session accepts the same switch. Its Daymark client
-permits GETs and the read-only search/query POST routes. The HTTP credential’s
+permits GETs and the read-only search, query and advice POST routes. The HTTP credential’s
 authority in other processes and the host’s other configured tools are
 configured separately.
 
@@ -112,6 +123,17 @@ task without picking an ID first, call
 `daymark_act {"action":"take","scope":"workshop","op":"shift-01"}`.
 An empty take returns `{"task":null}` in structured output.
 
+To assign responsibility, send `assignee` on `daymark_add` or `daymark_edit`.
+It accepts an existing person or principal ID, or an exact display name
+ignoring case. For example, `{"id":"sample","assignee":"custodian","op":"assign-sample"}`
+sets the assignee on a standalone task. An empty string on edit clears it.
+For a name-only request, pass the supplied name as given to check across both
+kinds. Several matching names produce candidate IDs for clarification.
+To explore records, search with `view=find, kind=person` or `kind=principal`.
+A search in just one kind can miss another match. The write
+receipt includes `assignee_id`. A claim concerns temporary work pickup and
+can be held independently. Keep the ID for retries if the display name changes.
+
 ## Read only the detail you need
 
 By default, views return the same short text an operator sees in the CLI.
@@ -147,7 +169,7 @@ timestamps and text. Both full show and brief name up to five unresolved
 prerequisites with their titles and current statuses in `blockers`. Their
 `blocked_by` arrays retain the IDs.
 
-## Change a local working preference
+## Use a workspace preference
 
 Use `daymark_view {"view":"profiles","json":true}` to discover available
 profiles, the active version and adjustment names with their defaults. For
@@ -167,7 +189,16 @@ starts at version zero. Supply `set` or `drop` without `id` to adjust the
 active profile. The receipt identifies the workspace, new version, and the
 operation and expected version needed to restore the earlier settings. Its
 text includes the exact CLI command for use with the same database. Named
-profile administration remains available through `daymark profile` commands.
+profile administration remains available through local `daymark profile` commands.
+
+An HTTP-backed MCP session reads active and named profiles from its credential's
+workspace. The service evaluates built-in stages. The advice result identifies
+the workspace, source revision and `execution="service"`. Unavailable saved
+stages are listed in `profile_source.skipped`. To run an extension installed
+on the MCP client, explicitly use a built-in base and name the extension in
+`set`. This one-call preview reports `execution="client-preview"`.
+On a v0.5.0 service the workspace profile is unavailable. The current client
+uses a labeled plain default and still accepts built-in previews.
 
 Use matching client and service versions for memory retirement. The current
 service verifies the memory’s kind inside the archive transaction and accepts
@@ -184,6 +215,20 @@ current client asks for a service upgrade if that operation already exists.
 Keep the same operation ID for the retry after the upgrade. For guarded retries
 on both sides, upgrade the stdio process as well as the service.
 
+A full `show` with `json:true` also returns `temporal` when a task has dates.
+Its keys are `deadline`, `planned`, `earliest_start` and `latest_target` when
+set. Each carries the stored `date` or offset-aware `at`, IANA `timezone`
+and the original `expression` when available. Human labels include the
+offset during a repeated hour and any sub-minute precision. For a local
+clock reading that occurs twice, ask which of the two offsets the person
+means. A skipped local time needs a different clock reading.
+
+To reverse the latest reviewed change, call `daymark_act` with `action:"undo"`,
+the task ID, its observed `expected_version` and `review_token`. A concurrent
+edit causes a conflict. To restore one earlier field while preserving later
+work, inspect event history and a version comparison, then submit a guarded
+edit for that field.
+
 ## Handle refusals
 
 An invalid date, a live claim held by another actor, or a missing task produces
@@ -194,6 +239,11 @@ an invalid argument, re-read a conflicted task, or ask the person for a
 decision when a policy refuses the action. Input types matter. JSON
 `false` is a boolean, and `"false"` is a string. A parameter that belongs to a
 different view or action is refused before the operation runs.
+
+A service that rejects the configured credential returns `unauthenticated`
+(HTTP 401). Check the bearer credential for that endpoint. A valid identity
+whose action is prohibited receives `forbidden` (HTTP 403). The bridge
+reports these codes without copying credentials or HTTP response bodies.
 
 When the HTTP service loses a write response, it may already have committed
 the change. The error carries the operation ID in its text and in

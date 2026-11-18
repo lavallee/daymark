@@ -16,11 +16,13 @@ import os
 import re
 import secrets
 import uuid
+from contextlib import contextmanager, nullcontext
+from copy import copy
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
-from dateutil.tz import datetime_exists, resolve_imaginary
+from dateutil.tz import datetime_ambiguous, datetime_exists, resolve_imaginary
 
 from . import plans
 from .client import Client
@@ -69,7 +71,18 @@ def _weekday(word):
     return matches[0] if len(matches) == 1 else None
 
 
-def parse_when(text, timezone="UTC", now=None) -> dict:
+def _check_wall_time(at):
+    if not datetime_exists(at):
+        valid = resolve_imaginary(at).isoformat()
+        raise DomainError("invalid", f"This local time does not exist in {at.tzinfo}",
+                          [f"Choose an existing local time, for example {valid}."])
+    if datetime_ambiguous(at):
+        choices = [at.replace(fold=fold).isoformat() for fold in (0, 1)]
+        raise DomainError("invalid", f"This local time occurs twice in {at.tzinfo}",
+                          ["Specify the intended offset: " + " or ".join(choices)])
+
+
+def parse_when(text, timezone="UTC", now=None, *, _replay=False) -> dict:
     """Resolve the documented date grammar to a Temporal dict, or raise."""
     if isinstance(text, dict):
         return Temporal.model_validate(text).model_dump(mode="json")
@@ -85,6 +98,8 @@ def parse_when(text, timezone="UTC", now=None) -> dict:
             at = datetime.fromisoformat(raw)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=zone)
+                if not _replay:
+                    _check_wall_time(at)
             return Temporal(at=at, timezone=timezone).model_dump(mode="json")
         match = re.fullmatch(r"(\S+)(?:\s+(\d{1,2}):(\d{2}))?", lowered)
         if not match:
@@ -105,8 +120,11 @@ def parse_when(text, timezone="UTC", now=None) -> dict:
             value = Temporal(date=day, timezone=timezone, expression=raw)
         else:
             at = datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=zone)
-            if not datetime_exists(at):
-                at = resolve_imaginary(at)  # A clock time skipped by DST moves forward.
+            if _replay:
+                # Match the original result on receipts from earlier versions.
+                at = resolve_imaginary(at)
+            else:
+                _check_wall_time(at)
             value = Temporal(at=at, timezone=timezone, expression=raw)
         return value.model_dump(mode="json")
     except DomainError:
@@ -383,7 +401,7 @@ class Tasks:
                     raise
                 if op and self._retry_context(op, action, id):
                     continue  # A simultaneous request recorded its result after our first read.
-                if review_token is not None or expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
+                if action == "undo" or review_token is not None or expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
                     raise  # Stale explicit precondition or a domain refusal such as a live claim.
 
     @staticmethod
@@ -421,14 +439,28 @@ class Tasks:
             ['Add them first: daymark add "NAME" --kind person'],
         )
 
-    def _resolve(self, fields):
+    def _resolve(self, fields, *, retry=None):
         if "lead" in fields:  # A project's lead is its assignee.
             fields = {
                 **{k: v for k, v in fields.items() if k != "lead"},
                 "assignee": fields["lead"],
             }
-        if fields.get("assignee"):
-            fields = {**fields, "assignee": self._person(fields["assignee"])}
+        if requested := fields.get("assignee"):
+            saved = retry["result"].get("assignee_id") if retry else None
+            if requested == saved:
+                return fields
+            try:
+                person = self._person(requested)
+            except DomainError as exc:
+                if not saved or exc.code != "invalid":
+                    raise
+                person = None
+            if saved and person != saved:
+                raise DomainError(
+                    "conflict", "The assignee does not resolve to the person on this receipt",
+                    [f"The recorded assignee ID is {saved}. Use that ID to retry the original assignment."],
+                )
+            fields = {**fields, "assignee": person}
         return fields
 
     def parse_values(self, project, pairs):
@@ -464,7 +496,7 @@ class Tasks:
                 out[key] = text
         return out
 
-    def _fields(self, values):
+    def _fields(self, values, *, replay=False):
         """Translate friendly keyword names into entity fields."""
         out = {}
         for key, value in values.items():
@@ -472,7 +504,7 @@ class Tasks:
                 continue
             if key in _DATE_FIELDS:
                 out[_DATE_FIELDS[key]] = (
-                    None if value == "" else parse_when(value, self.timezone, self._now)
+                    None if value == "" else parse_when(value, self.timezone, self._now, _replay=replay)
                 )
             elif key == "after":
                 out["depends_on"] = [value] if isinstance(value, str) else list(value)
@@ -546,7 +578,7 @@ class Tasks:
         second add with the same source is refused, so captures are not duplicated.
         """
         retry = self._retry_context(op, "create", id)
-        payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields))}
+        payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields, retry=retry), replay=bool(retry))}
         if retry:
             date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
             payload = self._retry_dates(payload, retry["result"], date_keys)
@@ -619,9 +651,13 @@ class Tasks:
 
     def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, review_token=None, **fields):
         """Edit fields, optionally refusing if the version observed by the caller is stale."""
-        changes = self._fields(self._resolve(dict(fields)))
+        resolved = None
 
         def build(current, retry):
+            nonlocal resolved
+            if resolved is None:
+                resolved = self._resolve(fields, retry=retry)
+            changes = self._fields(resolved, replay=bool(retry))
             date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
             out = self._retry_dates(changes, retry["result"], date_keys) if retry else dict(changes)
             if every == "":
@@ -677,8 +713,9 @@ class Tasks:
     def archive(self, id, *, op=None):
         return self._act(id, "archive", op=op)
 
-    def undo(self, id, *, op=None):
-        return self._act(id, "undo", op=op)
+    def undo(self, id, *, op=None, expected_version=None, review_token=None):
+        """Reverse the latest change only if the observed revision still matches."""
+        return self._act(id, "undo", op=op, expected_version=expected_version, review_token=review_token)
 
     def accept(self, id, *, op=None, expected_version=None, review_token=None):
         """Accept the reviewed proposal, retaining a recorded wait."""
@@ -718,10 +755,13 @@ class Tasks:
 
     def wait(self, id, on, *, until=None, op=None):
         """Park a task on someone or something else; optionally hide it until a date."""
-        changes = {"status": "waiting", "waiting_on": on}
-        if until:
-            changes["earliest_start"] = parse_when(until, self.timezone, self._now)
-        return self._act(id, "update", changes, op=op,
+        def build(_current, retry):
+            changes = {"status": "waiting", "waiting_on": on}
+            if until:
+                changes["earliest_start"] = parse_when(until, self.timezone, self._now, _replay=bool(retry))
+            return changes
+
+        return self._act(id, "update", build=build, op=op,
                          date_keys=("earliest_start",) if isinstance(until, str) else ())
 
     def resume(self, id, *, op=None):
@@ -745,7 +785,9 @@ class Tasks:
     def defer(self, id, until, *, op=None):
         """Hide a task from ready work until a date. Its deadline does not move."""
         return self._act(
-            id, "update", {"earliest_start": parse_when(until, self.timezone, self._now)}, op=op,
+            id, "update", op=op, build=lambda _current, retry: {
+                "earliest_start": parse_when(until, self.timezone, self._now, _replay=bool(retry))
+            },
             date_keys=("earliest_start",) if isinstance(until, str) else ()
         )
 
@@ -766,27 +808,49 @@ class Tasks:
             build=lambda current, retry: {"depends_on": [x for x in current["depends_on"] if x != on]},
         )
 
-    def remind(self, id, when, *, recipient, channel="recording", op=None):
-        """Schedule a reminder about a task for a person or principal entity."""
-        at = parse_when(when, self.timezone, self._now)
-        retry = self._retry_context(op, "create")
-        if retry and isinstance(when, str) and at.get("expression"):
-            saved = retry["result"]
-            original = parse_when(when, self.timezone, saved["created_at"])
-            if original.get("at") == saved.get("scheduled_at"):
-                at = original
-        value = Temporal.model_validate(at)
+    def _reminder_schedule(self, when, retry):
+        """Resolve a new request or recover the civil-time intent in its creation receipt."""
+        saved = retry["result"] if retry else {}
+        expression = when.strip() if isinstance(when, str) else None
+        intent = {"expression": expression, "timezone": self.timezone}
+        metadata = {"daymark.remind": intent}
+        previous = saved.get("metadata", {}).get("daymark.remind")
+        if expression and previous == intent:
+            return normalize_now(saved["scheduled_at"]), metadata
+
+        value = Temporal.model_validate(parse_when(when, self.timezone, self._now, _replay=bool(retry)))
         if value.at is None:
             raise DomainError("invalid", "A reminder needs a time", [WHEN_FORMS])
-        return self.add(
-            "",
-            kind="reminder",
-            task_id=id,
-            scheduled_at=value.at.astimezone(UTC).isoformat(),
-            recipient_id=recipient,
-            channel=channel,
-            op=op,
-        )
+        if not expression or not value.expression:
+            return value.at, None
+        if not retry or previous is not None:
+            return value.at, metadata
+
+        # Pre-upgrade receipts kept only the UTC instant. Recover it when the
+        # original creation day corroborates the relative expression.
+        original = parse_when(when, self.timezone, saved["created_at"], _replay=True)
+        if original.get("at") and saved.get("scheduled_at"):
+            scheduled = normalize_now(saved["scheduled_at"])
+            if normalize_now(original["at"]) == scheduled:
+                return scheduled, None
+        return value.at, None
+
+    def remind(self, id, when, *, recipient, channel="recording", op=None):
+        """Schedule a reminder about a task for a person or principal entity."""
+        retry = self._retry_context(op, "create")
+        instant, metadata = self._reminder_schedule(when, retry)
+        try:
+            return self.add(
+                "", kind="reminder", task_id=id, scheduled_at=instant.astimezone(UTC).isoformat(),
+                recipient_id=recipient, channel=channel, op=op, metadata=metadata,
+            )
+        except Exception as exc:
+            if retry or not op or getattr(exc, "code", None) != "conflict":
+                raise
+            if self._retry_context(op, "create") is None:
+                raise
+            # Another session may have resolved this request across a day boundary.
+            return self.remind(id, when, recipient=recipient, channel=channel, op=op)
 
     # -- read
 
@@ -847,25 +911,52 @@ class Tasks:
         """Orientation-sized records, in precisely the same order as ready."""
         return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, brief=True)
 
-    def agenda(self, days=7, *, context=None, scope=None):
+    def agenda(self, days=7, *, context=None, scope=None, deadlines=False):
         extra = {} if scope is None else {"scope": scope}
         if context is not None:
             extra["context"] = context
+        if deadlines:
+            extra["deadlines"] = True
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
-    def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None):
-        """Run the chosen profile with one-call adjustments, without saving them."""
-        from . import strategies
-        from .strategies.preferences import select_profile
+    @contextmanager
+    def read_snapshot(self):
+        """Group reads at one instant; local Store readers share a SQLite snapshot."""
+        reader = copy(self)
+        reader._now = self.now()
+        snapshot = getattr(self.engine, "read_snapshot", nullcontext)
+        with snapshot():
+            yield reader
 
-        chosen, source = select_profile(self, profile, settings=settings, drops=drops)
-        advice = strategies.advise(self, chosen, scope=scope, context=context)
-        advice.profile_source = source
-        return advice
+    def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None, brief=False):
+        """Run the chosen profile with one-call adjustments, without saving them."""
+        from . import render
+        from .strategies import selected_advice
+        from .strategies.remote import advice as service_advice
+
+        if type(brief) is not bool:
+            raise DomainError("invalid", "Brief advice must be true or false")
+        options = {"settings": settings, "drops": drops, "scope": scope, "context": context}
+        if isinstance(self.engine, Client):
+            result = service_advice(self, profile, brief=brief, **options)
+        else:
+            result = selected_advice(self, profile, **options)
+        if brief:
+            now = self.now()
+            result.picks = [render.list_record(item, now, line_fields=True) for item in result.picks]
+        return result
 
     def profile(self, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None):
         """Read or adjust the active workspace profile."""
+        from .strategies import has_adjustments
         from .strategies.preferences import active_profile
+
+        if (isinstance(self.engine, Client) and name is None and undo is None
+                and op is None and expected_version is None and not has_adjustments(settings, drops)):
+            current = self.engine.profile_read("active")
+            if current is not None:
+                return current
+            return {"name": "plain", "strategies": [], "execution": "legacy-client"}
 
         return active_profile(
             self, name, settings=settings, drops=drops, op=op, expected_version=expected_version, undo=undo,
@@ -875,6 +966,11 @@ class Tasks:
         """List named profiles, or inspect one saved configuration and version."""
         from .strategies.preferences import saved_profiles
 
+        if isinstance(self.engine, Client):
+            result = self.engine.profile_read("saved", name)
+            if result is not None:
+                return result
+            raise DomainError("invalid", "Upgrade the service to read saved profiles")
         entries = saved_profiles(self)
         if name is None:
             return entries
@@ -888,6 +984,15 @@ class Tasks:
         from .strategies import available, describe, installed_plugins
         from .strategies.profiles import PROFILES
 
+        if isinstance(self.engine, Client):
+            from .strategies.builtin import BUILTINS
+
+            if strategy is None or (isinstance(strategy, str) and strategy in BUILTINS):
+                data = self.engine.profile_read("catalog" if strategy is None else "strategy", strategy)
+                if data is not None:
+                    if strategy is None and (plugins := installed_plugins()):
+                        data["client_plugins"] = plugins
+                    return data
         if strategy is not None:
             return describe(strategy)
         saved = self.saved_profiles() if hasattr(self.engine, "setting") else None
@@ -916,9 +1021,10 @@ class Tasks:
 
         return remove_profile(self, name, expected_version=expected_version, op=op)
 
-    def orientation(self):
+    def orientation(self, *, scope=None):
         """Read the facts for a returning worker, using one clock and one database snapshot."""
-        return self.engine.orientation(*self._ws, now=self._now, owner=self.actor)
+        return self.engine.orientation(*self._ws, now=self._now, owner=self.actor,
+                                       **({"scope": scope} if scope is not None else {}))
 
     def summary(self, *, context=None, scope=None):
         extra = {} if scope is None else {"scope": scope}
@@ -1115,14 +1221,17 @@ class Tasks:
     def changes(self, project, after):
         return self.engine.changes(*self._ws, project, after)
 
-    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50, claimed=False):
-        """Lean search hits, optionally limited to the current actor's active work claims."""
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
+               claimed=False, archived=False):
+        """Lean search hits for live records, archived records, or the actor's live claims."""
         if type(claimed) is not bool:
             raise DomainError("invalid", "claimed must be true or false")
         filters = {}
         if claimed:
             filters = {"claimed_by": self.actor} if self._ws else {"claimed": True}
             filters["now"] = self._now
+        if archived is not False:
+            filters["archived"] = archived
         return self.engine.search(
             *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
         )

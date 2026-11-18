@@ -182,3 +182,21 @@ def test_future_ready_reasons_name_the_date_used_for_ranking():
         assert got == [("proof", "planned in 12d"), ("print", "target in 18d"),
                        ("sample", "target in 20d"), ("inspect", "due in 25d"), ("stock", "no date")]
         assert "target 2030-04-21" in render.line(only_target, now)
+
+
+def test_views_page_ids_with_the_embedding_connections_sqlite_limit():
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        store = Store(connection)
+        tasks = Tasks(store, "sample", timezone="UTC", now="2030-10-03T12:00:00Z")
+        ids = [f"part-{number:02}" for number in range(42)]
+        for id in ids:
+            tasks.add("Review sample", id=id, plan="today")
+        tasks.add("Prepare collection", id="collect", after=ids)
+        connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32)
+        handoff = tasks.brief("collect")
+        assert handoff["blocked_by"] == ids[:5] and handoff["omitted"]["blocked_by"] == 37
+        assert {item["id"] for item in tasks.ready(limit=42)} == set(ids)
+        assert {item["id"] for item in tasks.agenda()["today"]} == set(ids)

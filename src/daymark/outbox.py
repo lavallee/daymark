@@ -8,7 +8,8 @@ from typing import NamedTuple
 
 from .models import normalize_now
 
-_ACTIVE = ("pending", "leased", "snoozed", "failed")
+DETAIL_FIELDS = ("task_id", "scheduled_at", "recipient_id", "channel", "reminder_state")
+ACTIVE_STATES = ("pending", "leased", "snoozed", "failed")
 
 
 def availability(status, archived, task_id, task_status):
@@ -60,7 +61,7 @@ def active(db):
             "LEFT JOIN daymark_entities t ON t.workspace=link.workspace AND t.id=link.target_id "
             "AND t.archived=0 WHERE r.kind='reminder' "
             "AND json_extract(r.data,'$.reminder_state') IN (?,?,?,?) ORDER BY r.workspace,r.id",
-            _ACTIVE,
+            ACTIVE_STATES,
         )
     except sqlite3.OperationalError as exc:
         if "no such function: json_extract" not in str(exc):
@@ -69,7 +70,7 @@ def active(db):
             "SELECT data FROM daymark_entities WHERE kind='reminder' ORDER BY workspace,id"
         ):
             item = json.loads(raw)
-            if item["reminder_state"] in _ACTIVE:
+            if item["reminder_state"] in ACTIVE_STATES:
                 status = target_status(db, item["workspace"], item["task_id"])
                 yield ActiveReminder(
                     item["workspace"],

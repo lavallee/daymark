@@ -13,7 +13,7 @@ class ClientError(Exception):
 
     def __init__(self, status_code: int | None = None) -> None:
         self.status_code = status_code
-        self.code = {403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}.get(
+        self.code = {401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}.get(
             status_code, "remote"
         )
         super().__init__(f"Daymark request failed ({status_code or 'transport'})")
@@ -23,7 +23,15 @@ class Client:
     def __init__(
         self, base_url: str, token: str, *, timeout: float = 10, transport: Any = None, read_only: bool = False
     ) -> None:
-        import httpx
+        try:
+            import httpx
+        except ModuleNotFoundError as exc:
+            if exc.name != "httpx":
+                raise
+            raise DomainError(
+                "invalid", "HTTP access requires the optional client dependency",
+                ["Install daymark-core[client] in this Python environment."],
+            ) from None
 
         if not token:
             raise ValueError("Bearer credential required")
@@ -31,6 +39,7 @@ class Client:
         self.legacy_search = False
         self._legacy_orientation = False
         self._read_params = None
+        self._profile_routes = {}
         self._http = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {token}"},
@@ -52,7 +61,7 @@ class Client:
         import httpx
 
         if self.read_only and method != "GET" and (method, path) not in {
-            ("POST", "/v1/search"), ("POST", "/v1/query"),
+            ("POST", "/v1/search"), ("POST", "/v1/query"), ("POST", "/v1/advice"),
         }:
             raise DomainError("forbidden", "This read-only connection cannot send a write")
         try:
@@ -105,19 +114,35 @@ class Client:
     def list(self, kind: str | None = None) -> Any:
         return self._request("GET", "/v1/entities", params={"kind": kind} if kind else {})
 
-    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50, claimed=False, now=None):
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
+               claimed=False, archived=False, now=None):
+        if type(archived) is not bool:
+            raise DomainError("invalid", "archived must be true or false")
+        if archived:
+            from .search import validate_filters
+
+            validate_filters(text, kind, status, scope, after, limit)
+            if claimed:
+                raise DomainError("invalid", "Choose either archived records or live claims")
+        upgrade = "Upgrade the service to search archived records"
         body = self._params(text=text, kind=kind, status=status, scope=scope, after=after, limit=limit,
-                            claimed=claimed or None, now=now if claimed else None)
+                            claimed=claimed or None, archived=archived or None, now=now if claimed else None)
         if not self.legacy_search:
             try:
-                return self._request("POST", "/v1/search", json=body)
+                result = self._request("POST", "/v1/search", json=body)
             except ClientError as error:
+                if archived and error.status_code == 422:
+                    raise DomainError("invalid", upgrade) from None
                 if error.status_code not in {404, 405}:
                     raise
                 self.legacy_search = True
+            else:
+                if archived and result.get("archived") is not True:
+                    raise DomainError("invalid", upgrade)
+                return result
+        if archived:
+            raise DomainError("invalid", upgrade)
         if claimed:
-            from .models import DomainError
-
             raise DomainError("invalid", "Upgrade the service to search the authenticated worker's claims")
         from .search import legacy_page
 
@@ -173,14 +198,21 @@ class Client:
         return rows
 
     def explain_ready(self, *, limit=20, now=None, owner=None, next_move=None, context: str | None = None, scope: str | None = None, mine=False):
+        if context is not None:
+            self._require_filter("/v1/ready/explanation", "context")
         params = self._params(limit=limit, now=now, owner=owner, next_move=next_move,
                               scope=scope, context=context, mine=mine or None)
         return self._request("GET", "/v1/ready/explanation", params=params)
 
-    def agenda(self, *, now: Any = None, days: int = 7, context: str | None = None, scope: str | None = None) -> Any:
+    def agenda(
+        self, *, now: Any = None, days: int = 7, context: str | None = None,
+        scope: str | None = None, deadlines: bool = False,
+    ) -> Any:
         if context is not None:
             self._require_filter("/v1/agenda", "context")
-        params = self._params(now=now, days=days, scope=scope, context=context)
+        if deadlines:
+            self._require_filter("/v1/agenda", "deadlines")
+        params = self._params(now=now, days=days, scope=scope, context=context, deadlines=True if deadlines else None)
         return self._request("GET", "/v1/agenda", params=params)
 
     def explore(self, goal: str | None = None, *, now: Any = None, scope: str | None = None) -> Any:
@@ -188,8 +220,39 @@ class Client:
             self._require_filter("/v1/explore", "scope")
         return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now, scope=scope))
 
-    def orientation(self, *, now=None, owner=None):
+    def _optional_profile_read(self, method, path, **kwargs):
+        """Distinguish an old API from a missing profile on a service with this route."""
+        if self._profile_routes.get(path) is False:
+            return None
+        try:
+            result = self._request(method, path, **kwargs)
+        except ClientError as error:
+            if error.status_code not in {404, 405} or self._profile_routes.get(path):
+                raise
+            paths = self.schema()["paths"]
+            self._profile_routes[path] = method.lower() in paths.get(path, {})
+            if self._profile_routes[path]:
+                raise
+            return None
+        self._profile_routes[path] = True
+        return result
+
+    def advice(self, *, profile=None, settings=(), drops=(), scope=None, context=None, now=None, brief=False):
+        body = self._params(profile=profile, set=list(settings), drop=list(drops), scope=scope,
+                            context=context, now=now, brief=brief or None)
+        return self._optional_profile_read("POST", "/v1/advice", json=body)
+
+    def profile_read(self, view="catalog", name=None):
+        return self._optional_profile_read("GET", "/v1/profiles", params=self._params(view=view, name=name))
+
+    def orientation(self, *, now=None, owner=None, scope=None):
         """Use the authenticated worker's snapshot, or compatible reads on older services."""
+        if scope is not None:
+            self._require_filter("/v1/orientation", "scope")
+            result = self._request("GET", "/v1/orientation", params=self._params(now=now, scope=scope))
+            if not isinstance(result, dict) or result.get("scope") != scope:
+                raise DomainError("invalid", "The service did not confirm the requested orientation scope")
+            return result
         if not self._legacy_orientation:
             try:
                 return self._request("GET", "/v1/orientation", params=self._params(now=now))

@@ -174,6 +174,10 @@ def _simple_commands(sub) -> None:
     init = sub.add_parser("init", help="Create a database: per-user, or --here for this folder")
     init.add_argument("--here", action="store_true", help="Use ./.daymark/ in this directory")
     prime = add("prime", "Print the current state and workflow guide; read this first")
+    prime_scope = prime.add_mutually_exclusive_group()
+    prime_scope.add_argument("--scope", help="Return a compact orientation for one scope")
+    prime_scope.add_argument("--unscoped", action="store_const", const="", dest="scope",
+                             help="Return an orientation for records with no scope")
     prime.add_argument("--brief", action="store_true", help="Skip the workflow guide")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
     mode = onboard.add_mutually_exclusive_group()
@@ -214,6 +218,7 @@ def _simple_commands(sub) -> None:
     agenda = add("agenda", "Overdue, today, the days ahead, waiting and proposed")
     agenda.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     agenda.add_argument("--days", type=int, default=7)
+    agenda.add_argument("--deadlines", action="store_true", help="Only overdue and upcoming hard deadlines, including today")
     agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
     agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     activity = add("activity", "Recent workspace changes and handoff notes")
@@ -253,7 +258,7 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name in {"accept", "dismiss", "forget"}:
+        if name in {"accept", "dismiss", "forget", "undo"}:
             item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
             item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
@@ -289,6 +294,7 @@ def _simple_commands(sub) -> None:
     find.add_argument("text", nargs="?")
     find.add_argument("--kind", default="task")
     find.add_argument("--status")
+    find.add_argument("--archived", action="store_true", help="Search archived records only (implies --page)")
     find.add_argument("--claimed", action="store_true", help="Show my live task claims, including held work")
     find.add_argument("--page", action="store_true", help="Show compact search hits and a continuation ID")
     find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
@@ -643,8 +649,8 @@ def _simple(args, engine) -> int:
 
     if name == "prime":
         context = render.session_context(tasks, database=args.db, url=args.url)
-        if as_json and args.brief:
-            _print(render.brief_session(tasks, context))
+        if as_json and (args.brief or args.scope is not None):
+            _print(render.brief_session(tasks, context, scope=args.scope))
         elif as_json:
             if args.url:
                 context.update(engine.identity() or {})
@@ -657,7 +663,7 @@ def _simple(args, engine) -> int:
                 }
             )
         else:
-            print(render.prime_text(tasks, context=context, brief=args.brief))
+            print(render.prime_text(tasks, context=context, brief=args.brief, scope=args.scope))
     elif name in {"advise", "profile", "strategies"}:
         from . import strategies
         from .strategies.profiles import PROFILES
@@ -703,7 +709,7 @@ def _simple(args, engine) -> int:
                 render.listing(items, now, empty + ". Repeat with --explain to see what is held."),
             )
     elif name == "agenda":
-        view = tasks.agenda(args.days, scope=scope, context=args.context)
+        view = tasks.agenda(args.days, scope=scope, context=args.context, deadlines=args.deadlines)
         lean = {
             key: (
                 {day: [render.compact(x) for x in items] for day, items in value.items()}
@@ -717,19 +723,20 @@ def _simple(args, engine) -> int:
         out(lean, render.agenda_text(view, now))
     elif name == "activity":
         page = tasks.activity(after=args.after, limit=args.limit)
-        out(page, render.activity_text(page))
+        session = render.session_context(tasks, database=args.db, url=args.url)
+        out(page, render.activity_text(page, session=session, limit=args.limit))
     elif name == "show" and args.since_version is not None:
         comparison = tasks.changes_since(args.id, version=args.since_version, source=args.source)
         out(comparison, render.comparison_text(comparison))
     elif name == "show" and (args.brief or args.before_note is not None):
         brief = tasks.brief(args.id, before_note=args.before_note, source=args.source)
-        out(brief, render.brief_text(brief))
+        out(brief, render.brief_text(brief, timezone=tasks.timezone))
     elif name == "show" and args.note is not None:
         note = tasks.read_note(args.id, args.note, source=args.source)
         out(note, render.note_text(note))
     elif name == "show":
         ctx = tasks.show(args.id, source=args.source)
-        out({**ctx, "entity": render.compact(ctx["entity"])}, render.show_text(ctx, now))
+        out(render.detail_data(ctx), render.show_text(ctx, now))
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
@@ -766,9 +773,9 @@ def _simple(args, engine) -> int:
         entity(item)
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op))
-    elif name in {"accept", "dismiss", "forget"}:
+    elif name in {"accept", "dismiss", "forget", "undo"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
-    elif name in {"skip", "cancel", "reopen", "archive", "undo",
+    elif name in {"skip", "cancel", "reopen", "archive",
                   "resume", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
     elif name == "condition":
@@ -808,9 +815,10 @@ def _simple(args, engine) -> int:
             from .models import DomainError
 
             raise DomainError("invalid", "Limit must be between 1 and 1000")
-        if args.claimed or args.page or args.after is not None or scope is not None:
+        if args.archived or args.claimed or args.page or args.after is not None or scope is not None:
             page = tasks.search(args.text, kind=args.kind, status=args.status,
-                                scope=scope, after=args.after, limit=args.limit, claimed=args.claimed)
+                                scope=scope, after=args.after, limit=args.limit, claimed=args.claimed,
+                                archived=args.archived)
             out(page, render.search_text(page))
         else:
             items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
@@ -956,7 +964,7 @@ def _fail(args, code: str, message: str, details=()) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
     if code == "conflict" and args.command in {"add", "propose", "remember"} and getattr(args, "source", None):
         details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
-    if code == "conflict" and args.command in {"edit", "accept", "dismiss"} and getattr(args, "if_version", None):
+    if code == "conflict" and args.command in {"edit", "accept", "dismiss", "undo"} and getattr(args, "if_version", None):
         details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]
     if getattr(args, "json", False):
         print(
@@ -974,6 +982,7 @@ def _fail(args, code: str, message: str, details=()) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    from .client import ClientError
     from .models import DomainError
 
     try:
@@ -1103,11 +1112,11 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except DomainError as exc:
         return _fail(args, exc.code, str(exc), exc.details)
-    except Exception as exc:  # noqa: BLE001 - prevent private exception text escaping
-        status = getattr(exc, "status_code", None)
-        if type(exc).__name__ == "ClientError" and status in {403, 404, 409, 422}:
-            code = {403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}[status]
-            return _fail(args, code, "The server refused the request")
+    except ClientError as exc:
+        if exc.code == "unauthenticated":
+            return _fail(args, exc.code, "Check the bearer credential configured for this Daymark endpoint.")
+        return _fail(args, exc.code, str(exc))
+    except Exception:  # noqa: BLE001 - prevent private exception text escaping
         # Parsing/Store/network exceptions can contain private paths and payloads.
         print(
             "Daymark command failed; check configuration, payload and expected version.",

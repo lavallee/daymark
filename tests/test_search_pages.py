@@ -136,3 +136,106 @@ def test_http_claim_search_binds_principal_and_rejects_an_owner_override():
                 )
     finally:
         store.close()
+
+
+def test_archived_find_across_public_reads(tmp_path, capsys):
+    import httpx
+
+    from daymark.client import Client
+    from daymark.mcp import handle
+
+    db = tmp_path / "studio.db"
+    store = Store(db)
+    try:
+        tasks = Tasks(store, "studio")
+        tasks.propose("Try a zine", id="first", scope="art")
+        tasks.propose("Later project", id="second", description="Sketch a zine", scope="art")
+        tasks.propose("Try a zine", id="out-of-scope")
+        tasks.add("Try a zine", id="live-task", scope="art")
+        memory = tasks.remember("Zine paper stock")
+        live_memory = tasks.remember("Zine folding guide")
+        for entity_id in ("first", "second", "out-of-scope"):
+            tasks.archive(entity_id)
+        tasks.forget(memory["id"])
+        private = Tasks(store, "elsewhere")
+        private.propose("Try a zine", id="private", scope="art")
+        private.archive("private")
+
+        query = {"text": "zine", "status": "proposed", "limit": 1, "scope": "art", "archived": True}
+        page = tasks.search(**query)
+        assert page == {
+            "items": [{
+                "id": "first", "version": 2, "kind": "task", "title": "Try a zine",
+                "status": "proposed", "scope": "art", "archived": True,
+            }],
+            "next": "first", "archived": True,
+        }
+        second = tasks.search(**query, after=page["next"])
+        assert [hit["id"] for hit in second["items"]] == ["second"] and second["next"] is None
+        assert tasks.search("zine", archived=True, status="open") == {"items": [], "next": None, "archived": True}
+        archived_memory = tasks.search("zine", kind="memory", archived=True)
+        assert [(hit["id"], hit["status"], hit["archived"]) for hit in archived_memory["items"]] == [
+            (memory["id"], "open", True),
+        ]
+        assert [hit["id"] for hit in tasks.search("zine", kind="memory")["items"]] == [live_memory["id"]]
+        assert [hit["id"] for hit in tasks.search("zine")["items"]] == ["live-task"]
+        assert [hit["id"] for hit in tasks.find("zine")] == ["live-task"]
+        assert tasks.show("first")["entity"]["archived"]
+        with pytest.raises(DomainError, match="live claims"):
+            tasks.search(archived=True, claimed=True)
+
+        cli = ["--db", str(db), "--workspace", "studio", "find", "zine"]
+        assert main(cli + ["--archived", "--limit", "1"]) == 0
+        assert "[proposed]  [archived]" in capsys.readouterr().out
+        assert main(cli + ["--archived", "--kind", "memory", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == archived_memory
+        assert main(cli + ["--json"]) == 0
+        assert [hit["id"] for hit in json.loads(capsys.readouterr().out)] == ["live-task"]
+
+        app = create_app(store, {"token": {"principal": "reader", "workspace": "studio"}})
+        with TestClient(app, headers={"Authorization": "Bearer token"}) as http:
+            assert http.post("/v1/search", json=query).json() == page
+            assert http.post("/v1/search", json={**query, "after": "first"}).json() == second
+            assert http.post("/v1/search", json={**query, "claimed": True}).status_code == 422
+            assert http.post("/v1/search", json={**query, "archived": "true"}).status_code == 422
+            unknown_workspace = {"archived": True, "workspace": "elsewhere"}
+            assert http.post("/v1/search", json=unknown_workspace).status_code == 422
+
+            def forward(request):
+                return http.post(request.url.path, content=request.content, headers=request.headers)
+
+            with Client(
+                "https://sample.invalid", "token", transport=httpx.MockTransport(forward)
+            ) as client:
+                assert Tasks(client).search(**query) == page
+                assert Tasks(client).search("zine", kind="memory", archived=True) == archived_memory
+
+        message = {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "daymark_view", "arguments": {"view": "find", **query}},
+        }
+        assert "[archived]" in handle(tasks, message)["result"]["content"][0]["text"]
+        message["params"]["arguments"]["json"] = True
+        assert handle(tasks, message)["result"]["structuredContent"] == page
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("response", [404, 405, 422, 200])
+def test_remote_archived_search_refuses_services_without_archived_results(response):
+    import httpx
+
+    from daymark.client import Client
+
+    sent = []
+
+    def server(request):
+        sent.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(response, json={"items": [], "next": None})
+
+    with (
+        Client("https://sample.invalid", "synthetic", transport=httpx.MockTransport(server)) as client,
+        pytest.raises(DomainError, match="Upgrade the service to search archived records"),
+    ):
+        Tasks(client).search("zine", archived=True)
+    assert sent == [("/v1/search", {"text": "zine", "kind": "task", "limit": 50, "archived": True})]

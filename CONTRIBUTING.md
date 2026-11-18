@@ -25,6 +25,10 @@ For a behavior change, add a focused test that demonstrates the result and relev
 
 Use synthetic examples and fixtures. Do not submit production databases, exports, credentials, personal records, or private deployment details. Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
+For a new way of working, try a Python strategy package first. The example
+includes its entry point, parameter declaration and a one-call preview.
+[Add a strategy](docs/strategy-plugins.md)
+
 ## Pull requests
 
 Explain the problem, the resulting behavior, and the checks you ran. Keep unrelated formatting changes out of the diff. Contributions are provided under the project's [MIT license](LICENSE).

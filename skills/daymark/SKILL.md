@@ -5,17 +5,28 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
-In an unfamiliar folder, `daymark where` explains which database and workspace you will use. Run `daymark prime` for the session. Check the workspace and actor, then read current
-work and remembered facts. In a returning session, `daymark prime --brief`
-returns up to five ready and five memory previews. Save its `activity_checkpoint` when present to catch subsequent changes with `activity --after CHECKPOINT`. Use `daymark find TEXT --kind memory --page` to retrieve a relevant remembered fact. If it reports no database, choose `daymark init`
-for a per-user database or `daymark init --here` for this folder.
+If the person names a scope, start with `daymark prime --scope NAME` or MCP
+`daymark_prime {"scope":"NAME"}`. This limits both task counts and remembered
+facts. Preserve the scope on any follow-up queue or search.
+
+Check the database and workspace with `daymark where` in an unfamiliar
+folder. If no database exists, choose `daymark init` for a per-user database
+or `daymark init --here` for this folder. Run `daymark prime` to see the
+actor, current work and remembered facts. A returning session can use
+`daymark prime --brief`. Its JSON form gives up to five ready tasks, five
+memory previews and, where supported, an `activity_checkpoint`.
 
 The installed CLI prints this guide with `daymark onboard --skill`. For project onboarding, `daymark onboard --check AGENTS.md` checks whether the startup instructions are current.
 
 Then work in this loop:
 
 1. `daymark ready` shows what can be done now. `daymark agenda` shows the days
-   ahead, what is waiting and what is proposed. Use `ready --explain` with the same filters to understand a short or empty queue.
+   ahead, earlier plans, waits and proposals. A past intended work day alone is never overdue. For hard deadlines, use
+   `daymark agenda --deadlines --days 2` or MCP
+   `daymark_view` with `{"view":"agenda","deadlines":true,"days":2}`. It includes
+   accepted live work that is overdue, due today or due through the next two
+   local days, including waiting and blocked tasks. Use `ready --explain` with
+   the same scope and context to understand a short or empty ready queue.
 2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions.
 3. Use a distinct `DAYMARK_ACTOR` for each concurrent worker, then `daymark claim ID`.
 4. Do the work. `daymark note ID "what happened"` whenever you learn something
@@ -33,14 +44,23 @@ the match with `show ID --brief --json`; use its `--if-review TOKEN` with
 `edit ID --title TEXT` or `forget ID`. Forgetting archives the memory and
 retains its history. Keep one-time requests in the current interaction.
 
+Use `daymark find TEXT --archived` for archived tasks or add `--kind memory`
+for retired facts. Archived search returns compact pages. Keep `--archived`
+and the same filters when continuing with `--after ID`, and use `show ID` to
+read the record. For MCP, use `daymark_view` with `view: "find"` and
+`archived: true`.
+
 When capturing:
 
 - Use `--due` only for a real cutoff. Use `--plan` for an intention and
   `--start` for "not before".
+- Ask which offset the person means when a local clock time occurs twice. Ask for a different local time when the clock skips it.
+- Assign responsibility with `edit ID --assignee PERSON_ID` or MCP `daymark_edit` with `assignee`. Pass a supplied name as given to check people and principals together. For repeated names, ask which ID the person intends.
+- For a reviewed one-step undo, pass the observed version and review token. To restore one older field, check the intervening edits and change only that field.
 - Never invent a date or priority. If the person did not give one, leave it out.
 - If the person did not ask for the task, use `daymark propose`. Do not run
   `accept` on their behalf.
-- For a reminder, use `remind ID WHEN --to PERSON` (MCP action `remind` with `when` and `recipient`). Ask for any missing time or recipient. The default worker records locally.
+- For a reminder, use `remind ID WHEN --to PERSON` (MCP action `remind` with `when` and `recipient`). Ask for any missing time or recipient. Use `show REMINDER_ID --brief` to check its state and recipient. The default worker records locally.
 - For anything that repeats, use `--every`; add `--after-completion` when the
   interval counts from when it was last done.
 
@@ -68,7 +88,9 @@ shortlist.size=2`. Save it with `daymark profile --set shortlist.size=2` only
 when the person asks for that workspace preference.
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
-the active profile are shared across callers of this local workspace.
+the active profile are shared within the workspace. A current HTTP service
+returns built-in advice for the authenticated workspace and lists skipped
+stages. A legacy service yields a labeled plain fallback. Save changes locally.
 For a requested project review, `advise --profile plain --set project-review
 --set shortlist.size=1` names open projects with no open or waiting action.
 Use `daymark strategies NAME` to inspect parameters and ranges. The MCP
@@ -84,9 +106,13 @@ retry. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
 
 
 At session pickup, `daymark activity` shows recent changes, including handoff
-notes. To continue from a saved workspace cursor, run
+notes. To continue from the saved `activity_checkpoint`, run
 `daymark activity --after CURSOR`. Read more pages while the JSON `cursor`
 is below `head`, passing each returned `checkpoint` back as `--after`. If the checkpoint conflicts, review the workspace with `prime --brief`. Older services can return an integer cursor only.
+
+A sparse restore can leave the current record without its latest event.
+If `undo` reports missing history, inspect the record and recover its native
+events before reverting it.
 
 With MCP, call `daymark_prime` first. Each write tool takes `op`: keep it
 for retries of that same write. Read `structuredContent.id` from a successful
@@ -117,7 +143,7 @@ version with `--if-version N`. On conflict, use `daymark show ID
 If the reviewed snapshot is unavailable, present the current record in full.
 Keep the original `review_token` when approval may span sessions. Pass it as
 `--if-review TOKEN` on a decision or edit to also detect deletion and
-recreation under the same ID and version.
+recreation under the same ID and version or changed contents after a restore.
 
 
 When capture reports that a source already belongs to an entity, use

@@ -6,46 +6,10 @@ from dataclasses import dataclass
 
 from . import render
 from .models import DomainError
-from .views import claim_holder
-
-# A queue lists enough to choose the next record. Notes, history, descriptions
-# and custom metadata belong to a request for the particular task.
-_LIST_FIELDS = (
-    "id",
-    "kind",
-    "title",
-    "status",
-    "version",
-    "priority",
-    "scope",
-    "next_move",
-    "planned",
-    "deadline",
-    "earliest_start",
-    "latest_target",
-    "waiting_on",
-    "focus",
-    "estimate_minutes",
-    "project_id",
-    "parent_id",
-    "milestone_id",
-    "milestone",
-    "type",
-    "stage",
-    "assignee_id",
-)
 
 
 def _summary(entity, now):
-    result = render.compact({k: entity[k] for k in _LIST_FIELDS if k in entity})
-    contexts = entity.get("context_ids") or []
-    if contexts:
-        result["context_ids"] = contexts[:3]
-        if len(contexts) > 3:
-            result["more_contexts"] = len(contexts) - 3
-    if holder := claim_holder(entity, now):
-        result.update(claimed_by=holder, claim_until=entity["claim_until"])
-    return result
+    return render.compact(render.list_record(entity, now))
 
 
 def _plan_data(view, by, now):
@@ -88,7 +52,9 @@ def read_view(tasks, args):
             filters["context"] = args["context"]
         if args.get("explain"):
             data = tasks.explain_ready(**filters)
-            return StructuredView(data) if structured else render.ready_explanation(data)
+            if structured:
+                return StructuredView({**data, "ready": [render.compact(row) for row in data["ready"]]})
+            return render.ready_explanation(data)
         if structured:
             rows = tasks.ready_summary(**filters)
             return StructuredView({"items": [render.compact(row) for row in rows]})
@@ -96,7 +62,7 @@ def read_view(tasks, args):
         return render.listing(items, now, "Nothing is ready.")
 
     if view == "find":
-        if structured or {"kind", "status", "scope", "after", "claimed"} & args.keys():
+        if structured or {"kind", "status", "scope", "after", "claimed", "archived"} & args.keys():
             page = tasks.search(
                 args.get("text"),
                 kind=args.get("kind", "task"),
@@ -104,13 +70,16 @@ def read_view(tasks, args):
                 scope=args.get("scope"),
                 after=args.get("after"),
                 limit=args.get("limit", 50),
-                **({"claimed": args["claimed"]} if "claimed" in args else {}),
+                claimed=args.get("claimed", False),
+                archived=args.get("archived", False),
             )
             if structured:
                 return StructuredView(page)
             lines = []
             for item in page["items"]:
                 line = f"{item['id']}  {item['title']}  [{item['status']}]"
+                if item.get("archived"):
+                    line += "  [archived]"
                 if item.get("claimed_by"):
                     line += f"  claimed by {item['claimed_by']} until {item['claim_until']}"
                 lines.append(line)
@@ -134,17 +103,13 @@ def read_view(tasks, args):
             raise DomainError("invalid", "Choose a single note or a brief")
         if args.get("brief") or "before_note" in args:
             data = tasks.brief(id, before_note=args.get("before_note"), source=source)
-            return StructuredView(data) if structured else render.brief_text(data)
+            return StructuredView(data) if structured else render.brief_text(data, timezone=tasks.timezone)
         if "note" in args:
             data = tasks.read_note(id, args["note"], source=source)
             return StructuredView(data) if structured else render.note_text(data)
         data = tasks.show(id, source=source)
         if structured:
-            entity = render.compact(data["entity"])
-            if data["entity"]["notes"]:
-                # Full detail preserves each note ID, author and timestamp.
-                entity["notes"] = data["entity"]["notes"]
-            return StructuredView({**data, "entity": entity})
+            return StructuredView(render.detail_data(data, attributed_notes=True))
         return render.show_text(data, now)
 
     if view == "profiles":
@@ -180,6 +145,7 @@ def read_view(tasks, args):
             + "\n"
             + available
             + ("\nInstalled plugins: " + ", ".join(catalog["installed_plugins"]) if catalog.get("installed_plugins") else "")
+            + ("\nClient plugins (preview on an explicit built-in base): " + ", ".join(catalog["client_plugins"]) if catalog.get("client_plugins") else "")
             + "\nAdjustments (defaults shown; use strategy for details): "
             + ", ".join(
                 f"{name}.{key}={value}" if key else name
@@ -193,6 +159,7 @@ def read_view(tasks, args):
             profile=args.get("profile"),
             settings=args.get("set", []),
             drops=args.get("drop", []),
+            brief=True,
             context=args.get("context"),
             scope=args.get("scope"),
         )
@@ -204,7 +171,8 @@ def read_view(tasks, args):
 
     if view == "agenda":
         data = tasks.agenda(
-            args.get("days", 7), scope=args.get("scope"), context=args.get("context")
+            args.get("days", 7), scope=args.get("scope"), context=args.get("context"),
+            deadlines=args.get("deadlines", False),
         )
         if structured:
             sections = {
@@ -249,7 +217,7 @@ def read_view(tasks, args):
 
     if view == "activity":
         data = tasks.activity(after=args.get("after"), limit=args.get("limit", 20))
-        return StructuredView(data) if structured else render.activity_text(data)
+        return StructuredView(data) if structured else render.activity_text(data, mcp=True, limit=args.get("limit", 20))
 
     if view == "explore":
         data = tasks.explore(args.get("id"))

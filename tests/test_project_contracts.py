@@ -239,3 +239,74 @@ def test_release_0_3_0_cannot_read_an_upgraded_file(tmp_path):
     with pytest.raises(ValidationError) as error:
         old_model.model_validate(stored)
     assert {e["type"] for e in error.value.errors()} == {"extra_forbidden"}
+
+
+def test_project_feed_pins_head_and_membership_across_another_connection(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    path = tmp_path / "sample.sqlite"
+    with closing(Store(path)) as book, closing(Store(path)) as writer:
+        tasks = Tasks(writer, "print")
+        tasks.project("Proofs", id="project")
+        tasks.add("External", id="dependency")
+        tasks.add("Proof", id="proof", project="project", after="dependency")
+        initial = book.head("print")
+        tasks.add("Other", id="other")  # Ensure there is an after-cursor page to inspect.
+        head = book.head
+
+        def between_reads(workspace):
+            observed = head(workspace)
+            tasks.edit("dependency", title="Revised")
+            return observed
+
+        with monkeypatch.context() as interleave:
+            interleave.setattr(book, "head", between_reads)
+            assert book.changes("print", "project", initial) == {
+                "changed": False,
+                "cursor": initial + 1,
+            }
+        assert book.changes("print", "project", initial + 1) == {
+            "changed": True,
+            "cursor": initial + 2,
+        }
+
+
+def test_project_feed_uses_bounded_parameters_and_ignores_nested_metadata():
+    from contextlib import closing
+
+    class Connection(sqlite3.Connection):
+        no_json = False
+
+        def execute(self, sql, *args):
+            if self.no_json and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    with closing(sqlite3.connect(":memory:", factory=Connection)) as conn:
+        store = Store(conn)
+        tasks = Tasks(store, "print")
+        project = 'Edition "A" 🌱'
+        tasks.project("Edition", id=project)
+        ids = [f"d-{i}" for i in range(36)]
+        for id in ids:
+            tasks.add("External", id=id)
+        tasks.add("Cover", id="cover", project=project, after=ids)
+        head = store.head("print")
+        store.execute(
+            "print",
+            "unrelated",
+            "create",
+            {
+                "id": "other",
+                "kind": "task",
+                "metadata": {"nested": {"project_id": project, "kind": "goal"}},
+            },
+            0,
+        )
+        tasks.note(ids[-1], "Delivered")
+        tasks.edit("cover", title="Ready for review")
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32)
+        for conn.no_json in [False, True]:
+            page = store.events("print", project=project, after=head)
+            assert [e["entity_id"] for e in page] == [ids[-1], "cover"]
+            assert store.changes("print", project, head) == {"changed": True, "cursor": head + 3}

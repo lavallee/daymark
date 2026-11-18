@@ -136,6 +136,8 @@ def test_ready_explanation_reports_matching_dependencies_and_example_ids(tasks):
     assert data["ready_count"] == 1
     assert data["held_count"] == 1
     assert data["reasons"]["dependencies"] == {"count": 1, "examples": ["b"]}
+    ready = read(tasks, "ready", scope="proof", json=True)["structuredContent"]["items"]
+    assert data["ready"] == ready
     text = read(tasks, "ready", scope="proof", explain=True)["content"][0]["text"]
     assert "prerequisites (1): b" in text
 
@@ -218,3 +220,15 @@ def test_claimed_search_reports_the_current_workers_lease_in_both_formats(tasks)
     assert [row["id"] for row in data["items"]] == ["a"]
     assert data["items"][0]["claimed_by"] == "reviewer" and data["items"][0]["claim_until"]
     assert "claimed by reviewer" in read(tasks, "find", claimed=True)["content"][0]["text"]
+
+
+def test_deadline_agenda_mcp_preserves_waiting_details(tasks):
+    tasks.edit("b", due="tomorrow")
+    tasks.wait("b", on="a sample")
+    args = {"days": 2, "deadlines": True}
+    result = read(tasks, "agenda", json=True, **args)["structuredContent"]
+    assert set(result) == {"overdue", "today", "upcoming"}
+    (rows,) = result["upcoming"].values()
+    (item,) = rows
+    assert (item["id"], item["status"], item["waiting_on"]) == ("b", "waiting", "a sample")
+    assert "waiting on a sample" in read(tasks, "agenda", **args)["content"][0]["text"]

@@ -98,3 +98,34 @@ def test_ready_uses_recorded_context_before_limiting_and_preserves_dependencies(
             tasks.ready(context="order")
     finally:
         store.close()
+
+
+def test_older_service_cannot_widen_a_context_filtered_explanation():
+    import httpx
+    import pytest
+
+    from daymark import DomainError
+    from daymark.client import Client
+
+    requested = []
+
+    def older(request):
+        requested.append(request.url.path)
+        if request.url.path.endswith("/schema"):
+            return httpx.Response(
+                200,
+                json={
+                    "paths": {
+                        "/v1/ready/explanation": {
+                            "get": {"parameters": [{"name": "scope"}, {"name": "mine"}]}
+                        }
+                    }
+                },
+            )
+        return httpx.Response(200, json={"ready_count": 4})
+
+    with Client("https://sample.invalid", "sample", transport=httpx.MockTransport(older)) as client:
+        with pytest.raises(DomainError, match="does not support context"):
+            Tasks(client).explain_ready(context="phone")
+        assert requested == ["/v1/schema"]
+        assert Tasks(client).explain_ready() == {"ready_count": 4}

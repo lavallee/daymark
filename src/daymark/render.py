@@ -7,7 +7,8 @@ from shlex import join
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from .models import DomainError, Entity, Temporal, normalize_now
+from .models import DomainError, Entity, Temporal, day_offset, normalize_now
+from .outbox import DETAIL_FIELDS
 from .views import claim_holder, why
 
 _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
@@ -16,11 +17,55 @@ EMPTY_TAKE = "No unclaimed agent task is ready in this scope."
 _BOOKKEEPING = {"workspace", "created_at", "updated_at"}
 
 
+_LIST_FIELDS = (
+    "id",
+    "kind",
+    "title",
+    "status",
+    "version",
+    "priority",
+    "scope",
+    "next_move",
+    "planned",
+    "deadline",
+    "earliest_start",
+    "latest_target",
+    "waiting_on",
+    "focus",
+    "estimate_minutes",
+    "project_id",
+    "parent_id",
+    "milestone_id",
+    "milestone",
+    "type",
+    "stage",
+    "assignee_id",
+)
+
+
+def list_record(entity, now, *, line_fields=False):
+    """List fields as data. Keep detail bodies off queue reads and compact service transfers."""
+    keys = _LIST_FIELDS + (("advances", "depends_on", "recurrence") if line_fields else ())
+    row = {
+        key: entity[key] for key in keys
+        if key in entity and (key in _ALWAYS or entity[key] != _DEFAULTS.get(key))
+    }
+    contexts = entity.get("context_ids") or []
+    if contexts:
+        row["context_ids"] = contexts[:3]
+        remaining = entity.get("more_contexts", len(contexts) - 3)
+        if remaining > 0:
+            row["more_contexts"] = remaining
+    if entity.get("claimed_by") and (holder := claim_holder(entity, now)):
+        row.update(claimed_by=holder, claim_until=entity["claim_until"])
+    return row
+
+
 def reminder_fields(item):
     """The reminder lifecycle is independent of its task's open or completed state."""
     return {
         key: item[key]
-        for key in ("task_id", "scheduled_at", "recipient_id", "channel", "reminder_state")
+        for key in DETAIL_FIELDS
         if key in item
     }
 
@@ -45,12 +90,30 @@ def compact(item: dict) -> dict:
     return out
 
 
+def detail_data(context, *, attributed_notes=False):
+    """Keep display strings and expose exact date evidence on a full detail read."""
+    item = context["entity"]
+    entity = compact(item)
+    if attributed_notes and item.get("notes"):
+        entity["notes"] = item["notes"]
+    exact = {
+        field: {k: v for k, v in item[field].items() if v is not None}
+        for field in ("deadline", "planned", "earliest_start", "latest_target") if item.get(field)
+    }
+    return {**context, "entity": entity, **({"temporal": exact} if exact else {})}
+
+
 def when(temporal) -> str:
     """A civil date as YYYY-MM-DD; an instant as local wall time with its zone."""
     value = Temporal.model_validate(temporal)
     if value.date:
         return value.date.isoformat()
-    return value.local().strftime("%Y-%m-%d %H:%M ") + value.timezone
+    local = value.local()
+    precision = "microseconds" if local.microsecond else "seconds" if local.second else "minutes"
+    # During a repeated hour the zone name alone identifies two instants.
+    if local.utcoffset() == local.replace(fold=1 - local.fold).utcoffset():
+        local = local.replace(tzinfo=None)
+    return local.isoformat(sep=" ", timespec=precision) + " " + value.timezone
 
 
 def line(item: dict, now=None, reason=True, *, timezone="UTC") -> str:
@@ -137,7 +200,8 @@ def search_text(page):
     lines = []
     for item in page["items"]:
         lease = f" until {item['claim_until']}" if "claim_until" in item else ""
-        lines.append(f"{item['id']}  {item['title']}  [{item['status']}]{lease}")
+        archived = "  [archived]" if item.get("archived") else ""
+        lines.append(f"{item['id']}  {item['title']}  [{item['status']}]{archived}{lease}")
     if page["next"] is not None:
         lines.append("More matches. Repeat this search with " + join([f"--after={page['next']}"]))
     return "\n".join(lines) or "No matches."
@@ -205,12 +269,20 @@ def advice_text(advice, now=None, *, session=None, mcp=False) -> str:
     plain = advice.tone != "neutral"
     out = []
     source = advice.profile_source
-    if source and (source["kind"] in {"built-in", "saved"} or source["adjusted"]):
+    if source:
         label = f"{source['kind']} profile {source['name']}"
         if "version" in source:
             label += f" v{source['version']}"
         changes = " with temporary adjustments" if source["adjusted"] else ""
-        out.append(f"Using {label}{changes} for this call.")
+        execution = source.get("execution")
+        if execution == "service":
+            out.append(f"Service workspace {source['workspace']} uses {label}{changes} for this call.")
+        elif execution == "legacy-client" and source["kind"] == "default":
+            out.append(f"This service cannot report its workspace profile. Using plain{changes} on this client.")
+        elif execution == "client-preview":
+            out.append(f"This client is previewing {label}{changes}, including the requested extension.")
+        elif source["kind"] in {"built-in", "saved"} or source["adjusted"]:
+            out.append(f"Using {label}{changes} for this call.")
     for item in advice.picks:
         # In the neutral tone the dates still show; the words "overdue" and "ago" do not.
         out.append(line(item, now, reason=plain))
@@ -237,6 +309,8 @@ def advice_text(advice, now=None, *, session=None, mcp=False) -> str:
 
 def profile_text(profile: dict, *, database=None) -> str:
     out = [f"profile: {profile['name']}"]
+    if profile.get("execution") == "legacy-client":
+        out.append("This service cannot report its workspace profile. The client falls back to plain.")
     for stage in profile["strategies"]:
         settings = ", ".join(f"{k}={v}" for k, v in stage["with"].items())
         out.append(f"  {stage['use']}" + (f"  ({settings})" if settings else ""))
@@ -246,8 +320,9 @@ def profile_text(profile: dict, *, database=None) -> str:
     if not profile["strategies"]:
         out.append("  no strategies: `daymark ready` order, nothing held back, no notes")
     for name in profile.get("skipped") or []:
-        out.append(f"  ! {name}: not available or misconfigured; left out. "
-                   f"Choose a profile again or `--drop {name}`.")  # fmt: skip
+        cause = ("unavailable in service built-in advice"
+                 if profile.get("execution") == "service" else "unavailable in this installation")
+        out.append(f"  ! {name}: {cause}. The saved entry is retained.")
     if "workspace" in profile:
         out.append(f"Workspace {profile['workspace']}, active version {profile['version']}")
     if undo := profile.get("undo"):
@@ -302,24 +377,32 @@ def saved_profiles_text(entries) -> str:
 
 
 def agenda_text(view: dict, now=None) -> str:
+    now = normalize_now(now)
+    today, earlier = [], []
+    for item in view["today"]:
+        due_today = item["deadline"] and day_offset(item["deadline"], now) == 0
+        planned_before = item["planned"] and day_offset(item["planned"], now) < 0
+        group = earlier if planned_before and not due_today else today
+        group.append(item)
     out = []
-    for key, label in (("overdue", "OVERDUE"), ("today", "TODAY")):
-        if view[key]:
-            out.append(f"{label} ({len(view[key])})")
-            out.extend("  " + line(item, now) for item in view[key])
+    for items, label in ((view["overdue"], "OVERDUE"), (today, "TODAY"), (earlier, "PLANNED EARLIER")):
+        if items:
+            out.append(f"{label} ({len(items)})")
+            out.extend("  " + line(item, now) for item in items)
     for day, items in view["upcoming"].items():
         out.append(day)
         out.extend("  " + line(item, now, reason=False) for item in items)
     for key, label in (("waiting", "WAITING"), ("proposed", "PROPOSED, awaiting a decision")):
-        if view[key]:
-            out.append(f"{label} ({len(view[key])})")
-            out.extend("  " + line(item, now, reason=False) for item in view[key])
+        if items := view.get(key):
+            out.append(f"{label} ({len(items)})")
+            out.extend("  " + line(item, now, reason=False) for item in items)
     if view.get("later_or_undated"):
         out.append(f"{view['later_or_undated']} more later or undated; see `daymark ready`.")
-    return "\n".join(out) if out else "Nothing scheduled, waiting or proposed."
+    empty = "No hard deadlines in this window." if "waiting" not in view else "Nothing scheduled, waiting or proposed."
+    return "\n".join(out) if out else empty
 
 
-def activity_text(view: dict) -> str:
+def activity_text(view: dict, *, session=None, mcp=False, limit=20) -> str:
     """One line per change; full note text remains available in JSON and show."""
     out = []
     for event in view["events"]:
@@ -338,7 +421,13 @@ def activity_text(view: dict) -> str:
     if "checkpoint" in view:
         out.append(f"checkpoint {view['checkpoint']}")
     if view["cursor"] < view["head"]:
-        out.append(f"More changes: daymark activity --after {view.get('checkpoint', view['cursor'])}")
+        options = {"after": view.get("checkpoint", view["cursor"])}
+        if limit != 20:
+            options["limit"] = limit
+        hint = _read_hint("activity", options, session, mcp)
+        out.append(f"More changes: {hint}")
+        if not mcp and session and "endpoint" in session:
+            out.append("Use the same service URL and credential for this read.")
     return "\n".join(out)
 
 
@@ -394,13 +483,24 @@ def _blocker_labels(view):
     return ", ".join(labels)
 
 
-def brief_text(view: dict) -> str:
+def brief_text(view: dict, *, timezone="UTC") -> str:
     clipped = view.get("truncated", [])
     title = view["title"] + ("…" if "title" in clipped else "")
     archived = "archived, " if view.get("archived") else ""
     out = [f"{view['id']}  {title}  [{archived}{view['status']}, version {view['version']}]"]
     if view.get("review_token"):
         out.append(f"Review token: {view['review_token']}")
+    if view.get("scheduled_at") and view["kind"] == "reminder":
+        schedule = when({"at": view["scheduled_at"], "timezone": timezone})
+        out.append(f"{view['reminder_state']} at {schedule} for {view['recipient_id']} via {view['channel']}")
+        if view.get("task_id"):
+            out.append(f"Task: {view['task_id']}")
+        if view.get("held_for_decision"):
+            out.append("Delivery waits for the linked proposal to be accepted.")
+        if view.get("retry_at"):
+            out.append("Retry from " + when({"at": view["retry_at"], "timezone": timezone}))
+        if view["reminder_state"] == "delivered" and view["channel"] == "recording":
+            out.append("Recorded locally.")
     if "readiness" in view:
         state = view["readiness"]
         out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
@@ -773,6 +873,7 @@ Commands (add --json to any for structured output)
   daymark onboard --skill           full agent skill for the installed CLI
   daymark ready [--scope NAME] [--context ID] [--explain]   actionable work, with optional reasons work is held
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
+    --deadlines                     hard deadlines only, including waiting and blocked tasks
   daymark show ID [--since-version N]   current detail or changes since a reviewed version
   daymark activity [--after CURSOR]  recent changes, or changes after a saved checkpoint
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
@@ -784,23 +885,27 @@ Commands (add --json to any for structured output)
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
   daymark advise [--context ID] [--set shortlist.size=3]   try advice for this request
   daymark strategies [NAME]   discover methods and inspect a parameter range
-  daymark profile --saved           named choices to reuse with advise --profile NAME
+  daymark profile --saved           inspect named choices locally or on a current service
+      advise runs service built-ins for the authenticated workspace. Save preferences locally.
   daymark --as WORKER take [--scope NAME] [--context ID]   claim the next unclaimed ready agent task
   daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
   daymark note ID "text"            progress or context for the next session
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
   daymark skip ID                   pass over one occurrence without completing it
   daymark wait ID --on WHO [--until D] / resume ID
-  daymark remind ID WHEN --to PERSON   schedule a timed reminder; the default worker records it locally
+  daymark edit ID --assignee NAME   MCP edit: assignee. Pass the name as given to check
+      both people and principals for a match. Use an ID the person supplied or confirmed.
+  daymark remind ID WHEN --to PERSON   schedule a reminder; show REMINDER --brief checks the local recording
   daymark defer ID D                hide until a date; the deadline does not move
   daymark edit ID [--if-version N] [--due D] ...   (--due "" clears)
   daymark edit ID --waiting-on WHO  park open work; resume ID when the wait ends
   daymark block ID --on OTHER / unblock ID --on OTHER
   daymark find TEXT [--kind memory] [--page]   find work or a remembered fact
+  daymark find TEXT --archived [--kind memory]   search archived records only
   daymark --as WORKER find --claimed   recover this worker’s active claims, including held work
   daymark remember "fact" [--scope NAME] [--source SYSTEM:KIND:ID]   keep an explicit workspace fact
   daymark forget MEMORY_ID [--if-review TOKEN]   retire a remembered fact from pickup
-  daymark undo ID                   restore the previous state
+  daymark undo ID --if-version N --if-review TOKEN   reverse the reviewed latest change
 Projects (as plain or as structured as the work needs)
   daymark projects / plan P [--by milestone|type|parent|FIELD]   see a project
   daymark add "T" --project P [--stage S] [--assignee NAME] [--milestone M]
@@ -809,6 +914,7 @@ Projects (as plain or as structured as the work needs)
   daymark project add|set|stages|types|fields|config|presets   shape a project
   Add stages, types, fields or milestones only when the person asks for them.
 Dates D: 2030-04-03, 2030-04-03T09:00, today, tomorrow, fri, +3d, +2w, +1m ("fri 09:00").
+  Repeated local time: ask which UTC offset. Skipped local time: ask for another time.
 Repeats R: day, week, month, year, "2 weeks", weekdays, "mon,thu"; --after-completion
   counts from when it was actually done.
 Priority: 1 is most important, 4 least."""
@@ -850,9 +956,9 @@ def session_context(tasks, *, database=None, url=None) -> dict:
     return context
 
 
-def brief_session(tasks, context):
+def brief_session(tasks, context, *, scope=None):
     """Bound the amount of task history and remembered text sent at session pickup."""
-    state = tasks.orientation()
+    state = tasks.orientation(scope=scope) if scope is not None else tasks.orientation()
     identity = state.get("identity", {})
     result = {key: value for key, value in state.items() if key != "identity"}
     result.update(context={**context, **identity}, ready=[compact(item) for item in state["ready"]])
@@ -861,10 +967,10 @@ def brief_session(tasks, context):
     return result
 
 
-def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mcp=False) -> str:
+def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mcp=False, scope=None) -> str:
     """Show the live session first. The brief form omits the command reference."""
     context = context or session_context(tasks)
-    state = brief_session(tasks, context)
+    state = brief_session(tasks, context, scope=scope)
     now = normalize_now(state["as_of"]) if state.get("as_of") else tasks.now()
     context = state["context"]
     out = []
@@ -879,8 +985,11 @@ def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mc
         location = f"{context['database']}, " if "database" in context else ""
         out.append(f"Daymark: {location}workspace {context['workspace']}, actor {context['actor']}")
     out.append(now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a") + ", " + tasks.timezone)
+    if scope is not None:
+        out.append("Scope: " + (scope or "(unscoped)"))
     counts = state["summary"]
-    out.append("  " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()))
+    labels = {"today": "today or planned earlier"}
+    out.append("  " + ", ".join(f"{v} {labels.get(k, k.replace('_', ' '))}" for k, v in counts.items()))
     if state.get("summary_note"):
         out.append("  " + state["summary_note"])
     if state["ready"]:
@@ -897,10 +1006,13 @@ def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mc
     if state["memories"]:
         out.append("Remembered")
         for fact in state["memories"]:
-            scope = f"  [scope:{fact['scope']}]" if fact.get("scope") else ""
-            out.append(f"  - {fact['title']}{scope}  ({fact['id']})")
+            fact_scope = f"  [scope:{fact['scope']}]" if fact.get("scope") else ""
+            out.append(f"  - {fact['title']}{fact_scope}  ({fact['id']})")
         if state["next_memory"]:
-            hint = _read_hint("find", {"kind": "memory", "after": state["next_memory"]}, context, mcp)
+            options = {"kind": "memory", "after": state["next_memory"]}
+            if scope is not None:
+                options["scope"] = scope
+            hint = _read_hint("find", options, context, mcp)
             out.append(f"  More facts: {hint}")
     if "activity_cursor" in state:
         cursor = state.get("activity_checkpoint", state["activity_cursor"])
@@ -908,6 +1020,6 @@ def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mc
         out.append(f"Changes after this snapshot: {hint}")
     if not mcp and "endpoint" in context and (state["next_memory"] or "activity_cursor" in state):
         out.append("Use the same service URL and credential for these reads.")
-    if not brief:
+    if not brief and scope is None:
         out.extend(["", GUIDE])
     return "\n".join(out)

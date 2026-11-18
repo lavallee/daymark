@@ -78,18 +78,21 @@ stdio, with no extra dependency. From Python, `daymark.Tasks` is the same
 surface:
 
 ```python
+from contextlib import closing
 from daymark import Store, Tasks
 
-tasks = Tasks(Store("daymark.sqlite3"), actor="planner")
-tasks.add("Renew passport", due="2030-05-03", priority=1)
-for task in tasks.ready():
-    print(task["id"], task["title"])
+with closing(Store("daymark.sqlite3")) as store:
+    tasks = Tasks(store, actor="planner")
+    tasks.add("Renew passport", due="2030-05-03", priority=1, op="passport-2030")
+    for task in tasks.ready():
+        print(task["id"], task["title"])
 ```
 
 The development version also ships its agent skill inside the CLI package.
 Run `daymark onboard --skill` to read the guide that matches the installed version.
 
-For a short list during a busy afternoon or a standing preference, see
+For a short list during a busy afternoon or a standing preference, including
+one-call adjustments in the development checkout, see
 [working with a person’s preferences](docs/working-preferences.md).
 
 Read the [agent guide](docs/agents.md) for the full surface, and
@@ -286,6 +289,34 @@ connection.close()
 ```
 
 Store initialization and writes participate in the supplied connection's transaction. The library uses savepoints and does not commit that connection, even when there was no active transaction. Persist schema initialization before starting a separate unit of work; rolling back initial setup also rolls back the new tables. Keep the connection's threading rules under your application's control. Only `daymark_` tables belong to the library.
+
+A read through an application-owned connection can pin a snapshot. If another
+connection commits before you write, catch `daymark.DomainError` with
+`code == "conflict"`. End the application's transaction, read the current
+record, and decide whether the original operation still applies.
+
+## Use Python with an existing Daymark service
+
+Install `daymark-core[client]` in the client environment. Use
+`daymark-core[service]` on the host that runs the HTTP server. The service
+credential selects the workspace and actor. This example reads one compact
+session through the same plain verbs as the local store.
+
+```python
+import os
+from daymark import Client, Tasks
+
+with Client(os.environ["DAYMARK_URL"], os.environ["DAYMARK_TOKEN"]) as client:
+    session = Tasks(client).orientation()
+    print(session.get("identity", {}), session["summary"])
+```
+
+The client raises `daymark.ClientError` on HTTP failures.
+`error.code == "conflict"` corresponds to HTTP 409. Read the current record
+before revising a guarded request. If a write's response was lost, retry the
+identical call with the same explicit `op` to recover its committed result.
+Local argument validation can still raise `daymark.DomainError`.
+[HTTP service setup and credentials](docs/operations.md)
 
 ## Timing and structured work
 

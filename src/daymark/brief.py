@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import views
+from . import outbox, views
 from .models import DomainError, normalize_now, recurrence_date_field
 
 _NOTE_LIMIT = 3
@@ -29,6 +29,9 @@ _FIELDS = (
     "planned",
     "earliest_start",
     "latest_target",
+    *outbox.DETAIL_FIELDS,
+    "attempts",
+    "retry_at",
 )
 
 
@@ -118,6 +121,18 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
     with store._transaction(write=False):
         item, note_count, newer, notes = _source(store, workspace, id, before_note)
         review_token = store._review_token(workspace, id)
+        reminder = {}
+        if item["kind"] == "reminder":
+            reminder = {key: item[key] for key in outbox.DETAIL_FIELDS}
+            if item.get("attempts"):
+                reminder["attempts"] = item["attempts"]
+            if item.get("retry_at"):
+                reminder["retry_at"] = item["retry_at"]
+            target = outbox.target_status(store.db, workspace, item["task_id"])
+            if item["reminder_state"] in outbox.ACTIVE_STATES and outbox.availability(
+                item["status"], item["archived"], item["task_id"], target
+            ) == "dormant":
+                reminder["held_for_decision"] = True
         blocked = views.blockers(store, workspace, item)
         named_blockers = views.blocker_previews(store, workspace, blocked)
         sources = store.db.execute(
@@ -143,6 +158,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
                 children.append(child_id)
             child_count += 1
     out = {key: item[key] for key in ("id", "kind", "status", "version")}
+    out.update(reminder)
     if item["archived"]:
         out["archived"] = True
     out["review_token"] = review_token

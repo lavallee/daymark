@@ -382,6 +382,45 @@ for a task edit. Daymark refused those extra fields, and the client recovered
 on the next call. Each trial used one session and a synthetic recipient.
 
 
+## One workspace seen through a service
+
+A synthetic local workspace contained four ready tasks. Its standing review
+profile offered two picks. An authenticated MCP session initially reported
+`plain` and returned all four. Inspecting the saved name failed, although a
+one-call built-in adjustment worked.
+
+The follow-up used installed wheels in three separate Python environments for
+the client, current service and tagged v0.5.0 service. MCP SDKs 1.30.0 and
+2.3.0 each opened read-only sessions against both services over loopback HTTP.
+On the current service both active and named selection returned two picks
+and the correct revision. A one-call preview returned one. A second credential
+in each run saw only its own workspace's single task.
+
+A synthetic strategy package was installed on both the current service and the
+client and wrote an import marker when loaded. It was configured in the
+workspace's profile. The service reported that skipped stage and ran the
+shortlist. No marker appeared on either side until the caller selected the
+extension with an explicit built-in base. Only the client marker appeared.
+The older service returned four picks with a labeled client-side plain fallback.
+Its explicit one-call previews still worked. These are transport, execution and
+version checks on two SDK releases.
+
+The first service implementation transferred full task bodies to the MCP
+bridge. On a second synthetic fixture, 40 tasks each carried roughly 10 KB
+of description and 10 KB of note text. The full advice response transferred
+838,649 JSON bytes; the structured MCP result took 3,169. The bridge's compact
+request transferred 3,169 bytes on that fixture and returned the same forty
+IDs in order. A separate case retained estimates, the next checklist step,
+the live claim and a count of additional task contexts. Callers asking for
+full Python results still receive full task records.
+
+A separate two-connection test completed a project's only task between its
+ready read and project review. Before grouping the local reads, the same
+response could offer the task and ask why its project had no action. With one
+SQLite snapshot the earlier read offered the still-open task and counted it
+in its project. The next read saw the completed task and raised the review
+question.
+
 ## Returning after an extension changes
 
 An isolated environment installed a synthetic third-party wheel through the
@@ -405,6 +444,18 @@ The updated active read identifies the saved, unavailable parameter separately
 from the current effective value. A regression exercises an unrelated edit,
 a named export, explicit migration and version-guarded undo. It verifies the
 original value survives until the person explicitly removes it.
+
+Two clean CLI installations then shared a synthetic workspace. One had a
+print-review strategy and the other had only Daymark. Previously the second
+host could read advice but an unrelated shortlist edit required discarding
+the missing strategy. After the fix, that host changed the shortlist from
+three items to two and retried the same operation. Active revision stayed at
+two. The original host returned two picks and its original one-sample note.
+The second host also copied and exported the profile, imported it into a
+fresh database and activated it. The first host read the same three stages
+in order, including the original sample limit. Editing the missing stage's
+parameter failed on the second host. Explicit removal and guarded undo both
+worked there.
 
 The contributor example's Python and TOML blocks were extracted into a wheel.
 Its strategy returned the correct unestimated task against both the public

@@ -1,10 +1,32 @@
-# Work and life on one substrate
+# How Daymark helps a person and their agents work together
 
-Daymark's aim is a task system that simplifies the complexities of real life.
-This page explains what that asks of the design, how Daymark relates to Beads,
-a dependency-aware task tracker built for coding agents, and what is deliberately
-left to the layers above. It records design reasoning; the
-[decisions](decisions.md) table is the contract.
+A coordinator leaves for a week. When they return, the printer still owes a
+proof, a deposit has a cutoff, and an invitation they hoped to draft on
+Monday is still unwritten. A new agent should be able to tell them which
+deadline passed, whose reply would unblock the proof, and which plan they
+can move. The coordinator gets to decide what still matters.
+
+A second question changes the answer. “I have ten minutes” calls for a few
+tasks that might fit. “What can you take off my hands?” calls for work the
+person has delegated. A five-minute approval could fit the first request
+and still require the person's own decision. Daymark keeps those facts
+across both conversations.
+
+## What the agent can learn
+
+| What a person tells the agent | What the next session can rely on |
+| --- | --- |
+| “The printer said the proof will come Friday.” | A waiting task can name the outstanding reply. A note can preserve who said Friday and when. A promise from the printer supplies evidence for a follow-up. |
+| “Only show me two choices before this meeting.” | A one-call shortlist changes this answer. The next session begins with its usual settings. |
+| “Please use that shortlist for this workspace from now on.” | The agent can save the preference, show the configured limit, and reverse a reviewed change. Other callers of the shared workspace can see it. |
+| “That was just for me.” | The host can select a personal recipe for that person on each request. An agent name alone cannot identify which person it represents. |
+
+A method supplies another way to ask about the same records. Someone can
+use GTD's contexts to pick phone tasks today and review stalled projects on
+Friday. A Things-style plan and deadline can coexist on one task. Someone
+else can ask for the ordinary ready list throughout. The examples below
+connect those choices to actual Daymark reads.
+[Working preferences](working-preferences.md) · [Working methods](research/working-methods.md)
 
 ## Why life is harder than a backlog
 

@@ -244,3 +244,19 @@ def test_temporary_advice_recovers_from_misplaced_filters(tasks):
         result = handle(tasks, tool("daymark_view", view="advise", **fields))["result"]
         error = result["structuredContent"]["error"]
         assert error["code"] == "invalid" and "time-fit.minutes=15" in error["recovery"]
+
+
+def test_invalid_service_credential_is_distinct_from_a_transport_failure_and_redacted():
+    import httpx
+
+    from daymark.client import Client
+
+    def reject(_request):
+        return httpx.Response(401, json={"detail": "Untrusted body containing synthetic-private-text"})
+
+    with Client("http://sample.invalid", "sample-token", transport=httpx.MockTransport(reject)) as remote:
+        result = handle(Tasks(remote), tool("daymark_add", title="Read sample"))["result"]
+    error = result["structuredContent"]["error"]
+    assert error["code"] == "unauthenticated" and "bearer" in error["recovery"]
+    assert "operation_id" not in error
+    assert "sample-token" not in str(result) and "synthetic-private-text" not in str(result)

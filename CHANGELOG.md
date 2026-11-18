@@ -4,6 +4,27 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+- Python clients can install `daymark-core[client]` and import `Client` and `ClientError` from `daymark`.
+
+- `prime --scope NAME` and MCP `daymark_prime {"scope":"NAME"}` return scoped counts, ready work and memory previews with filtered continuations.
+
+- `agenda --deadlines --days N` finds agreed hard cutoffs, including held work. The ordinary text agenda now separates earlier plans from work due or planned today.
+
+- `undo` accepts a reviewed version and token. An intervening edit now causes a conflict, preserving the other worker’s change.
+
+- Authenticated service advice honors the workspace's active or named profile and runs its built-in stages. Remote profile inspection is read-only. Local advice reads its configuration, candidates and supporting facts from a single SQLite snapshot.
+
+- A writable open installs SQLite setting revision tracking on schema 6. Later changes from a v0.5.0 writer invalidate stale preference edits, including changes that restore an earlier value.
+
+- MCP capture and edit accept an existing assignee on a standalone task. Receipts confirm the person ID and a renamed person can be verified on retry.
+
+- A relative reminder retry keeps its original instant across midnight and native transfer. A reminder brief reports its recipient, channel, and worker state, including when a linked proposal is holding it.
+
+- Explicit one-off clock inputs now refuse skipped times and require an offset for repeated times. Full CLI and MCP JSON detail preserves the original date evidence. Existing operation receipts still replay.
+
+- `find --archived` searches archived records only. CLI, Python, HTTP and MCP return marked, paginated matches.
+
+- Restored history, undo and recurring successors follow the original workspace event order after a sparse merge. Undo detects missing history or a mismatched current record.
 - Compact startup reads now return ready work, exact counts, scoped memory previews, the UTC evaluation instant and a workspace-checked activity checkpoint from one SQLite snapshot. Numeric cursors remain available. HTTP uses one authenticated read with bounded titles.
 - Schedule an existing task’s reminder through MCP. Scheduling receipts show the time, recipient, channel and reminder state.
 
@@ -16,9 +37,9 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 - `mcp --read-only` offers a two-tool review session, opens local SQLite read-only and restricts an HTTP-backed session to read requests.
 
-- Editing an open task’s waiting reason parks it immediately and removes it from ready and take. Clearing a reason keeps the task waiting until an explicit resume.
+- Editing an open task’s waiting reason parks it immediately and removes it from ready and take. Clearing a reason keeps the task waiting until an explicit resume. Waiting-check advice honors a recorded return day or time and identifies how long the task has gone without an update.
 - A repeating task’s brief identifies its round, rule, time zone and the date advanced for a generated occurrence.
-- `show ID --since-version N` compares current terms with the version a person reviewed, including field excerpts and attributed note changes. Exact source references also work. Missing and ambiguous historical snapshots are reported explicitly. `edit`, `accept` and `dismiss` also accept `--if-review TOKEN` from the original show or brief to detect an ID that was deleted and reused.
+- `show ID --since-version N` compares current terms with the version a person reviewed, including field excerpts and attributed note changes. Exact source references also work. Missing and ambiguous historical snapshots are reported explicitly. `edit`, `accept` and `dismiss` also accept `--if-review TOKEN` from the original show or brief to detect an ID that was deleted and reused or restored with different contents.
 
 - HTTP clients can read, edit and replay imported entity and operation IDs containing slashes or URL path punctuation. Query-based forms support exact lookup behind URL-decoding gateways.
 - Use `--context ID` with `ready`, `agenda` or `advise` to select tasks tagged with an existing context. The filter combines with scope and honors every dependency.

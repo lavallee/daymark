@@ -41,15 +41,18 @@ jobs:
               "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_install.py"
             )
           done
-      - name: Verify installed HTTP service
+      - name: Verify installed HTTP client and service
         shell: bash
         run: |
           wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
           service_env="$RUNNER_TEMP/daymark-service-smoke"
+          client_env="$RUNNER_TEMP/daymark-client-smoke"
+          uv venv "$client_env"
+          uv pip install --python "$client_env/bin/python" "${wheels[0]}[client]"
           uv venv "$service_env"
           uv pip install --python "$service_env/bin/python" "${wheels[0]}[service]"
           cd "$RUNNER_TEMP"
-          env -u PYTHONPATH -u PYTHONHOME "$service_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_http.py"
+          env -u PYTHONPATH -u PYTHONHOME "$service_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_http.py" --client-python "$client_env/bin/python"
 
   security:
     runs-on: ubuntu-latest

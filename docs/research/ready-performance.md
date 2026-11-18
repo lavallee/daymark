@@ -146,3 +146,29 @@ the same transaction and fetches full records for the due batch. Ordering
 uses aware datetimes at their stored precision. The measurement includes
 tick, heartbeat, claim and the database commits. It excludes external
 notification services and native SQLite allocations.
+
+
+### Polling a project after a quiet interval
+
+The project change check reads the workspace head and tests for a matching
+event in one snapshot. Its SQL query returns only the event number for a
+change flag. The full event page still returns the recorded states.
+A fixture used one project member with a 64,000-character description and
+8,000-character note, 45 external dependencies, and 240 unrelated events
+with 8,192-character descriptions before a final project note.
+
+| Warm read | Earlier CPU | Revised CPU | Earlier Python peak | Revised Python peak |
+| --- | ---: | ---: | ---: | ---: |
+| Poll at the current head | 0.081 ms | 0.034 ms | 13.9 KiB | 2.1 KiB |
+| Poll one project edit | 0.287 ms | 0.169 ms | 308.5 KiB | 5.9 KiB |
+| Poll across 240 unrelated events | 10.181 ms | 2.103 ms | 309.5 KiB | 5.4 KiB |
+| Read the full matching event across the same interval | 10.741 ms | 3.044 ms | 307.9 KiB | 303.5 KiB |
+
+Each value is a same-host local comparison on synthetic data using CPython
+3.14.6 and SQLite 3.53.1. CPU is the median of nine process-time readings.
+Python peak was measured separately with `tracemalloc`. A third query
+variant scanned serialized strings for candidate fields before inspecting
+JSON. Its median across the unrelated interval was 11.470 ms. SQLite's
+top-level JSON field comparisons preserved the membership results and
+were faster in this run. An embedded SQLite build without JSON functions
+uses a streaming Python check.

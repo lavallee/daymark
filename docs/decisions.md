@@ -43,7 +43,7 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A08 Priority direction | 1 is most important, 4 least, 0 unset | Follows iCalendar. Previously undefined; ordering in `ready` now depends on it. |
 | A09 Date input | Fixed grammar; anything else refused | No natural-language interpretation (C03 stands). The phrase used is stored as `expression` beside the resolved value. |
 | A10 Readable identifiers | Short `dm-xxxx` IDs from the plain verbs; `series.N` for rounds of a repeating task | A round falls back to the hashed identity when `series.N` is or was used by an unrelated entity, or exceeds the ID limit; a slot that was ever materialized is never materialized again. Databases written before this change keep their hashed successors. |
-| A11 Plain verbs and versions (amended) | By default `Tasks` reads the current version and retries stale reads. `edit` accepts a caller-observed version. | Plain verbs verify replay using recorded actor/action/target, the original before-state and the kernel request digest. Changed kernel writes under the same ID conflict. Existing operation receipts and event records carry the proof. An optional review token identifies the observed entity event and prevents a prior read from authorizing a replacement record at the same version. Native history with no matching current event yields no token. |
+| A11 Plain verbs and versions (amended) | By default `Tasks` reads the current version and retries stale reads. `edit` accepts a caller-observed version. | Plain verbs verify replay using recorded actor/action/target, the original before-state and the kernel request digest. Changed kernel writes under the same ID conflict. Existing operation receipts and event records carry the proof. An optional review token fingerprints the workspace, entity event and its recorded contents, preventing a prior read from authorizing a replacement record at the same version. Native history with no matching current event yields no token. |
 | A12 Per-write validation | Each write validates its own references through derived lookup tables | Replaces whole-workspace validation on every write; snapshot import still validates the whole workspace. A randomized test checks the two agree. The 100,000-entity bound now applies to import only. |
 | A13 Journal mode | Path-owned stores use WAL with default synchronous settings | One durable sync per commit. Caller-owned connections keep their own mode. Creates `-wal` and `-shm` files beside the database. |
 | A14 Stored-shape upgrades | A schema marker triggers an in-place rewrite of stored entities when fields are added | Versions and event history are untouched. Snapshots exported by this version contain fields that 0.1.0 rejects. |
@@ -77,7 +77,7 @@ surface, not a scheduler, and there is no third-party interchange guarantee.
 | P05 Manual order (amended) | One order per project: a `rank` key (fractional indexing with an integer part, base 62, compared as text), set only by the `place` action | A task never placed reads as its creation time, so new tasks go last and a placement writes only the moved task: no mass ranking, no version change on tasks nobody touched. Appends and prepends grow keys logarithmically; repeated inserts at one spot add about a character per six. `create` and `update` refuse a rank. Archived tasks keep their place. A new round of a repeating task goes directly after the round it follows. Equal ranks in damaged data still allow a placement. Children are listed in project order under their parent, so a reorder within an epic is a placement next to a sibling. Order is total: by key, then by ID. Placing between tasks that share a key re-keys only the tied tasks after the insertion point; an undo that would restore a key another task now holds moves just past it; a key longer than 128 characters re-keys the whole project evenly. Every key is validated on the way in (including import). `create` refuses `created_at`, which orders tasks never placed. |
 | P06 Milestones (amended) | A milestone is a task marked `milestone`, dated by its own dates; other tasks may name it in `milestone_id` | Membership must point at a milestone task in the same project (not itself). The plan reports each milestone's progress, field totals, items ending after its date (`late`) and whether all its items are done. A milestone is reached only when someone completes it, never automatically. Removing the marker later keeps memberships and reports them. A milestone does not belong to a milestone. One that moves to another project releases its members, each visibly (`milestone.detach`). Every unarchived milestone is listed with its status, including a proposed or cancelled one. |
 | P07 Plan dates | start = `planned`, else `earliest_start`; end = `latest_target`, else `deadline`; the deadline is also given on its own | `plans.schedule` writes start to `planned` and end to `latest_target`, so a plan move never moves a deadline; a deadline changes only when written as itself. A date equal to the current one changes nothing, so a timed value keeps its time; a moved timed value keeps its clock time. Only dates being written are checked; a start after an end, or a target before `earliest_start`, is refused, never clamped. Clearing a plan's start clears both `planned` and `earliest_start`, so it reads as unset; clearing its end clears `latest_target`, and a deadline still shows through as the end. |
-| P08 Plan read and project feed | `Store.plan` reads a project in one transaction: stages, types, field declarations, tasks in order with resolved stage and dates, in-project dependencies (and outside ones), milestones and parents with roll-ups, facts, health, warnings and the head cursor | `Store.changes(project, after)` also notices changes to what the project's tasks depend on outside it, its goal, and any person, label or goal it can name. A cursor ahead of the head reads as changed. `Store.projects` reads the workspace once. One blocker rule everywhere (A02): a completed, cancelled or archived dependency, inside the project or outside it, releases its dependent. Date conflicts are reported for live work only. |
+| P08 Plan read and project feed | `Store.plan` reads a project in one transaction: stages, types, field declarations, tasks in order with resolved stage and dates, in-project dependencies (and outside ones), milestones and parents with roll-ups, facts, health, warnings and the head cursor | `Store.changes(project, after)` reads the head and project membership in one SQLite snapshot. It also notices changes to what the project's tasks depend on outside it, its goal, and any person, label or goal it can name. A cursor ahead of the head reads as changed. `Store.projects` reads the workspace once. One blocker rule everywhere (A02): a completed, cancelled or archived dependency, inside the project or outside it, releases its dependent. Date conflicts are reported for live work only. |
 | P09 Batch writes (amended) | `Store.batch`: up to 100 operations in one transaction, each with its own operation ID, expected version and receipt; optional `request_id` and `request` | `atomic=True` writes all or nothing and reports the rest `aborted`; `atomic=False` rolls back only the refused ones. With a request ID, a committed batch replays as a unit when the same request is sent again, and a different request under the same ID is a `conflict`. Operation IDs must be text. |
 | P10 Externally owned projects | An optional `managed_by` on a project names the system that rewrites it | Advisory: Daymark accepts writes as before; applications that edit plans should treat the project as read-only. Never inferred. |
 | P11 Assigning by name | `--assignee` takes a person's ID or exact name, ignoring case | An unknown name is refused, not created; several matches are refused with their IDs. Workspace isolation (A22) is unchanged. |
@@ -100,8 +100,8 @@ Decision date: 2026-11-15. [Architecture](architecture.md) gives the design and
 | S01 Three layers | Kernel, strategies, plugins | The kernel stores facts and enforces invariants. Ways of working live above it and can be swapped per workspace. |
 | S02 Strategies advise | A strategy returns an ordering, notes and suggestions; it never writes | A suggestion becomes a task only through `propose`. A test forbids the strategy package from importing the engine. |
 | S03 Evidence labels | Every strategy states clinical, practitioner, folk or convention | Shown by `daymark strategies`. A label describes the idea, not Daymark's implementation of it. |
-| S04 Plain is the default | With no profile chosen, `advise` uses the eligibility and order of `ready` | The ordinary ready page defaults to 20 rows and advice inspects at most 1,000. A person explicitly chooses further changes to the order, limits or wording. |
-| S05 Profiles per workspace | Stored as a workspace setting | Settings and their local replay receipts belong to workspace configuration. Entity history and exports omit them. HTTP uses the plain default and supports one-call previews. A stored entry that can no longer be loaded is skipped and reported, never fatal. |
+| S04 Plain is the default | With no profile chosen, `advise` uses the eligibility and order of `ready` | Optional waiting checks honor the recorded earliest start and use elapsed time since the last task update. The ordinary ready page defaults to 20 rows and advice inspects at most 1,000. A person explicitly chooses further changes to the order, limits or wording. |
+| S05 Profiles per workspace | Stored as a workspace setting | Settings and their local replay receipts belong to workspace configuration. Entity history and exports omit them. Current HTTP services read the authenticated workspace’s active or named configuration and evaluate built-in stages. Older services use a labeled plain fallback. Preference mutations remain local. A stored entry that can no longer be loaded is skipped and reported. Independent edits preserve its position and configuration until explicitly removed. |
 | S06 Plugins load by name | Entry points in `daymark.strategies`, imported only when a profile names one | Installing a package never runs its code by itself. No hook may rewrite a write. |
 | S07 Conditions | A `condition` kind with a judged state; its status follows the state | A condition belongs to a goal, cannot be proposed, parked or repeated, and a write that sets its status against its state is refused. "Met" reads as completed, so existing dependency rules apply unchanged. Reopening a met condition marks it unmet; bringing back an archived or dropped one keeps its assessment. Frontier and gap are kernel facts; choosing the bottleneck is a strategy's judgement. |
 | S08 Kernel admission | A field enters the kernel when three independent methods or clients need it stored, or an invariant depends on it | Otherwise it is plugin data. Existing fields that fail this test are listed as debt in the architecture document. |
@@ -221,3 +221,45 @@ or different boundary, including a workspace switch. It can resume after an
 intact native transfer. Integer cursors and their response shape remain
 available. Native import can merge materialized entities independently of
 events, so a fresh read of affected records is required after such a merge.
+
+
+## Interpreting a one-off local clock reading
+
+An explicit local clock reading denotes one instant. If a timezone
+transition skips it, the person chooses an existing time. If the clock
+repeats it, the person chooses the numeric offset. A dated input with an
+explicit offset already identifies an instant. This applies to absolute and
+relative inputs with clock times, including the supplied anchor of a series.
+
+Recurring rules continue to advance through a gap and select the first
+occurrence of a repeated slot when generating future occurrences. Existing
+operation receipts retain their original interpretation, including the
+historical handling of gaps and repeated hours.
+
+
+## Restoring a recorded prior state
+
+Entity history uses the workspace event number preserved by native export.
+Undo requires the latest event to describe the current materialized record,
+or a matching deletion to describe the absent record. Older event shapes
+are compared after applying today's defaults. A sparse restore that lacks
+this evidence needs the corresponding native events or an explicit edit.
+
+## Setting revisions across schema 6 clients
+
+v0.5.0 and the development version share the same SQLite setting rows.
+SQLite triggers increment the revision on insert, changed value and delete,
+even for an older writer. A deletion retains the revision so a later
+recreation cannot reuse an old version. Entity-only readers can open an
+untouched v0.5.0 file. The first writable open installs tracking in the
+owner's transaction before guarded settings reads become available.
+
+
+## Undo after a concurrent change
+
+Undo reverses one verified latest event. If another write wins between
+reading that event and trying to undo it, Daymark reports a conflict.
+Automatically repeating the action against the new head would reverse a
+different event. A matching successful receipt still replays exactly.
+For an earlier field change, the caller can inspect history and submit a
+guarded edit after checking intervening work.

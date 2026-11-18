@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import secrets
@@ -15,7 +16,7 @@ from pathlib import Path
 import httpx
 
 
-def main():
+def main(client_python=None):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         token = secrets.token_urlsafe(32)
@@ -118,6 +119,14 @@ def main():
                 schema = client.get("/v1/schema")
                 assert schema.status_code == 200
                 assert client.get("/v1/export").json()["entities"]
+            if client_python:
+                subprocess.run(
+                    [client_python, "-I", str(Path(__file__).with_name("smoke_client.py"))],
+                    cwd=root,
+                    input=json.dumps([f"http://127.0.0.1:{port}", token]),
+                    text=True,
+                    check=True,
+                )
             print(
                 "Installed HTTP service: health/auth/schema/create/replay/complete/conflicts/export passed"
             )
@@ -131,4 +140,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--client-python", help="Python from a clean daymark-core[client] install")
+    main(parser.parse_args().client_python)

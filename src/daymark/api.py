@@ -53,6 +53,7 @@ class ImportRequest(BaseModel):
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     claimed: bool = False
+    archived: bool = False
     now: str | None = Field(None, max_length=40)
     text: str | None = Field(None, max_length=2000)
     kind: str = Field("task", min_length=1, max_length=100)
@@ -60,6 +61,17 @@ class SearchRequest(BaseModel):
     scope: str | None = Field(None, max_length=100)
     after: str | None = Field(None, max_length=128)
     limit: int = Field(50, ge=1, le=1000)
+
+
+class AdviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    brief: bool = False
+    profile: str | None = Field(None, min_length=1, max_length=100)
+    set: list[str] = Field(default_factory=list, max_length=1000)
+    drop: list[str] = Field(default_factory=list, max_length=1000)
+    now: str | None = Field(None, max_length=40)
+    scope: str | None = Field(None, max_length=100)
+    context: str | None = Field(None, min_length=1, max_length=200)
 
 
 class QueryRequest(BaseModel):
@@ -220,6 +232,53 @@ def create_router(store: Any) -> APIRouter:
                 item["error"] = {**item["error"], "details": []}
         return result
 
+    @router.post("/advice", operation_id="daymark_v1_advice")
+    def advice(body: AdviceRequest, request: Request) -> Any:
+        from .models import normalize_now
+        from .strategies import service_builtins
+        from .tasks import Tasks
+
+        actor = identity(request)
+
+        def read():
+            with service_builtins():
+                tasks = Tasks(store, actor.workspace, actor=actor.principal, timezone="UTC",
+                              now=normalize_now(body.now))
+                result = tasks.advise(profile=body.profile, settings=body.set, drops=body.drop,
+                                      scope=body.scope, context=body.context, brief=body.brief)
+                result.profile_source.update(execution="service", workspace=actor.workspace)
+                return result.to_dict()
+
+        return _invoke(read)
+
+    @router.get("/profiles", operation_id="daymark_v1_profiles")
+    def profiles(
+        request: Request,
+        view: Literal["catalog", "active", "saved", "strategy"] = "catalog",
+        name: str | None = Query(None, min_length=1, max_length=200),
+    ) -> Any:
+        from .strategies import service_builtins
+        from .tasks import Tasks
+
+        actor = identity(request)
+        if (name is not None and view not in {"saved", "strategy"}) or (view == "strategy" and not name):
+            raise HTTPException(422, "Choose a valid profile inspection")
+
+        def read():
+            tasks = Tasks(store, actor.workspace, actor=actor.principal, timezone="UTC")
+            with service_builtins(), tasks.read_snapshot() as reader:
+                if view == "active":
+                    return {**reader.profile(), "execution": "service"}
+                if view == "saved":
+                    return reader.saved_profiles(name)
+                if view == "strategy":
+                    return reader.profile_catalog(strategy=name)
+                catalog = reader.profile_catalog()
+                catalog["active"]["execution"] = "service"
+                return {**catalog, "execution": "service", "workspace": actor.workspace}
+
+        return _invoke(read)
+
     @router.get("/projects", operation_id="daymark_v1_projects")
     def projects(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
         return _invoke(store.projects, identity(request).workspace, now=now)
@@ -314,11 +373,15 @@ def create_router(store: Any) -> APIRouter:
     def agenda(
         request: Request,
         days: int = Query(7, ge=0, le=366),
+        deadlines: bool = Query(False),
         scope: str | None = Query(None, max_length=100),
         context: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
-        return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope, **({"context": context} if context is not None else {}))
+        filters = {"context": context} if context is not None else {}
+        if deadlines:
+            filters["deadlines"] = True
+        return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope, **filters)
 
     @router.get("/explore", operation_id="daymark_v1_explore")
     def explore(
@@ -330,9 +393,10 @@ def create_router(store: Any) -> APIRouter:
         return _invoke(store.explore, identity(request).workspace, goal, now=now, scope=scope)
 
     @router.get("/orientation", operation_id="daymark_v1_orientation")
-    def orientation(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+    def orientation(request: Request, now: str | None = Query(None, max_length=40),
+                    scope: str | None = Query(None, max_length=100)) -> Any:
         actor = identity(request)
-        state = _invoke(store.orientation, actor.workspace, now=now, owner=actor.principal)
+        state = _invoke(store.orientation, actor.workspace, now=now, owner=actor.principal, scope=scope)
         return {**state, "identity": {"workspace": actor.workspace, "actor": actor.principal}}
 
     @router.get("/summary", operation_id="daymark_v1_summary")

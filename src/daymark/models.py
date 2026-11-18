@@ -81,6 +81,22 @@ class Temporal(Model):
         )
 
 
+def day_offset(temporal, now: datetime) -> int:
+    """Whole local days from today, in the recorded temporal value's own zone."""
+    value = Temporal.model_validate(temporal)
+    return (value.local().date() - now.astimezone(ZoneInfo(value.timezone)).date()).days
+
+
+def start_has_arrived(start, now: datetime) -> bool:
+    """An unset start imposes no gate. A recorded civil date opens at local midnight."""
+    if start is None:
+        return True
+    value = Temporal.model_validate(start)
+    if value.date:
+        return day_offset(value, now) <= 0
+    return value.at.astimezone(UTC) <= now.astimezone(UTC)
+
+
 _WEEKDAYS = {"MO", "TU", "WE", "TH", "FR", "SA", "SU"}
 _SELECTOR_RANGES = {
     "BYMONTH": (1, 12),

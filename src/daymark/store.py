@@ -19,7 +19,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import outbox, plans, ranks
+from . import cursors, outbox, plans, project_feed, ranks
 from .models import (
     DomainError,
     Entity,
@@ -51,8 +51,20 @@ SCHEMA = "6"
 RELEASE = "0.5.0"
 STALE = (
     f"This database needs an upgrade to schema {SCHEMA}: open it once with daymark-core "
-    f"{RELEASE} or newer (any `daymark` command does), and commit the upgrade if you own "
+    f"{RELEASE} or newer (for example, `daymark --db FILE init`), and commit the upgrade if you own "
     "the connection"
+)
+TRACKING_STALE = (
+    "This database needs setting revision tracking: open it with this Daymark build "
+    "in writable mode, and commit the upgrade if you own the connection"
+)
+
+# v0.5.0 also writes schema 6. Both versions write the same scheduler rows,
+# so the database must own the counter once revision tracking is installed.
+SETTING_TRIGGERS = (
+    ("daymark_setting_insert", "INSERT", "NEW", "1", ""),
+    ("daymark_setting_update", "UPDATE OF value", "NEW", "2", " AND OLD.value <> NEW.value"),
+    ("daymark_setting_delete", "DELETE", "OLD", "2", ""),
 )
 
 REFS = {
@@ -77,7 +89,7 @@ class Store:
         """Open a database path (Store owns its commits) or a caller's connection.
 
         A database written by an older Daymark is upgraded in place on open, inside
-        one transaction; an upgraded file cannot be opened by the older release. With
+        one transaction. Older releases may refuse the resulting schema. With
         ``upgrade=False`` an older or missing schema is refused with ``conflict``
         instead, and nothing is written. A schema newer than this code is always
         refused: Daymark never downgrades a file. With `read_only=True`, a path
@@ -109,7 +121,7 @@ class Store:
             # Use a root transaction even for schema so caller rollback includes schema.
             try:
                 with self._transaction():
-                    pass
+                    self._require_setting_tracking(install=True)
             except sqlite3.OperationalError as exc:
                 if "readonly" not in str(exc).replace(" ", "").replace("-", ""):
                     raise
@@ -158,7 +170,7 @@ class Store:
             and not self._current()
             and self.db.execute("SELECT 1 FROM daymark_entities LIMIT 1").fetchone()
         ):
-            raise DomainError("conflict", STALE)
+            self._check_schema(upgrading=False)
 
     def _ensure_schema(self):
         """Create or upgrade Daymark's tables inside the current transaction."""
@@ -209,6 +221,26 @@ class Store:
             (SCHEMA,),
         )
 
+    def _require_setting_tracking(self, *, install=False):
+        # Entity-only reads can open a v0.5 file without changing its schema.
+        tracked = self.db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (?, ?, ?)",
+            tuple(name for name, *_ in SETTING_TRIGGERS),
+        ).fetchone()[0]
+        if tracked == len(SETTING_TRIGGERS):
+            return
+        if not install or not self._upgrade:
+            raise DomainError("conflict", TRACKING_STALE)
+        for name, action, row, initial, condition in SETTING_TRIGGERS:
+            # A pre-tracking row without a revision already reads as version one.
+            # Keep deletion revisions so an absent value cannot return to version zero.
+            self.db.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {action} ON daymark_scheduler "
+                f"WHEN substr({row}.key, 1, 8) = 'setting:'{condition} BEGIN "
+                f"INSERT INTO daymark_scheduler VALUES('revision:' || {row}.key, {initial}) "
+                "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1; END"
+            )
+
     def _current(self):
         if not self._has_schema("daymark_refs"):
             return False
@@ -254,6 +286,17 @@ class Store:
                         ["End the outer transaction, read current state, then retry the original operation."],
                     ) from None
                 raise
+
+    @contextmanager
+    def read_snapshot(self):
+        """Group public reads without committing a caller's transaction or upgrading a database."""
+        with self._lock:
+            # A caller may roll back its initial schema. Its empty reads remain nonwriting.
+            if not self._has_schema():
+                yield
+            else:
+                with self._transaction(write=False):
+                    yield
 
     def close(self):
         if self._owned:
@@ -445,10 +488,13 @@ class Store:
         actor=...,
     ):
         if seq is None:
-            seq = self.db.execute(
-                "SELECT COALESCE(MAX(seq),0)+1 FROM daymark_event_cursors WHERE workspace=?",
+            head = self.db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM daymark_event_cursors WHERE workspace=?",
                 (workspace,),
             ).fetchone()[0]
+            if type(head) is not int or head >= cursors.MAX_CURSOR:
+                raise DomainError("conflict", "Workspace event cursor range is exhausted")
+            seq = head + 1
         cursor = self.db.execute(
             "INSERT INTO daymark_events(workspace,operation_id,entity_id,action,before_data,after_data,created_at,actor) VALUES(?,?,?,?,?,?,?,?)",
             (
@@ -470,6 +516,22 @@ class Store:
         """SQLite uses the database text encoding when casting TEXT to BLOB."""
         return self.db.execute("PRAGMA encoding").fetchone()[0].lower()
 
+    def _entity_history(self, workspace, id, columns, limit, *, creations=False):
+        """Select entity events by native cursor, including out-of-order restores.
+
+        Sort only event keys before fetching potentially large snapshots. The
+        columns and optional creation filter are supplied by internal callers.
+        """
+        predicate = " AND e.action IN ('create','recurrence.create') AND e.after_data IS NOT NULL" if creations else ""
+        return self.db.execute(
+            "SELECT " + columns + " FROM ("
+            "SELECT e.seq AS physical,c.seq AS cursor FROM daymark_events e "
+            "JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE e.workspace=? AND e.entity_id=?"
+            + predicate + " ORDER BY c.seq DESC LIMIT ?) h "
+            "JOIN daymark_events e ON e.seq=h.physical ORDER BY h.cursor DESC",
+            (workspace, id, limit),
+        )
+
     def head(self, workspace):
         """The workspace's latest event cursor; 0 when nothing has happened."""
         with self._lock:
@@ -479,67 +541,6 @@ class Store:
                 "SELECT COALESCE(MAX(seq),0) FROM daymark_event_cursors WHERE workspace=?",
                 (workspace,),
             ).fetchone()[0]
-
-    # Kinds a plan can name anywhere in its workspace: as owners, labels or goals.
-    _NAMED = ("person", "principal", "label", "goal")
-
-    def _related(self, workspace, project_id):
-        """Entities outside a project whose changes alter its plan: what its tasks
-        depend on, and its goal."""
-        rows = self.db.execute(
-            "SELECT DISTINCT r.target_id FROM daymark_refs r JOIN daymark_refs p ON "
-            "p.workspace=r.workspace AND p.source_id=r.source_id AND p.field='project_id' "
-            "AND p.target_id=? WHERE r.workspace=? AND r.field='depends_on'",
-            (project_id, workspace),
-        ).fetchall()
-        related = {row[0] for row in rows}
-        project = self._project(workspace, project_id)
-        if project and project["goal_id"]:
-            related.add(project["goal_id"])
-        return related
-
-    def _touches(self, project_id, related, entity_id, before, after):
-        """Whether an event changes what a project's plan shows: the project itself,
-        a task entering, leaving or inside it, something its tasks depend on, or a
-        person, label or goal it can name."""
-        if entity_id == project_id or entity_id in related:
-            return True
-        for state in (before, after):
-            if state and (
-                state.get("project_id") == project_id or state.get("kind") in self._NAMED
-            ):
-                return True
-        return False
-
-    def _project_events(self, workspace, project_id, after, limit):
-        """Event rows after a cursor that touch a project, prefiltered in SQL."""
-        related = sorted(self._related(workspace, project_id))
-        needles = [
-            '"project_id":' + json.dumps(project_id, ensure_ascii=False),
-            *(f'"kind":"{kind}"' for kind in self._NAMED),
-        ]
-        clause = " OR ".join(
-            f"instr(COALESCE(e.{column},''),?)>0"
-            for column in ("before_data", "after_data")
-            for _ in needles
-        )
-        ids = ",".join("?" * (len(related) + 1))
-        rows = self.db.execute(
-            "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,"
-            "e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c "
-            f"ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? AND (e.entity_id IN ({ids}) "
-            f"OR {clause}) ORDER BY c.seq",
-            (workspace, after, project_id, *related, *needles, *needles),
-        )
-        found, related = [], set(related)
-        for row in rows:
-            before = json.loads(row[5]) if row[5] else None
-            after_data = json.loads(row[6]) if row[6] else None
-            if self._touches(project_id, related, row[3], before, after_data):
-                found.append(row)
-                if len(found) >= limit:
-                    break
-        return found
 
     def changes(self, workspace, project_id, after):
         """Whether anything in a project's plan changed after an event cursor.
@@ -552,20 +553,19 @@ class Store:
         if not isinstance(project_id, str) or not project_id:
             invalid("Project ID required")
         with self._lock:
-            head = self.head(workspace)
-            if after > head:
-                return {"cursor": head, "changed": True}
             if not self._has_schema():
-                return {"cursor": head, "changed": False}
-            from . import views
-
-            views._read(self)
-            hit = self._project_events(workspace, project_id, after, 1)
-            return {"cursor": head, "changed": bool(hit)}
+                return {"cursor": 0, "changed": after > 0}
+            self._refuse_stale()
+            with self._transaction(write=False):
+                head = self.head(workspace)
+                if after >= head:
+                    return {"cursor": head, "changed": after > head}
+                hit = project_feed.read(self, workspace, project_id, after, 1, cursor_only=True)
+                return {"cursor": head, "changed": bool(hit)}
 
     def events(self, workspace, after=0, limit=100, project=None):
         """An event page after a cursor. ``project`` keeps the events that touch it."""
-        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+        if type(after) is not int or not 0 <= after <= cursors.MAX_CURSOR or type(limit) is not int or not 1 <= limit <= 1000:
             invalid("Invalid event cursor or limit")
         if project is not None and (not isinstance(project, str) or not project):
             invalid("Invalid project filter")
@@ -573,7 +573,9 @@ class Store:
             if not self._has_schema():
                 return []
             if project is not None:
-                rows = self._project_events(workspace, project, after, limit)
+                self._refuse_stale()
+                with self._transaction(write=False):
+                    rows = project_feed.read(self, workspace, project, after, limit)
             else:
                 rows = self.db.execute(
                     "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
@@ -690,6 +692,8 @@ class Store:
         with self._lock:
             if not self._has_schema("daymark_scheduler"):
                 return {"value": None, "version": 0}
+            self._check_schema(upgrading=False)
+            self._require_setting_tracking()
             data, revision = self.db.execute(
                 "SELECT (SELECT value FROM daymark_scheduler WHERE key=?),"
                 "(SELECT value FROM daymark_scheduler WHERE key=?)",
@@ -703,7 +707,13 @@ class Store:
 
     def setting(self, workspace, name):
         """A named workspace setting (a small JSON value), or None."""
-        return self.setting_state(workspace, name)["value"]
+        key = self._setting_key(workspace, name)
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return None
+            self._check_schema(upgrading=False)
+            row = self.db.execute("SELECT value FROM daymark_scheduler WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def set_setting(self, workspace, name, value, *, expected_version=None):
         """Store or remove a small JSON setting. An observed version guards against stale edits."""
@@ -721,6 +731,7 @@ class Store:
         if text is not None and len(text) > 65_536:
             invalid("Setting exceeds 65,536 JSON characters")
         with self._transaction():
+            self._require_setting_tracking(install=True)
             state = self.setting_state(workspace, name)
             if expected_version is not None and expected_version != state["version"]:
                 raise DomainError("conflict", "Workspace setting changed; read it again")
@@ -733,10 +744,6 @@ class Store:
                     "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (key, text),
                 )
-            self.db.execute(
-                "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("revision:" + key, str(state["version"] + 1)),
-            )
         return value
 
     @staticmethod
@@ -774,6 +781,7 @@ class Store:
                         "conflict", "Configuration operation ID reused with a different request"
                     )
                 return receipt["result"]
+            self._require_setting_tracking(install=True)
             before = self.setting_state(workspace, name)
             result = apply(before)
             receipt = {"name": name, "digest": digest, "result": result}
@@ -975,7 +983,7 @@ class Store:
                 invalid("Forget requires a remembered fact; use a memory ID")
             return replay
         if "review_token" in payload:
-            if not forgetting and action not in {"update", "accept", "dismiss"}:
+            if not forgetting and action not in {"update", "accept", "dismiss", "undo"}:
                 invalid("This operation does not support a review token")
             payload = dict(payload)
             token = payload.pop("review_token")
@@ -1530,18 +1538,35 @@ class Store:
         index = sum(1 for x in others if plans.effective_rank(x) <= task["rank"])
         task["rank"] = self._key_at(others, index, operation_id, now)
 
+    def _same_materialized_state(self, recorded, live):
+        """Compare canonical JSON, supplying defaults absent in older event snapshots."""
+        return recorded == live or (
+            recorded is not None and live is not None
+            and canonical(self._validated(json.loads(recorded))) == live
+        )
+
     def _undo(self, workspace, payload, expected_version, operation_id, now):
         if set(payload) != {"id"}:
             invalid("Undo requires entity ID")
-        row = self.db.execute(
-            "SELECT action,before_data,after_data,operation_id FROM daymark_events WHERE workspace=? AND entity_id=? ORDER BY seq DESC LIMIT 1",
-            (workspace, payload["id"]),
+        row = self._entity_history(
+            workspace, payload["id"], "e.action,e.before_data,e.after_data,e.operation_id", 1
         ).fetchone()
-        if row is None or row[1] is None:
+        live_row = self.db.execute(
+            "SELECT data FROM daymark_entities WHERE workspace=? AND id=?", (workspace, payload["id"])
+        ).fetchone()
+        live = live_row[0] if live_row else None
+        if row is None and live is None:
+            invalid("No prior state to restore")
+        if row is None or not self._same_materialized_state(row[2], live) or (
+            live is None and row[0] != "delete"
+        ):
+            raise DomainError("conflict", "Current state lacks matching event history",
+                              ["Inspect the current record and its history before choosing a change."])
+        if row[1] is None:
             invalid("No prior state to restore")
         undone = row[3]
         previous = json.loads(row[1])
-        current = self.get(workspace, payload["id"]) if row[2] is not None else None
+        current = json.loads(live) if live is not None else None
         version = current["version"] if current else previous["version"] + 1
         if version != expected_version:
             raise DomainError("conflict", "Version mismatch")
@@ -1597,8 +1622,9 @@ class Store:
         """Undoing a project's configuration change also puts back the task stages
         that change cleared, for each task nobody has written since."""
         rows = self.db.execute(
-            "SELECT before_data,after_data FROM daymark_events WHERE workspace=? AND "
-            "operation_id=? AND action='stage.reset' ORDER BY seq",
+            "SELECT e.before_data,e.after_data FROM daymark_events e JOIN daymark_event_cursors c "
+            "ON c.event_seq=e.seq WHERE e.workspace=? AND e.operation_id=? "
+            "AND e.action='stage.reset' ORDER BY c.seq",
             (workspace, undone),
         ).fetchall()
         for before_text, after_text in rows:
@@ -1607,8 +1633,8 @@ class Store:
                 task = self.get(workspace, after["id"])
             except DomainError:
                 continue
-            if task["version"] != after["version"]:
-                continue  # Written since: leave it as it is now.
+            if not self._same_materialized_state(after_text, canonical(task)):
+                continue  # The task changed or was replaced since this stage was reset.
             updated = {**task, "stage": before["stage"], "version": task["version"] + 1,
                        "updated_at": now}  # fmt: skip
             self._settle_stage(updated, None, {})
@@ -1656,9 +1682,8 @@ class Store:
         if state == "ours" or slot(hashed) is not None:
             return
         id = readable if state is None else hashed
-        original_row = self.db.execute(
-            "SELECT after_data FROM daymark_events WHERE workspace=? AND entity_id=? AND after_data IS NOT NULL AND action IN ('create','recurrence.create') ORDER BY seq DESC LIMIT 1",
-            (data["workspace"], data["id"]),
+        original_row = self._entity_history(
+            workspace, data["id"], "e.after_data", 1, creations=True
         ).fetchone()
         original = json.loads(original_row[0]) if original_row else data
         if not original.get("recurrence"):
@@ -1871,7 +1896,7 @@ class Store:
                 if (
                     event["workspace"] != workspace
                     or type(event["seq"]) is not int
-                    or event["seq"] < 1
+                    or not 1 <= event["seq"] <= cursors.MAX_CURSOR
                     or event["seq"] in seen_events
                     or not (
                         event["actor"] is None
@@ -2086,12 +2111,12 @@ class Store:
         return compile_node(ast, 0)
 
     def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
-               claimed_by=None, now=None):
+               archived=False, claimed_by=None, now=None):
         """Search titles and descriptions. Continue from the last ID with the same filters."""
         from .search import page
 
         return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit,
-                    claimed_by=claimed_by, now=now)
+                    archived=archived, claimed_by=claimed_by, now=now)
 
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
@@ -2127,11 +2152,11 @@ class Store:
         return views.explain_ready(self, workspace, now=now, limit=limit,
                                    owner=owner, next_move=next_move, scope=scope, context=context)
 
-    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None):
+    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None, deadlines=False):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""
         from . import views
 
-        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context)
+        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context, deadlines=deadlines)
 
     def explore(self, workspace, goal_id=None, *, now=None, scope=None):
         """The conditions behind a goal (or every goal): what is met, what is next,
@@ -2194,11 +2219,11 @@ class Store:
 
         return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner)
 
-    def orientation(self, workspace, *, now=None, owner=None):
+    def orientation(self, workspace, *, now=None, owner=None, scope=None):
         """An atomic startup snapshot including active work and shared memory previews."""
         from . import views
 
-        return views.orientation(self, workspace, now=now, owner=owner)
+        return views.orientation(self, workspace, now=now, owner=owner, scope=scope)
 
     def summary(self, workspace, *, now=None, context=None, scope=None, owner=None):
         from . import views
@@ -2207,27 +2232,23 @@ class Store:
 
     def _review_token(self, workspace, id):
         """Identify this entity's latest recorded state inside the caller's transaction."""
-        row = self.db.execute(
-            "SELECT c.seq,e.operation_id,e.created_at,i.version,e.after_data=i.data,e.seq "
-            "FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq "
-            "JOIN daymark_entities i ON i.workspace=e.workspace AND i.id=e.entity_id "
-            "WHERE e.seq=(SELECT recent.seq FROM daymark_events recent "
-            "JOIN daymark_event_cursors cursor ON cursor.event_seq=recent.seq "
-            "WHERE recent.workspace=? AND recent.entity_id=? ORDER BY cursor.seq DESC LIMIT 1)",
-            (workspace, id),
+        row = self._entity_history(
+            workspace, id,
+            "h.cursor,e.after_data=(SELECT i.data FROM daymark_entities i "
+            "WHERE i.workspace=e.workspace AND i.id=e.entity_id),e.seq", 1
         ).fetchone()
         if row is None:
             return None
-        if not row[4]:
+        if not row[1]:
             # A schema upgrade may have added defaults to today's entity while
             # preserving the event as written. A sparse import may have no
             # evidence at its current version. Only the first case gets a token.
             raw = self.db.execute(
-                "SELECT after_data FROM daymark_events WHERE seq=?", (row[5],)
+                "SELECT after_data FROM daymark_events WHERE seq=?", (row[2],)
             ).fetchone()[0]
-            if raw is None or canonical(self._validated(json.loads(raw))) != canonical(self.get(workspace, id)):
+            if not self._same_materialized_state(raw, canonical(self.get(workspace, id))):
                 return None
-        evidence = ["daymark-review-v1", workspace, id, *row[:4]]
+        evidence = ["daymark-review-v2", cursors.event_fingerprint(self, workspace, row[0])]
         return hashlib.sha256(canonical(evidence).encode()).hexdigest()[:32]
 
     def receipt_context(self, workspace, operation_id, *, action, entity_id=None, actor=None):

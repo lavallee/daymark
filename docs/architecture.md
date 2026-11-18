@@ -104,6 +104,16 @@ receipts. Existing plugins receive a full strategy snapshot by
 default. A plugin can declare only the additional snapshot fields it reads
 in `Strategy.reads` to avoid unrelated workspace queries. Project roll-ups
 are fetched only when a strategy includes the additional `projects` read.
+Local advice resolves installed code before the SQLite read transaction and
+runs the stages after releasing it. The applicable configuration revision,
+candidate rows, counts and project facts agree on one database snapshot and
+one evaluation instant.
+
+The authenticated HTTP advice read evaluates shipped strategies in the
+credential's workspace. A service-supplied profile is never evaluated by the
+client. A host can explicitly select a local extension on a built-in base
+for one preview. Older services support client-side previews over individual
+reads and cannot report active or named workspace settings.
 
 ## Plugins
 
@@ -173,7 +183,7 @@ Stated plainly, so it is paid down on purpose:
 4. **Limits clients exceed.** A title is at most 2,000 characters. One client
    accepts more. The limit should be the kernel's to state and the client's to
    meet.
-5. **Size.** The engine is one 2,100-line module.
+5. **Engine size.** Storage and transition rules still share a large module. Read projections, project rules and reminder scheduling already live in smaller modules. New boundaries should make an invariant easier to review and exercise.
 
 ## Roadmap
 

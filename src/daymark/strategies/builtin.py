@@ -5,17 +5,21 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..models import Temporal
-from . import Advice, Note, Param, Snapshot, Strategy, register
+from ..models import day_offset, start_has_arrived
+from . import Advice, Note, Param, Snapshot, Strategy
+from . import register as register_strategy
+
+BUILTINS: dict[str, Strategy] = {}
+
+
+def register(strategy: Strategy) -> None:
+    """Keep shipped methods separately from host-registered extensions."""
+    BUILTINS[strategy.name] = register_strategy(strategy)
+
 
 
 def _age_days(stamp: str, now: datetime) -> int:
     return (now - datetime.fromisoformat(stamp)).days
-
-
-def _days_until(temporal, now: datetime) -> int:
-    value = Temporal.model_validate(temporal)
-    return (value.local().date() - now.astimezone(value.local().tzinfo).date()).days
 
 
 def _shortlist(view: Snapshot, advice: Advice, params: dict) -> None:
@@ -52,7 +56,7 @@ def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
         else:
             fits.append(item)
             continue
-        if item["deadline"] and _days_until(item["deadline"], view.now) <= 0:
+        if item["deadline"] and day_offset(item["deadline"], view.now) <= 0:
             due_held.append(item["id"])
     advice.picks = fits
     advice.held_back += longer + unknown
@@ -139,13 +143,17 @@ register(
 
 
 def _waiting_check(view: Snapshot, advice: Advice, params: dict) -> None:
-    old = [x for x in view.waiting if _age_days(x["updated_at"], view.now) >= params["days"]]
+    old = [
+        item for item in view.waiting
+        if start_has_arrived(item["earliest_start"], view.now)
+        and _age_days(item["updated_at"], view.now) >= params["days"]
+    ]
     for item in old[:50]:
         whom = item["waiting_on"] or "someone"
         days = _age_days(item["updated_at"], view.now)
-        advice.notes.append(
-            Note("waiting-check", f"Waiting on {whom} for {days} days; ask again?", [item["id"]])
-        )
+        unit = "day" if days == 1 else "days"
+        text = f"Waiting on {whom}. No task update in {days} {unit}. Follow up?"
+        advice.notes.append(Note("waiting-check", text, [item["id"]]))
 
 
 register(
@@ -164,7 +172,7 @@ register(
 def _overbooked(view: Snapshot, advice: Advice, params: dict) -> None:
     today = []
     for item in view.ready:
-        days = [_days_until(item[key], view.now) for key in ("deadline", "planned") if item[key]]
+        days = [day_offset(item[key], view.now) for key in ("deadline", "planned") if item[key]]
         if item["focus"] or (days and min(days) <= 0):
             today.append(item)
     if not today:
@@ -208,7 +216,7 @@ def _lookahead(view: Snapshot, advice: Advice, params: dict) -> None:
     for item in view.open:
         if not item["deadline"] or item["planned"]:
             continue
-        days = _days_until(item["deadline"], view.now)
+        days = day_offset(item["deadline"], view.now)
         if 0 < days <= params["days"]:
             coming.append((days, item["id"]))
     coming.sort()

@@ -3,9 +3,18 @@
 import subprocess
 import sys
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
-from daymark import Store
+from daymark import Client, DomainError, Store
+
+if find_spec("httpx") is None:
+    try:
+        Client("http://127.0.0.1", "sample")
+    except DomainError as error:
+        assert "daymark-core[client]" in " ".join(error.details)
+    else:
+        raise AssertionError("Expected client installation guidance from a core-only install")
 
 with tempfile.TemporaryDirectory() as directory:
     skill = subprocess.check_output(

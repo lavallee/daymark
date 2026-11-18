@@ -22,6 +22,8 @@ The contract that keeps the two layers apart:
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -87,6 +89,22 @@ class Advice:
     profile_source: dict | None = None
     context: str | None = None
 
+    @classmethod
+    def from_result(cls, data):
+        """Reconstruct service-computed advice as data; no strategy lookup or execution."""
+        return cls(
+            picks=data["picks"],
+            notes=[Note(**entry) for entry in data["notes"]],
+            suggestions=data["suggestions"],
+            held_back=data["held_back"],
+            tone=data["tone"],
+            steps=data["steps"],
+            profile=data["profile"],
+            profile_source=data["profile_source"],
+            scope=data.get("scope"),
+            context=data.get("context"),
+        )
+
     def ready_query(self) -> dict:
         """A bounded plain read that reaches past the choices already displayed."""
         query = {}
@@ -134,6 +152,26 @@ class Strategy:
 
 
 _REGISTRY: dict[str, Strategy] = {}
+_SERVICE_BUILTINS = ContextVar("daymark_service_builtin_strategies", default=False)
+
+
+@contextmanager
+def service_builtins():
+    """HTTP reads may evaluate shipped methods only, including during profile resolution."""
+    token = _SERVICE_BUILTINS.set(True)
+    try:
+        yield
+    finally:
+        _SERVICE_BUILTINS.reset(token)
+
+
+def has_external_setting(settings):
+    """Only names explicitly present in caller-supplied settings can opt in to client code."""
+    from .builtin import BUILTINS
+
+    names = {setting.partition("=")[0].partition(".")[0] for setting in settings}
+    return any(name in _REGISTRY or _plugin_entries(name) for name in names - BUILTINS.keys())
+
 
 
 def register(strategy: Strategy) -> Strategy:
@@ -148,8 +186,12 @@ def get(name: str) -> Strategy:
     are imported only when a profile names them: installing a package never
     runs its code by itself.
     """
-    from . import builtin  # noqa: F401 - registers the built-ins
+    from . import builtin
 
+    if _SERVICE_BUILTINS.get():
+        if name not in builtin.BUILTINS:
+            raise DomainError("not_found", "This service evaluates only built-in strategies", [name])
+        return builtin.BUILTINS[name]
     if name in _REGISTRY:
         return _REGISTRY[name]
     entries = _plugin_entries(name)
@@ -183,20 +225,21 @@ def _plugin_entries(name=None):
 
 def installed_plugins() -> list[str]:
     """Entry-point names only. Listing installed packages never calls their code."""
-    return sorted({entry.name for entry in _plugin_entries()})
+    return [] if _SERVICE_BUILTINS.get() else sorted({entry.name for entry in _plugin_entries()})
 
 
 def available() -> list[Strategy]:
-    from . import builtin  # noqa: F401
+    from . import builtin
 
-    return sorted(_REGISTRY.values(), key=lambda s: (KINDS.index(s.kind), s.name))
+    registry = builtin.BUILTINS if _SERVICE_BUILTINS.get() else _REGISTRY
+    return sorted(registry.values(), key=lambda s: (KINDS.index(s.kind), s.name))
 
 
 def describe(name: str) -> dict:
     """Inspect one registered strategy without importing unselected plugins."""
     found = next((strategy for strategy in available() if strategy.name == name), None)
     if found is None:
-        if isinstance(name, str) and _plugin_entries(name):
+        if not _SERVICE_BUILTINS.get() and isinstance(name, str) and _plugin_entries(name):
             return {
                 "name": name,
                 "installed_plugin": True,
@@ -243,7 +286,50 @@ def resolve(strategy: Strategy, given: dict | None) -> dict:
     return out
 
 
-def validate_profile(profile: Any) -> dict:
+def _resolve_stage(stage, *, allow_unavailable=False, stored=False):
+    """Return the portable configuration and whether this host can run it."""
+    if (
+        not isinstance(stage, dict)
+        or set(stage) - {"use", "with", "unavailable_parameters"}
+        or not isinstance(stage.get("use"), str)
+        or not stage["use"]
+    ):
+        raise DomainError("invalid", "Each profile entry needs `use` and optional `with`")
+    configured = stage.get("with")
+    if configured is None:
+        configured = {}
+    retired = stage.get("unavailable_parameters", {})
+    for values in (configured, retired):
+        if not isinstance(values, dict) or any(not isinstance(key, str) for key in values):
+            raise DomainError(
+                "invalid", "Strategy parameters must be a JSON object with named fields"
+            )
+    if configured.keys() & retired.keys():
+        raise DomainError("invalid", "A parameter can appear only once per strategy")
+    name = stage["use"]
+    try:
+        strategy = get(name)
+    except DomainError:
+        if not allow_unavailable:
+            raise
+        # All values are carried exactly as data until a capable host resolves them.
+        return {"use": name, "with": {**configured, **retired}}, False
+    if stored:
+        configured = {**configured, **retired}
+        retired = {k: v for k, v in configured.items() if k not in strategy.params}
+        configured = {k: v for k, v in configured.items() if k in strategy.params}
+    if retired.keys() & strategy.params.keys():
+        raise DomainError(
+            "invalid", "A parameter available here belongs in the strategy's with object"
+        )
+    return {
+        "use": strategy.name,
+        "with": resolve(strategy, configured),
+        **({"unavailable_parameters": dict(retired)} if retired else {}),
+    }, True
+
+
+def validate_profile(profile: Any, *, allow_unavailable=False) -> dict:
     """A profile is ``{"name": str, "strategies": [{"use": name, "with": {...}}, ...]}``."""
     if (
         not isinstance(profile, dict)
@@ -258,37 +344,20 @@ def validate_profile(profile: Any) -> dict:
         not isinstance(name, str) or not name for name in skipped
     ):
         raise DomainError("invalid", "Unavailable strategies must be listed by name")
-    stages = []
-    for stage in profile["strategies"]:
-        if (
-            not isinstance(stage, dict)
-            or set(stage) - {"use", "with", "unavailable_parameters"}
-            or not isinstance(stage.get("use"), str)
-            or not stage["use"]
-        ):
-            raise DomainError("invalid", "Each profile entry needs `use` and optional `with`")
-        strategy = get(stage["use"])
-        retired = stage.get("unavailable_parameters", {})
-        if not isinstance(retired, dict) or any(not isinstance(key, str) for key in retired):
-            raise DomainError("invalid", "Unavailable parameters must be named in an object")
-        params = resolve(strategy, stage.get("with"))
-        if set(retired) & set(strategy.params):
-            raise DomainError(
-                "invalid", "A parameter available here belongs in the strategy's with object"
-            )
-        stages.append(
-            {
-                "use": strategy.name,
-                "with": params,
-                **({"unavailable_parameters": dict(retired)} if retired else {}),
-            }
-        )
+    stages = [
+        _resolve_stage(stage, allow_unavailable=allow_unavailable)[0]
+        for stage in profile["strategies"]
+    ]
     return {"name": profile.get("name") or "custom", "strategies": stages}
 
 
 def persistent_profile(profile: dict) -> dict:
-    """Keep older parameter values in stored configurations for compatible installations."""
-    resolved = validate_profile(profile)
+    """Keep all portable values and the order in which capable hosts run the stages."""
+    if profile.get("skipped"):
+        raise DomainError(
+            "invalid", "Drop unavailable strategies explicitly before saving", profile["skipped"]
+        )
+    resolved = validate_profile(profile, allow_unavailable=True)
     for stage in resolved["strategies"]:
         stage["with"].update(stage.pop("unavailable_parameters", {}))
     return resolved
@@ -326,7 +395,7 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
     skipped = list(profile.get("skipped") or [])
     for name in drops:
         if name in skipped:
-            skipped.remove(name)
+            skipped = [item for item in skipped if item != name]
         elif not any(stage["use"] == name for stage in stages):
             matches = [
                 (s, k)
@@ -350,9 +419,10 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
         name, dot, param = target.partition(".")
         if not name or bool(dot) != bool(equals) or (dot and not (param and raw)):
             raise DomainError("invalid", "Use STRATEGY or STRATEGY.PARAM=VALUE")
+        strategy = get(name)  # Intentional edits require this host to know the schema.
         stage = next((x for x in stages if x["use"] == name), None)
         if stage is None:
-            stage = {"use": get(name).name, "with": {}}
+            stage = {"use": strategy.name, "with": {}}
             stages.append(stage)
         if param:
             try:
@@ -436,24 +506,54 @@ def snapshot(
     )
 
 
+def selected_advice(tasks, name=None, *, settings=(), drops=(), scope=None, context=None):
+    """Resolve installed code outside the read transaction, then bind the choice to the facts."""
+    from .preferences import select_profile
+
+    for _ in range(3):
+        chosen, source = select_profile(tasks, name, settings=settings, drops=drops)
+        result = _advise(tasks, chosen, scope, context, source)
+        if result is not None:
+            return result
+    raise DomainError("conflict", "The chosen profile changed during the read. Try again.")
+
+
 def advise(
     tasks, profile: dict | None = None, *, scope: str | None = None, context: str | None = None
 ) -> Advice:
-    """Run a profile over the current state. Reads only; returns advice."""
+    """Run an explicit profile over current facts without changing them."""
+    return _advise(tasks, profile, scope, context, None)
+
+
+def _advise(tasks, requested, scope, context, source):
+    from .preferences import selection_is_current
     from .profiles import PROFILES
 
-    requested = PROFILES["plain"] if profile is None else profile
+    requested = PROFILES["plain"] if requested is None else requested
     profile = validate_profile(requested)
     skipped = requested.get("skipped", [])
     stages = [(get(stage["use"]), stage["with"]) for stage in profile["strategies"]]
     reads = {name for strategy, _ in stages for name in strategy.reads}
-    view = snapshot(tasks, scope=scope, context=context, reads=reads)
-    advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope, context=context)
+    session = getattr(tasks, "read_snapshot", None)
+    with (session() if session else nullcontext(tasks)) as reader:
+        if source and not selection_is_current(reader, source):
+            return None
+        view = snapshot(reader, scope=scope, context=context, reads=reads)
+        total = (
+            reader.summary(scope=scope, context=context)["ready"]
+            if len(view.ready) == READY_LIMIT else len(view.ready)
+        )
+    advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope, context=context,
+                    profile_source=source)
     if skipped:
-        advice.notes.append(
-            Note("profile", "The profile names strategies that could not be used: "
-                 + ", ".join(skipped) + ". Fix with `daymark profile`.", [])
-        )  # fmt: skip
+        if _SERVICE_BUILTINS.get():
+            message = ("Service advice uses built-in strategies. These saved stages could not run: "
+                       + ", ".join(skipped) + ". Their settings remain in the workspace.")
+            advice.profile_source = {**(source or {}), "skipped": skipped}
+        else:
+            message = ("The profile names strategies that could not be used: "
+                       + ", ".join(skipped) + ". Fix with `daymark profile`.")
+        advice.notes.append(Note("profile", message))
     retired = [
         f"{s['use']}.{key}"
         for s in profile["strategies"]
@@ -470,12 +570,10 @@ def advise(
                 "Advice uses the installed strategy's effective parameters.",
             )
         )
-    if len(view.ready) == READY_LIMIT:
-        total = tasks.summary(scope=scope, context=context)["ready"]
-        if total > READY_LIMIT:
-            advice.notes.append(
-                Note("profile", f"Advice covers the first {READY_LIMIT} of {total} ready tasks.")
-            )
+    if total > READY_LIMIT:
+        advice.notes.append(
+            Note("profile", f"Advice covers the first {READY_LIMIT} of {total} ready tasks.")
+        )
     for strategy, params in stages:
         strategy.apply(view, advice, params)
     if advice.steps:
@@ -500,8 +598,8 @@ def stored_profile(tasks) -> dict:
     return select_profile(tasks)[0]
 
 
-def restore_profile(saved) -> dict:
-    """Resolve a persisted profile against the strategies currently installed."""
+def restore_profile(saved, *, for_edit=False) -> dict:
+    """Resolve stored stages; keep locally unavailable configurations in order for edits."""
     from .profiles import PROFILES
 
     if not isinstance(saved, dict) or not isinstance(saved.get("strategies"), list):
@@ -509,17 +607,11 @@ def restore_profile(saved) -> dict:
     stages, skipped = [], []
     for stage in saved["strategies"]:
         try:
-            strategy = get(stage["use"])
-            configured = stage.get("with") or {}
-            known = {k: v for k, v in configured.items() if k in strategy.params}
-            retired = {k: v for k, v in configured.items() if k not in strategy.params}
-            stages.append(
-                {
-                    "use": strategy.name,
-                    "with": resolve(strategy, known),
-                    **({"unavailable_parameters": retired} if retired else {}),
-                }
-            )
+            resolved, available = _resolve_stage(stage, allow_unavailable=True, stored=True)
+            if available or for_edit:
+                stages.append(resolved)
+            else:
+                skipped.append(stage["use"])
         except (DomainError, KeyError, TypeError, AttributeError):
             skipped.append(str(stage.get("use") if isinstance(stage, dict) else stage))
     profile = {"name": str(saved.get("name") or "custom"), "strategies": stages}
@@ -531,6 +623,6 @@ def store_profile(tasks, profile: dict) -> dict:
     writer = getattr(tasks.engine, "set_setting", None)
     if writer is None:
         raise DomainError("invalid", "Profiles are set on a local database")
-    profile = persistent_profile({k: v for k, v in profile.items() if k != "skipped"})
+    profile = persistent_profile(validate_profile(profile))
     writer(*tasks._ws, SETTING, profile)
     return restore_profile(profile)

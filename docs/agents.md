@@ -3,36 +3,36 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
-An installed CLI includes its matching agent skill. `daymark onboard --skill`
-prints the full Markdown with its skill name and description. Use this when
-the agent host accepts a skill file. For project instructions, `daymark
-onboard` prints a short startup snippet and `daymark onboard --write AGENTS.md`
-maintains its marked section. Commitments owned by another tracker can stay
-there. Capture related work in Daymark with a source reference.
-
 ## Start of a session
 
-```sh
-daymark prime
-```
+In an unfamiliar directory, `daymark where --json` reports the selected
+database, selection rule and whether the file exists. It opens no database
+and makes no network request. If there is no database, use `daymark init`
+for a per-user database or `daymark init --here` for the current folder.
 
-`prime` starts with the active session, counts, up to five ready tasks and up
-to five remembered facts, then prints the command guide. For a returning
-session use `daymark prime --brief`. It includes up to five ready titles and five remembered facts, with a 160-character preview of each title. Use the memory ID with `show` for the full fact. On a current service or local database, `prime --brief --json` samples counts, ready work, memory previews and the workspace event cursor in one read. Save `activity_checkpoint` and use `activity --after CHECKPOINT` to read subsequent changes in this workspace. `as_of` gives the UTC instant used for dates and leases. Older services supply separate reads and omit the snapshot cursor. For a program use `daymark prime --json`.
-Local sessions identify the database, workspace, actor and timezone. HTTP
-sessions identify the endpoint and use the workspace and actor bound to the
-credential. The ready count includes the current actor's claims.
+Run `daymark prime` to see the workspace, actor, counts, up to five ready
+tasks and five remembered facts, followed by the command guide. A returning
+worker can use `daymark prime --brief` for the same session view without the
+guide. Titles are limited to 160 characters plus an ellipsis. Use an ID with
+`show` for the complete record. Local sessions identify the database and
+timezone. An HTTP session uses the workspace and actor bound to its credential.
+The ready count includes work claimed by the current actor.
 
-`daymark where --json` explains which database an everyday command will use,
-including the selection rule and whether the file exists. Use it when starting
-in an unfamiliar directory. It opens no database and makes no network request.
+For a machine-readable pickup use `daymark prime --brief --json`. On a local
+database or current service the counts, ready work, memory previews and
+activity checkpoint come from one read. Save `activity_checkpoint` and pass
+it to `activity --after CHECKPOINT` to read subsequent changes. The UTC
+instant in `as_of` governs dates and leases. Older services compose separate
+reads and can omit the checkpoint. The full `prime --json` form lists active
+memory titles.
 
-If there is no database, choose `daymark init` for a per-user database or
-`daymark init --here` for a database in the current folder.
-
-`daymark onboard` prints a short section for an `AGENTS.md` or `CLAUDE.md`
-file; `daymark onboard --write AGENTS.md` inserts it, and refreshes it in place
-on later runs. Check it without changing the file with `daymark onboard --check AGENTS.md`. A missing or outdated section exits 1. A malformed section is left for the author to inspect.
+To give a host the matching skill, use `daymark onboard --skill`. For a
+project instruction file, `daymark onboard` prints a short startup snippet
+and `daymark onboard --write AGENTS.md` maintains its marked section.
+`daymark onboard --check AGENTS.md` exits 1 for missing or outdated
+instructions. A malformed section needs inspection. The same commands
+accept `CLAUDE.md`. Work that belongs to another tracker can stay there.
+Use a source reference for the related Daymark task.
 
 ## The rules Daymark holds you to
 
@@ -54,9 +54,9 @@ on later runs. Check it without changing the file with `daymark onboard --check 
 | Command | Answers |
 | --- | --- |
 | `daymark ready [-n N] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. |
-| `daymark agenda [--days N]` | Overdue, today, each coming day, waiting, proposed. Each task appears once. |
+| `daymark agenda [--days N] [--deadlines]` | Overdue, today, each coming day, waiting, proposed. With `--deadlines`, show only accepted live tasks whose hard deadline is overdue, today or within the horizon. |
 | `daymark show ID` | One entity with its dates, blockers, dependents, children, reminders, notes and history. For tasks it explains each fact keeping the item out of this actor’s ready list. |
-| `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. |
+| `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. Add `--archived` for archived records only. |
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
 | `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
 | `daymark plan PROJECT` | One project as a board: each stage with its tasks in the project's order, dates, owners, and what blocks them from outside. |
@@ -72,6 +72,13 @@ Each hit gives an ID, title, kind, status, version and any scope. Read a full
 record with `show ID`. When the page returns `next`, repeat the search with
 the same filters and `--after ID`. Results follow ID order within this
 workspace. Newly inserted records before a saved cursor appear on a new search.
+
+Use `daymark find TEXT --archived` to recover an archived task or add
+`--kind memory` for a retired fact. This implies `--page` and marks every
+hit as archived alongside its stored status. Keep `--archived` on subsequent
+pages. In MCP use `daymark_view` with `view: "find"` and `archived: true`.
+Archived search is separate from `--claimed`. Upgrade an older HTTP service
+if it refuses archived search.
 
 A task is **ready** when it is open and not archived, its `--start` date has
 arrived, every task it comes `--after` is completed, cancelled or archived, it
@@ -123,13 +130,25 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | `remember "fact"` / `forget ID` | Keep or retire a durable fact shown by `prime`. |
 | `cancel`, `reopen`, `archive`, `undo ID` | Lifecycle and one-step undo. Undo restores the previous fields; it never removes a note or another actor's claim. |
 
+After scheduling, use `daymark show REMINDER_ID --brief` to see its time,
+recipient, channel and worker state. A pending reminder tied to a proposal
+waits for acceptance. A delivered reminder on the recording channel was
+recorded locally. Relative reminder requests remember their expression and
+timezone so the same operation ID can recover the original instant after
+midnight or a snapshot transfer.
+
 Set who is acting with `--as NAME` or `DAYMARK_ACTOR`; it labels claims and
 notes. Set the timezone for relative dates with `--tz` or `DAYMARK_TZ`.
 
 **Dates** accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM` (local, or with an offset),
 `today`, `tomorrow`, a weekday name (the next one), `+3d`, `+2w`, `+1m`, `+1y`,
 and any relative form followed by `HH:MM`. A relative phrase is stored beside
-the date it resolved to, so `show` can report what was actually said.
+the date it resolved to, so `show` can report what was actually said. A clock time skipped by a timezone change is refused. When a
+clock reading occurs twice, ask which occurrence the person intends and use
+the matching numeric offset. For example, `2030-04-07T01:45+11:00` and
+`2030-04-07T01:45+10:30` identify different instants on Lord Howe Island.
+Full `show --json` includes a `temporal` object with stored dates or instants,
+the IANA zone and any recorded expression.
 
 **Repeats** accept `day`, `week`, `month`, `year`, `2 weeks`, `weekdays`,
 `mon,thu`, or an RRULE body such as `FREQ=MONTHLY;BYMONTHDAY=1`.
@@ -235,6 +254,12 @@ for it"), and a note names the tasks it is about. If the profile holds tasks
 back it says how many. Choose or change a profile only when the person asks:
 it is their way of working, not yours.
 
+An authenticated service uses the active profile in the credential's workspace.
+It also accepts a named profile or one-call adjustment. Service advice runs
+built-in strategies and lists any saved stages it could not use. A v0.5.0
+service cannot return its profile. The current client labels its plain fallback.
+Standing preferences are written on the local database.
+
 A pick can be a decision for the person. Consult its recorded next move before
 acting. To select work explicitly delegated to an agent, use `ready --move agent`.
 
@@ -305,6 +330,13 @@ on `add`, `ready` and `agenda`; `--unscoped` for tasks with none). It keeps one
 person's work and home tasks apart in a view while still letting a single
 `ready` show both. A scope hides nothing from anyone: use a workspace when
 separation matters.
+
+Use `edit ID --assignee PERSON_ID` to identify who is responsible, including on
+a task outside a project. MCP capture and edit accept `assignee`. Find the
+existing person or principal by kind when exploring. For a name-only assignment,
+pass the supplied name as given so both kinds are checked. If multiple records
+match, ask which ID the person intends. The assignment persists through later claims and releases.
+An empty assignee clears the link.
 
 ## Retrying safely
 
@@ -389,9 +421,25 @@ are the same lean text as the command line. `daymark_view` also reads
 `action: move` takes `stage` and `place` (`after:ID`, `before:ID`, `first` or
 `last`).
 
+For a hard-deadline check, run `daymark agenda --deadlines --days 2` or call
+`daymark_view` with `{"view":"agenda","deadlines":true,"days":2}`. The result
+includes waiting and blocked work, grouped under overdue, today or the
+deadline’s local date. Scope and context filters compose with this filter.
+The horizon is inclusive in each deadline’s own time zone. A timed deadline
+earlier than the evaluation instant is overdue, even on the same local day.
+`--days 0` includes overdue and today.
+
 ## Python
 
-`daymark.Tasks` wraps a `Store` or the HTTP `Client` with the same verbs:
+Use `tasks.agenda(days=2, deadlines=True)` for the same read in Python.
+The HTTP client checks the service schema on first use of the filter and
+refuses the read if the service lacks support.
+
+For a local database import `Store` and `Tasks` from `daymark`. For an
+existing HTTP service install `daymark-core[client]` and import `Client`.
+The credential chooses the workspace and actor. [Python examples](../README.md#embed-in-your-transaction)
+
+`Tasks` wraps these connections with the same verbs:
 `add`, `propose`, `ready`, `agenda`, `show`, `claim`, `release`, `note`,
 `done`, `skip`, `wait`, `resume`, `defer`, `edit`, `block`, `unblock`,
 `accept`, `dismiss`, `remind`, `remember`, `find`, and for projects `project`,
@@ -495,6 +543,20 @@ Use `--after 0` to read from the beginning, or omit `--after` for the latest
 page. Save the workspace identity alongside an integer cursor. An older
 service may support only the integer form.
 
+After a native restore, `show ID` lists history in workspace event order.
+`undo ID` restores the prior state only when the latest event describes the
+current record. A conflict can mean the restore supplied the entity without
+its matching event. Inspect the record and recover the missing native history
+before trying an undo.
+
+To undo the latest change you actually saw, pass `--if-version N` and
+`--if-review TOKEN` from the detail view. The corresponding MCP `undo` action
+accepts `expected_version` and `review_token`. A concurrent change during
+undo produces a conflict. Inspect the new state before issuing a new intent.
+If the person asks to restore one older field, compare the relevant revision
+and use a guarded edit for just that field. A later change to the same field
+may require the person to choose which value to keep.
+
 ### Let several workers take from one queue
 
 Mark the tasks an agent may do with `--move agent`. Give each local worker
@@ -578,8 +640,10 @@ For a decision that may outlive the task itself, retain the `review_token`
 from that original `show` or `brief`. Pass it as `--if-review TOKEN` on
 `accept`, `dismiss` or `edit`. A record that was hard-deleted and recreated
 can start again at version 1. A version number alone cannot distinguish those
-lifetimes. The token identifies the observed entity event in its workspace
-and survives unrelated changes to other records. If an imported record lacks
+lifetimes. The token identifies the observed event and its recorded contents
+in this workspace. It survives an intact native transfer and unrelated
+changes to other records. Restoring different terms under the same operation
+ID, event number, version and timestamp requires a new review. If an imported record lacks
 the event for its current state, the token is null. A fresh decision on a
 replacement task requires a new review.
 

@@ -548,3 +548,60 @@ def test_retired_parameters_remain_visible_and_survive_unrelated_edits_until_exp
             "unavailable_parameters"
         ] == {"former_size": 1}
         assert tasks.saved_profiles("portable") == saved
+
+
+def test_unavailable_stages_keep_their_settings_and_order_across_independent_edits(tmp_path):
+    first = {"use": "proof-filter", "with": {"proof": {"include": ["draft"]}, "limit": 2}}
+    last = {"use": "proof-outline", "with": {"depth": 1}}
+    stages = [{"use": "shortlist", "with": {"size": 3}}, first, {"use": "neutral-aging"}, last]
+    with closing(Store(tmp_path / "press.db")) as store:
+        tasks = Tasks(store, "press")
+        # This portable export comes from a different installation.
+        named = tasks.save_profile("proof", profile={"name": "proof", "strategies": stages})
+        assert named["profile"]["strategies"][1::2] == [first, last]
+        result = tasks.profile("proof", expected_version=0, op="choose")
+        assert result["skipped"] == ["proof-filter", "proof-outline"]
+        edited = tasks.profile(
+            drops=["shortlist"], settings=["shortlist.size=1"], expected_version=1, op="move"
+        )
+        assert (
+            tasks.profile(
+                drops=["shortlist"], settings=["shortlist.size=1"], expected_version=1, op="move"
+            )
+            == edited
+        )
+        expected = [
+            first,
+            {"use": "neutral-aging", "with": {}},
+            last,
+            {"use": "shortlist", "with": {"size": 1}},
+        ]
+        assert store.setting("press", "profile")["strategies"] == expected
+        assert tasks.save_profile("backup")["profile"]["strategies"] == expected
+        assert (
+            tasks.save_profile("copy", profile="proof")["profile"]["strategies"]
+            == named["profile"]["strategies"]
+        )
+        fails("not_found", tasks.profile, settings=["proof-filter.limit=1"])
+        fails(
+            "not_found", tasks.save_profile, "invalid", profile="proof", settings=["proof-outline"]
+        )
+        fails("conflict", tasks.profile, drops=["proof-filter"], expected_version=1)
+        assert tasks.profile() == {
+            k: v for k, v in edited.items() if k not in {"operation_id", "undo"}
+        }
+        dropped = tasks.profile(drops=["proof-filter"], expected_version=2, op="drop")
+        assert dropped["skipped"] == ["proof-outline"]
+        assert tasks.profile(undo="drop", expected_version=3)["skipped"] == [
+            "proof-filter",
+            "proof-outline",
+        ]
+        assert store.setting("press", "profile")["strategies"] == expected
+        for stage in (
+            {"use": "proof-filter", "with": [1]},
+            {"use": "proof-filter", "unknown": 3},
+            {"use": "shortlist", "with": {"future": True}},
+            {"use": "shortlist", "with": {"size": 0}},
+        ):
+            fails("invalid", tasks.save_profile, "invalid", profile={"strategies": [stage]})
+        assert tasks.saved_profiles("backup")["profile"]["strategies"] == expected

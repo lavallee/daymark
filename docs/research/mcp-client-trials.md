@@ -157,6 +157,80 @@ the key before sending the write and includes it in an ambiguous HTTP
 failure. Repeating that cold-session trial with the returned key left one
 task and returned its original ID.
 
+## Assigning a standalone task to a person
+
+A cold worker received an open task and an existing person in the same
+workspace. Asked to assign the task while preserving other details, it found
+both records. The first host had no assignment field in its MCP tools. It
+left the task untouched but incorrectly suggested that assignment required
+a project. The CLI already supported assignment on standalone work.
+
+After adding `assignee` to MCP capture and edit, a fresh worker given the same
+request made one version-guarded edit and verified the responsible person.
+The record advanced once, stayed open, and had no claim, wait or project.
+The worker still consulted activity while locating the person. The discovery
+text now says that find defaults to tasks, and the guide names the person
+and principal kind filters.
+
+A second fixture gave a person and a principal the same display name. On
+the first run the worker searched only people, selected that ID and assigned
+the task without asking. After the primer and manifest advised passing the
+supplied name through to the resolver, a fresh worker on the same prompt
+received both candidate IDs, inspected their details and asked which was
+intended. The task stayed at version 1 with no assignee. Hosts can still
+supply an explicit ID; this trial measures the worker’s choice, while the
+ambiguity check itself runs in the plain-verb layer.
+
+## A half-hour clock change
+
+Two separate Claude Code conversations used authenticated MCP in the
+`Australia/Lord_Howe` zone. Each involved a 1:45 am deadline on April 7,
+2030. The clocks repeat that reading with a 30-minute difference. Both
+workers asked which occurrence the person intended and recorded the later
+one only after clarification. Reading full detail returned
+`2030-04-07T01:45:00+10:30`, equivalent to 15:15 UTC the previous day.
+
+The first prompt explicitly requested a question before creating anything.
+The database stayed empty until the person selected the later time. The
+second prompt simply asked for the task and deadline. That worker created
+an undated task with a note while waiting and added another note after
+setting the deadline. The observed difference was in partial capture and
+note-taking. Both sessions preserved the uncertainty about the instant.
+
+## TypeScript SDK across local and authenticated connections
+
+The official TypeScript SDK 1.32.1 on Node.js 25.1.0 completed the same
+journey against local stdio and stdio backed by an authenticated HTTP
+service. It discovered six tools, captured a task by a case-insensitive
+Unicode assignee name, and read it back by a source reference containing an
+accent and slash. Its structured result preserved the note text and the
+selected instant within a repeated half hour.
+
+After renaming the person, the old-name retry returned a conflict containing
+the recorded assignee ID. Repeating the original assignment using that ID
+returned the version-1 receipt. Each workspace had exactly three events
+across person creation, task creation and the person's rename. A second
+read-only client discovered two tools, refused a direct call to complete the
+task, and read back its open state. The local workspace path contained spaces,
+a number sign and a non-ASCII character.
+
+## Undo after another worker has edited the task
+
+Two fresh MCP sessions were asked to undo only the previous worker's title
+change while preserving an evening shift's edits. When the evening shift
+had changed priority and added a note, the first worker restored just the
+old title with a guarded edit. The priority and note survived. When the
+evening shift had also supplied a newer title, the second worker showed
+both alternatives and asked which one to keep. It wrote nothing.
+
+The plain `undo` operation has a narrower meaning than either conversation:
+it reverses the latest event on that entity. A deterministic interleaving
+exposed an earlier failure. A worker read version 2 to undo a rename. While
+the request was in flight a second worker changed the priority at version 3.
+An automatic retry then reversed the priority instead. The new implementation
+returns a conflict and preserves both fields. A successful reviewed undo can
+still be retried with its original operation ID after later work.
+
 ## Mixed client and service versions
 
 An independent Python MCP SDK 1.30.0 process connected over stdio to each

@@ -87,9 +87,16 @@ daymark advise --profile print-review
 
 A saved configuration names a strategy and its parameter values. If the
 package disappears or its module cannot load, advice reports the unavailable
-stage and keeps the workspace's recorded configuration. Explicitly drop that
-stage to save a copy without it. A later working installation can use the
-retained name and parameters again.
+stage. Editing other stages, adopting the named profile or saving a copy keeps
+its position and parameters. A host with the package can use them again.
+Changing that stage's parameters requires a working installation. Use
+`--drop STRATEGY` to remove the stage deliberately.
+
+To move the whole configuration to another database, export a named copy with
+`daymark profile --saved NAME --json`. This includes locally unavailable
+stages. The active profile display lists their names under `skipped` but has
+no parameter values for them. Importing that display requires explicitly
+dropping any stages known only by name.
 
 When a package retires a parameter, the active profile shows the saved value
 under `unavailable_parameters` alongside the effective settings from the

@@ -8,7 +8,7 @@ import re
 from .models import DomainError
 
 _STAMP = re.compile(r"dm1\.(0|[1-9][0-9]{0,18})\.[0-9a-f]{32}")
-_MAX_CURSOR = 2**63 - 1
+MAX_CURSOR = 2**63 - 1
 
 
 def numeric_or_checkpoint(value):
@@ -24,7 +24,7 @@ def numeric_or_checkpoint(value):
 def cursor_number(value):
     if isinstance(value, str) and (match := _STAMP.fullmatch(value)):
         value = int(match[1])
-    if type(value) is not int or not 0 <= value <= _MAX_CURSOR:
+    if type(value) is not int or not 0 <= value <= MAX_CURSOR:
         raise DomainError(
             "invalid", "Activity cursor must be a nonnegative integer or a saved checkpoint"
         )
@@ -40,6 +40,10 @@ def mismatch():
 
 
 def checkpoint(store, workspace, seq):
+    return f"dm1.{seq}.{event_fingerprint(store, workspace, seq)}"
+
+
+def event_fingerprint(store, workspace, seq):
     """Hash one event in the caller's snapshot, independent of physical SQLite row IDs."""
     digest = hashlib.blake2b(digest_size=16)
     metadata = [workspace, seq]
@@ -69,4 +73,4 @@ def checkpoint(store, workspace, seq):
                     if decoder:
                         field_hash.update(decoder.decode(b"", final=True).encode())
                     digest.update(field_hash.digest())
-    return f"dm1.{seq}.{digest.hexdigest()}"
+    return digest.hexdigest()
