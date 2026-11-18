@@ -7,6 +7,8 @@ import posixpath
 import re
 import sys
 import tarfile
+import tomllib
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 REQUIRED = [
@@ -43,7 +45,12 @@ def problems(archive: str) -> list[str]:
             for member in tar.getmembers() if member.isfile()
         }
         errors = [f"sdist is missing {path}" for path in REQUIRED if path not in files]
+        config = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
+        selected = set(config["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"])
         for path, member in files.items():
+            if path != "PKG-INFO" and not any(path == root or path.startswith(root + "/") for root in selected):
+                errors.append(f"sdist contains an unexpected path: {path}")
+
             if not (path.startswith("docs/") and (path.endswith(".md") or path == "docs/llms.txt")):
                 continue
             with tar.extractfile(member) as source:

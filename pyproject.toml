@@ -39,7 +39,7 @@ testpaths = ["tests"]
 line-length = 100
 
 [tool.hatch.build.targets.sdist]
-include = [
+only-include = [
     "src/daymark",
     "tests",
     "docs",
@@ -47,6 +47,7 @@ include = [
     "skills",
     "scripts",
     ".github/workflows",
+    ".gitignore",
     "AGENTS.md",
     "artifact.toml",
     "README.md",

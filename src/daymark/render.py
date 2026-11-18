@@ -533,6 +533,12 @@ def _cycle_line(id, cycle):
     return f"Circular wait. {chain}. Review the prerequisite or parent link."
 
 
+def _resume_line(view):
+    if view["if_resumed_now"]["earliest_start"] == "clear":
+        return "Resuming now clears the future start and cancels all active reminders. The deadline stays in place."
+    return "Resuming now keeps the existing schedule, including any active reminders and deadline."
+
+
 def brief_text(view: dict, *, timezone="UTC", session=None, mcp=False, source=None) -> str:
     clipped = view.get("truncated", [])
     title = view["title"] + ("…" if "title" in clipped else "")
@@ -558,6 +564,8 @@ def brief_text(view: dict, *, timezone="UTC", session=None, mcp=False, source=No
         out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
         if state.get("cycle"):
             out.append(_cycle_line(view["id"], state["cycle"]))
+    if "if_resumed_now" in view:
+        out.append(_resume_line(view))
     if "next_move" in view:
         out.append("Next move: " + view["next_move"])
     if rule := view.get("recurrence"):
@@ -682,6 +690,8 @@ def show_text(ctx: dict, now=None) -> str:
         out.append("unblocks: " + ", ".join(ctx["dependents"]))
     for child in ctx["children"]:
         out.append(f"  child {child['id']}  {child['title']}  [{child['status']}]")
+    if "if_resumed_now" in ctx:
+        out.append(_resume_line(ctx))
     for reminder in ctx["reminders"]:
         out.append(
             f"  reminder {reminder['id']} at {reminder['scheduled_at']} [{reminder['state']}]"
@@ -976,8 +986,10 @@ MCP_GUIDE = (
     'matters.\n'
     '• daymark_act supports wait with on, remind with when and recipient (default local '
     'recording), take or claim for shared work, release with a handoff note, and done after '
-    'completion. Give each write a fresh op and keep it for retries. Guard reviewed edits and '
-    'decisions with the review_token returned by show.\n'
+    'completion. Give each intent a fresh op. An identical retry returns the original result. '
+    'Use show for the current holder or status. Guard reviewed edits and '
+    'decisions with the review_token returned by show. For done or release from an earlier '
+    'claim, pass its reviewed version as expected_version.\n'
 ).rstrip()
 
 GUIDE = """\
@@ -1019,12 +1031,12 @@ Commands (add --json to any for structured output)
       advise runs service built-ins for the authenticated workspace. Save preferences locally.
       MCP use_profile receipts include restore_call for a version-checked reversal.
   daymark --as WORKER take [--project ID] [--scope NAME] [--context ID]   claim a delegated ready task
-  daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
+  daymark claim ID / release ID [--note TEXT] [--if-version N]   take work or hand it back
   daymark note ID "text"            progress or context for the next session
   If a remote write is uncertain, repeat the same command and flags with the returned --op.
-  daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
+  daymark done ID [--note TEXT] [--if-version N]   complete (a repeating task spawns its next)
   daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)
-  daymark wait ID --on WHO [--until D] / resume ID   visible, unfinished work
+  daymark wait ID --on WHO [--until D] / resume ID   show a waiting task first to see the effect on reminders
   daymark edit ID --assignee NAME   MCP edit: assignee. Pass the name as given to check
       both people and principals for a match. Use an ID the person supplied or confirmed.
   daymark remind ID WHEN --to PERSON   schedule a reminder; show REMINDER --brief checks the local recording

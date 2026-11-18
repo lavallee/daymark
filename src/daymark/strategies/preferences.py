@@ -136,7 +136,16 @@ def active_profile(
 
     def apply(before):
         if undo is not None:
-            prior = tasks.engine.setting_before(*tasks._ws, SETTING, undo)
+            try:
+                prior = tasks.engine.setting_before(*tasks._ws, SETTING, undo)
+            except DomainError as error:
+                if error.code != "not_found":
+                    raise
+                raise DomainError(
+                    "not_found", "No active profile change with that operation ID in this workspace",
+                    ["For a named copy, inspect its version with profile --saved NAME.",
+                     "Import previous save JSON with profile --from-file FILE --save-as NAME --if-version N. Use 0 for an absent name."],
+                ) from None
             if prior["version"] != before["version"]:
                 raise DomainError("conflict", "The active profile changed after that operation")
             value = prior["value"]
@@ -159,7 +168,7 @@ def active_profile(
     return _operation(tasks, SETTING, operation_id, request, apply, reversible=True)
 
 
-def _change_saved(tasks, name, candidate, expected_version, previous):
+def _change_saved(tasks, name, build_profile, expected_version, previous):
     if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,47}", name):
         raise DomainError(
             "invalid",
@@ -172,21 +181,25 @@ def _change_saved(tasks, name, candidate, expected_version, previous):
     library = _library(previous["value"])
     entries = dict(library["profiles"])
     current = entries.get(name)
-    if current is None and candidate is None:
+    if current is None and build_profile is None:
         raise DomainError("not_found", "No saved profile with that name", [name])
     version = current["version"] if current else 0
     if expected_version != version:
+        selection = (
+            f"{name} is at version {version}. Inspect it with `daymark profile --saved {name}`."
+            if current else f"{name} has no saved copy now. List available names with `daymark profile --saved`."
+        )
         raise DomainError(
             "conflict",
             "Saved profile version changed",
-            [f"{name} is at version {version}. Read `daymark profile --saved` before editing."],
+            [selection + " Use the same database and workspace."],
         )
     revision = library["revision"] + 1
-    if candidate is None:
+    if build_profile is None:
         del entries[name]
         result = {"removed": name, "version": revision}
     else:
-        profile = persistent_profile({**candidate, "name": name})
+        profile = persistent_profile({**build_profile(), "name": name})
         if current and profile == current["profile"]:
             return current
         result = {"name": name, "version": revision, "profile": profile}
@@ -213,7 +226,7 @@ def save_profile(tasks, name, *, profile=None, settings=(), drops=(), expected_v
         "expected_version": expected_version,
     }
 
-    def apply(before):
+    def build_profile():
         if isinstance(profile, dict):
             config = profile.get("profile", profile)
             if isinstance(config, dict):
@@ -228,12 +241,13 @@ def save_profile(tasks, name, *, profile=None, settings=(), drops=(), expected_v
             validated = validate_profile(config, allow_unavailable=True)
             if config.get("skipped"):
                 validated["skipped"] = config["skipped"]
-            candidate = edit_profile(validated, settings, drops)
-        else:
-            candidate, _ = select_profile(
-                tasks, profile, settings=settings, drops=drops, for_edit=True
-            )
-        return _change_saved(tasks, name, candidate, expected_version, before)
+            return edit_profile(validated, settings, drops)
+        return select_profile(tasks, profile, settings=settings, drops=drops, for_edit=True)[0]
+
+    def apply(before):
+        # The chosen base may itself have disappeared since the editor read it.
+        # Check the destination revision before resolving that base in this transaction.
+        return _change_saved(tasks, name, build_profile, expected_version, before)
 
     return _operation(tasks, _LIBRARY, tasks._op_id(op), request, apply)
 

@@ -231,6 +231,19 @@ forecast by either selector stopped at the authenticated schema read.
 Explain the recorded rule with ordinary show when available and check
 activity or events for `recurrence.create` after an authorized write.
 
+An installed development wheel and an actual 0.5.0 installation each ran
+behind a mounted, bearer-protected service on loopback. Both opened a
+restored synthetic database read-only. The development client used HTTP,
+CLI and the read-only stdio bridge. Its ID containing a slash, percent sign
+and Unicode, and the matching source reference, produced the same
+development forecast. Skipping or finishing advanced the October 5 plan to
+October 12, with the hard deadline still October 6. A second credential
+selected a different workspace with the same ID and a November 12 successor.
+Missing and incorrect credentials returned 401. The tagged service returned
+ordinary ID detail and refused forecasts by ID and source. All 19 requests
+to the development service and nine to the older service used GET. Workspace
+exports, event positions and database file hashes were unchanged in both.
+
 Each skip and finish in the comparison ran as a genuine version-guarded
 operation on its own SQLite backup. The moved round produced October 28 with
 the October 22 deadline. In the four-miss trial, each skip advanced one slot,

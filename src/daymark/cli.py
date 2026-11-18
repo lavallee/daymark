@@ -1181,7 +1181,7 @@ def main(argv: list[str] | None = None) -> int:
         if exc.code == "unauthenticated":
             return _fail(args, exc.code, "Check the bearer credential configured for this Daymark endpoint.")
         retry_op = getattr(args, "retry_op", None) if exc.uncertain else None
-        return _fail(args, exc.code, str(exc), retry_op=retry_op)
+        return _fail(args, exc.code, str(exc), [exc.recovery] if exc.recovery else (), retry_op=retry_op)
     except Exception:  # noqa: BLE001 - prevent private exception text escaping
         # Parsing/Store/network exceptions can contain private paths and payloads.
         print(

@@ -72,9 +72,39 @@ def test_advice_retains_the_requested_context_when_only_three_context_ids_are_sh
                 assert reader.advise(context="phone").picks[0]["context_ids"] == contexts
 
 
-def test_open_task_cards_keep_filter_order_across_pages_and_older_adapter_shapes(monkeypatch):
-    with closing(Store(":memory:")) as store:
-        tasks = Tasks(store, "press")
+def test_missing_remote_profile_selection_recovers_by_its_inputs_without_forwarding_service_text():
+    from daymark.mcp import handle
+
+    def service(request):
+        if request.url.path == "/v1/schema":
+            return httpx.Response(200, json={"paths": {"/v1/advice": {"post": {}}, "/v1/profiles": {"get": {}}}})
+        return httpx.Response(404, json={"detail": "Synthetic private service body"})
+
+    with Client("https://sample.invalid", "token", transport=httpx.MockTransport(service)) as client:
+        tasks = Tasks(client)
+        for arguments, profile_hint, context_hint in [
+            ({"view": "advise", "profile": "missing"}, True, False),
+            ({"view": "advise", "context": "missing"}, False, True),
+            ({"view": "advise", "profile": "missing", "context": "missing"}, True, True),
+            ({"view": "profiles", "profile": "missing"}, True, False),
+        ]:
+            request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "daymark_view", "arguments": arguments}}
+            response = handle(tasks, request)["result"]
+            error = response["structuredContent"]["error"]
+            assert response["isError"] and error["code"] == "not_found"
+            assert ("view=profiles" in error["recovery"]) == profile_hint
+            assert ("kind=context" in error["recovery"]) == context_hint
+            assert "Synthetic private service body" not in str(response)
+        with pytest.raises(ClientError) as exc:
+            tasks.saved_profiles("missing")
+        assert exc.value.status_code == 404 and "view=profiles" in exc.value.recovery
+
+
+def test_open_task_cards_keep_filter_order_across_pages_and_older_adapter_shapes(tmp_path, monkeypatch):
+    path = tmp_path / "press.db"
+    with closing(Store(path)) as store, closing(Store(path)) as writer:
+        tasks, other = Tasks(store, "press"), Tasks(writer, "press")
         tasks.add("Phone", kind="context", id="phone")
         for i in range(7):
             tasks.add(f"Proof {i}", id=f"p{i}", contexts=["phone"] if i < 6 else [],
@@ -88,14 +118,23 @@ def test_open_task_cards_keep_filter_order_across_pages_and_older_adapter_shapes
             if options.get("projection") == "card":
                 boundaries.append(options.get("after"))
                 options["limit"] = 2
-            return search(*args, **options)
+            page = search(*args, **options)
+            if boundaries == [None]:
+                other.add("Concurrent proof", id="p2a", contexts=["phone"], scope="studio",
+                          description="Editing record")
+            return page
 
         monkeypatch.setattr(store, "search", two_at_a_time)
         cards = tasks.find("editing", limit=None, projection="card", **filters)
         assert boundaries == [None, "p1", "p3"]
         assert [c["id"] for c in cards] == [e["id"] for e in complete] == ["p0", "p1", "p2", "p3", "p4"]
         assert all(c["updated_at"] and "description" not in c for c in cards)
+        assert "p2a" in [e["id"] for e in tasks.find("editing", limit=None, **filters)]
+        other.archive("p2a")
         assert tasks.find("editing", limit=-1, projection="card", **filters) == cards[:-1]
+        for read in (tasks.ready, tasks.find):
+            with pytest.raises(DomainError, match="Choose full entities"):
+                read(brief=True, projection="entity")
         with (TestClient(create_app(store, {"token": {"workspace": "press", "principal": "reader"}})) as app,
               Client("http://sample.invalid", "token", transport=app._transport) as client):
             assert Tasks(client).find("editing", limit=None, projection="card", **filters) == cards

@@ -76,6 +76,12 @@ pass `ready_query` to `Tasks.ready` or add its fields to `daymark_view` with
 shortlist. The result uses the ordinary ready order and reflects the time
 and workspace state when that read runs.
 
+Advice reviews up to the first 1,000 ready tasks in the selected scope and
+context. If more qualify, the coverage note gives both counts. A time-fit
+result with zero picks can mean that the reviewed candidates were too long
+or lacked an estimate. In a larger queue, shorter tasks may sit farther
+down. Selecting a relevant scope or context changes the candidates reviewed.
+
 A context records an explicit relationship between a task and a place, tool or
 situation. Find context IDs with `daymark find --kind context --page`. A task
 can have several. An untagged task might also suit the situation, but Daymark
@@ -344,6 +350,16 @@ that no later active edit has intervened. In a local MCP session, submit the
 receipt’s `restore_call` as a tool call. It contains the expected version and
 a stable retry ID. The restore action targets only the profile. Named saves and removals also accept
 `--op`. Their receipts are local configuration and stay out of task exports.
+
+To recover an earlier named recipe, inspect the active copy with `daymark
+profile --json`. If it still has the settings the person wants, read the
+destination with `daymark profile --saved NAME`, then copy the active settings
+back using `daymark profile --save-as NAME --if-version N`, where N is the
+destination's current version. Another recovery path is a retained save
+result. Repeating its original save command with the same operation ID and
+`--json` returns the recipe as it was saved, even after a removal. Write
+that result to a file and use `daymark profile --from-file FILE --save-as
+NAME --if-version N`. Use version 0 to recreate an absent name.
 
 ## Where the ideas come from
 

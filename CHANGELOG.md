@@ -39,6 +39,8 @@ remains `0.5.0`.
 
 ### Picking work and returning to it
 
+- Inspect a waiting task to see whether resuming now would cancel its active reminders when it clears a future start.
+
 - `prime --brief` returns live counts, up to five ready tasks and remembered
   facts, the evaluation time and a portable activity checkpoint in one
   snapshot on a current store or service. `prime --scope NAME` limits startup
@@ -47,6 +49,9 @@ remains `0.5.0`.
 - `agenda --deadlines --days N` shows agreed hard cutoffs, including work
   that is waiting or blocked. The ordinary text agenda separates earlier
   plans from work due or planned today.
+- `done` and `release` accept `--if-version N` (MCP `expected_version`).
+  A returning tab can refuse a changed claim, including a renewal by the
+  same actor. The check covers any closing or handoff note in the same write.
 - Before skipping or completing a recurring round, `show ID --forecast skip|done` previews the current outcome and the next recorded dates. CLI, MCP and authenticated HTTP can read the same forecast.
 - `ready --brief --json` returns the same compact queue rows as the structured MCP ready view. UIs can show the reason for each suggestion without loading its note history.
 - `ready --explain` counts eligible and held tasks and gives examples for

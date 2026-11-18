@@ -155,7 +155,7 @@ configured separately.
 | `daymark_view` | `{"view":"ready","move":"agent","explain":true}` | See eligible work, how many matching tasks are held, and example IDs for each reason. |
 | `daymark_act` | `{"action":"claim","id":"ID","minutes":30,"op":"claim-readings-01"}` | Take the task before work starts. Substitute the ID returned by capture. |
 | `daymark_edit` | `{"id":"ID","plan":"fri","op":"plan-readings-01"}` | Record the intended day. A hard cutoff belongs in `due`. |
-| `daymark_act` | `{"action":"release","id":"ID","text":"First sample checked. Compare the second next.","op":"handoff-readings-01"}` | Return unfinished work with context for the next session. |
+| `daymark_act` | `{"action":"release","id":"ID","text":"First sample checked. Compare the second next.","expected_version":2,"op":"handoff-readings-01"}` | Return unfinished work reviewed at version 2. Use the task's actual version. The same guard applies to `done`. |
 | `daymark_view` | `{"view":"show","id":"ID"}` | Read the handoff note and current task state. |
 | `daymark_remember` | `{"text":"Readings use metric units","op":"remember-units-01"}` | Keep a fact across sessions. A task-specific update belongs in a note. |
 

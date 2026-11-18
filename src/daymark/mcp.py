@@ -436,8 +436,8 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
     raise DomainError("not_found", "Unknown tool")
 
 
-def _tool_error(code, message, details, protocol, name, arguments, *, retry_op=None, read_only=False):
-    recovery = {
+def _tool_error(code, message, details, protocol, name, arguments, *, retry_op=None, read_only=False, recovery=None):
+    recovery = recovery or {
         "conflict": "Read current state and compare it with the original request before retrying.",
         "unauthenticated": "Check the bearer credential configured for this Daymark endpoint.",
         "forbidden": "Ask the authorized person to decide.",
@@ -475,6 +475,11 @@ def _tool_error(code, message, details, protocol, name, arguments, *, retry_op=N
                 recovery += " Use daymark_view show with since_version set to the reviewed version."
         elif arguments.get("action") == "undo":
             recovery = "Inspect the latest event with daymark_view show before deciding what to restore."
+        elif arguments.get("action") in {"done", "release"} and "expected_version" in arguments:
+            recovery = (
+                "Use daymark_view show with since_version set to the reviewed version. "
+                "Check the current holder and handoff before deciding whether this still applies."
+            )
         elif arguments.get("action") in {"use_profile", "restore_profile"}:
             recovery = "Read daymark_view profiles and compare the current workspace settings."
     error = {"code": code, "message": message}
@@ -546,8 +551,8 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                     "Start with daymark_prime for orientation. If the request names a scope, pass scope on the first read. "
                     + _SCOPE_GUIDE + " Settings and memories are shared across this workspace. "
                     "Apply personal or time-limited choices per call unless the person asks to share them. "
-                    "For each write, choose a fresh op "
-                    "and reuse it if that same write needs a retry. Never invent dates or completions."
+                    "For each write, choose a fresh op. An identical retry with that op returns its original result. "
+                    "Use show for current state. Never invent dates or completions."
                 ) + _SHORT_CHECK_IN,
             }
         )
@@ -608,7 +613,7 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
         error = _tool_error(exc.code, str(exc), exc.details, protocol, name, arguments, read_only=read_only)
     except ClientError as exc:
         error = _tool_error(
-            exc.code, str(exc), [], protocol, name, arguments,
+            exc.code, str(exc), [], protocol, name, arguments, recovery=exc.recovery,
             retry_op=arguments.get("op") if exc.uncertain and name not in _READ_NAMES else None,
         )
     except Exception:  # noqa: BLE001 - never leak stored content through errors

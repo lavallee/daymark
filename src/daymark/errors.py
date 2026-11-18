@@ -16,8 +16,9 @@ class DomainError(ValueError):
 class ClientError(Exception):
     """Safe failure containing a status code, never server bodies or credentials."""
 
-    def __init__(self, status_code: int | None = None) -> None:
+    def __init__(self, status_code: int | None = None, *, recovery: str | None = None) -> None:
         self.status_code = status_code
+        self.recovery = recovery  # Adapter-authored guidance only. Never copy a remote body here.
         self.code = {401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}.get(
             status_code, "remote"
         )

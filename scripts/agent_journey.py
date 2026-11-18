@@ -4,6 +4,7 @@ import argparse
 import json
 import shlex
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from daymark import Store, Tasks
@@ -17,15 +18,35 @@ CASES = {
     "one-option": "Show me one ready task from the studio scope. Give me its ID. This is just for now. Leave the workspace as you found it.",
     "blocked": "Which unfinished prerequisite is keeping the invitation from being sent? Give me its ID and leave the tasks as they are.",
     "standing-window": "For everyone using this workspace, keep our neutral wording about dates. From now on, offer up to two ready options that each fit a 15-minute gap. Keep the tasks and our separately saved review as they are.",
+    "return-after-week": "I have been away for a week. As of {day}, which agreed tasks had a hard deadline already past or coming by {cutoff}? Give me their IDs and deadlines, and tell me who owes a reply. Leave everything as you found it.",
 }
 MARKER = "daymark-synthetic-journey-v1"
 WS = "trial"
+
+
+def _week_away(tasks):
+    today = datetime.now(UTC).date()
+
+    def day(offset):
+        return (today + timedelta(days=offset)).isoformat()
+
+    for i in range(160):
+        tasks.add(f"Revisit layout option {i}", id=f"card-{i:04}", plan=day(-7))
+    for i in range(36):
+        tasks.add(f"Proof variation {i}", id=f"line-{i:02}", waiting_on=f"draft response {i}")
+    tasks.add("Submit paper sizes", id="g6j2", due=day(-3))
+    tasks.add("Collect print authorization", id="d2k4", due=day(1) + "T16:00", waiting_on="printer confirmation")
+    tasks.propose("Approval for an optional display", id="a3s4", due=day(1))
+    tasks.add("Fold sample", id="s9t8", target=day(-2))
+    tasks.add("Send final layout", id="h7f4", due=day(4))
+    return CASES["return-after-week"].format(day=day(0), cutoff=day(2))
 
 
 def setup(case, folder):
     folder.mkdir(parents=True, exist_ok=False)
     db = folder / "journey.sqlite3"
     store = Store(db)
+    question = CASES[case]
     try:
         tasks = Tasks(store, WS, actor="coordinator", timezone="UTC")
         if case == "move-plan":
@@ -39,6 +60,8 @@ def setup(case, folder):
         elif case == "blocked":
             tasks.add("Approve text", id="approval")
             tasks.add("Send invitation", id="invite", after=["approval"])
+        elif case == "return-after-week":
+            question = _week_away(tasks)
         elif case == "standing-window":
             tasks.profile("plain", settings=["neutral-aging"])
             tasks.save_profile("weekly", profile="plain", settings=["project-review"])
@@ -75,11 +98,37 @@ def setup(case, folder):
     command = shlex.join(
         ["daymark", "--db", str(db.resolve()), "--workspace", WS, "--as", "reviewer", "--tz", "UTC"]
     )
-    return f"Work in this synthetic workspace:\n{command} prime\n\n{CASES[case]}"
+    return f"Work in this synthetic workspace:\n{command} prime\n\n{question}"
 
 
 def _date(row, field):
     return (row.get(field) or {}).get("date")
+
+
+def _return_answers(answer, before):
+    expected = {task_id: before[task_id] for task_id in ("g6j2", "d2k4")}
+    if not isinstance(answer, list) or not all(isinstance(row, dict) for row in answer):
+        return False, False, False
+    if not all(isinstance(row.get("id"), str) for row in answer):
+        return False, False, False
+    given = {row["id"]: row for row in answer}
+    matches = len(answer) == len(expected) and given.keys() == expected.keys()
+    if not matches:
+        return False, False, False
+    # An exact civil date and a timezone-aware instant make different commitments.
+    civil = expected["g6j2"]["deadline"]["date"]
+    try:
+        instant = datetime.fromisoformat(given["d2k4"]["deadline"])
+        expected_instant = datetime.fromisoformat(expected["d2k4"]["deadline"]["at"])
+    except (KeyError, TypeError, ValueError):
+        dates = False
+    else:
+        dates = given["g6j2"].get("deadline") == civil and instant == expected_instant
+    waits = all(
+        "waiting_on" in given[task_id] and given[task_id]["waiting_on"] == row["waiting_on"]
+        for task_id, row in expected.items()
+    )
+    return matches, dates, waits
 
 
 def grade(store, trial, answer):
@@ -118,10 +167,19 @@ def grade(store, trial, answer):
             store.setting_state(WS, key)["version"] == 0 for key in ("profile", "profile.library")
         )
     }
-    if case in {"blocked", "one-option"}:
-        checks["answered_with_matching_id"] = (
-            answer == "approval" if case == "blocked" else answer in {"card-0", "card-1", "card-2"}
-        )
+    if case in {"blocked", "one-option", "return-after-week"}:
+        if case == "return-after-week":
+            ids, dates, waits = _return_answers(answer, before)
+            checks.update(
+                agreed_deadlines_only=ids,
+                precise_deadlines=dates,
+                recorded_waits=waits,
+                decision_policy_unchanged=store.policy(WS) == {"deciders": []},
+            )
+        else:
+            checks["answered_with_matching_id"] = (
+                answer == "approval" if case == "blocked" else answer in {"card-0", "card-1", "card-2"}
+            )
         checks["entities_and_events_unchanged"] = (
             before == rows and store.head(WS) == trial["baseline_head"]
         )
@@ -186,7 +244,12 @@ def main():
     start.add_argument("directory", type=Path, help="A new directory")
     check = commands.add_parser("check", help="Read the workspace and grade the resulting state")
     check.add_argument("directory", type=Path)
-    check.add_argument("--answer", help="The ID returned to the person for a read-only case")
+    reply = check.add_mutually_exclusive_group()
+    reply.add_argument("--answer", help="The ID returned to the person for a read-only case")
+    reply.add_argument(
+        "--answer-file", type=Path,
+        help="JSON array of returned id, deadline and waiting_on for return-after-week",
+    )
     args = parser.parse_args()
     if args.action == "start":
         if args.directory.exists():
@@ -196,10 +259,18 @@ def main():
     trial = json.loads((args.directory / "trial.json").read_text())
     if trial.get("format") != MARKER or trial.get("case") not in CASES:
         parser.error("not a Daymark synthetic trial")
+    answer = args.answer
+    if args.answer_file:
+        if trial["case"] != "return-after-week":
+            parser.error("--answer-file applies to return-after-week")
+        try:
+            answer = json.loads(args.answer_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            parser.error("--answer-file must name a readable JSON file")
     db = (args.directory / "journey.sqlite3").resolve()
     connection = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
     try:
-        checks = grade(Store(connection, upgrade=False), trial, args.answer)
+        checks = grade(Store(connection, upgrade=False), trial, answer)
     finally:
         connection.close()
     print(

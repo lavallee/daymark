@@ -18,6 +18,29 @@ def fails(code, fn, *args, **kwargs):
     assert exc.value.code == code
 
 
+def test_an_editor_can_inspect_or_recover_a_named_copy_after_another_writer_changes_it(tmp_path):
+    with closing(Store(tmp_path / "profiles.db")) as store:
+        editor, other = Tasks(store, "sample", actor="editor"), Tasks(store, "sample", actor="reviewer")
+        old = editor.save_profile("meeting", profile="plain", settings=["shortlist.size=2"], op="save-two")
+        current = other.save_profile("meeting", profile="meeting", settings=["shortlist.size=3"],
+                                     expected_version=old["version"], op="widen")
+        with pytest.raises(DomainError) as stale:
+            editor.save_profile("meeting", profile="meeting", expected_version=old["version"])
+        assert stale.value.code == "conflict" and "profile --saved meeting" in stale.value.details[0]
+        with pytest.raises(DomainError) as wrong_undo:
+            editor.profile(undo="widen", expected_version=0)
+        assert wrong_undo.value.code == "not_found" and "--from-file" in " ".join(wrong_undo.value.details)
+        removed = other.remove_profile("meeting", expected_version=current["version"])
+        with pytest.raises(DomainError) as absent:
+            editor.save_profile("meeting", profile="meeting", expected_version=old["version"])
+        assert absent.value.code == "conflict" and "no saved copy" in absent.value.details[0]
+        fails("not_found", editor.save_profile, "unrelated", profile="missing")
+        replay = editor.save_profile("meeting", profile="plain", settings=["shortlist.size=2"], op="save-two")
+        assert replay == old and editor.saved_profiles() == []
+        recovered = editor.save_profile("meeting", profile=replay, expected_version=0)
+        assert recovered["profile"] == old["profile"] and recovered["version"] > removed["version"]
+
+
 def test_named_copy_survives_restart_and_adoption_is_independent(tmp_path):
     path = tmp_path / "sample.sqlite3"
     store = Store(path)

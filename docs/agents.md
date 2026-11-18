@@ -192,6 +192,14 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | `remember "fact"` / `forget ID` | Keep or retire a durable fact shown by `prime`. |
 | `cancel`, `reopen`, `archive`, `unarchive`, `undo ID` | Lifecycle, status-preserving restoration and one-step undo. Undo restores the previous fields; it never removes a note or another actor's claim. |
 
+Before resuming a waiting task, `show ID --brief` explains the effect on
+reminders at the time of the read. If the start is still in the future,
+resuming clears it and cancels every active reminder tied to this task.
+If there is no future start to clear, those reminders keep their schedule.
+The task's hard deadline is preserved in both cases. Full `show ID`
+lists the reminders and their current states. A reply arriving elsewhere
+needs someone to record it in Daymark.
+
 After scheduling, use `daymark show REMINDER_ID --brief` to see its time,
 recipient, channel and worker state. A pending reminder tied to a proposal
 waits for acceptance. A delivered reminder on the recording channel was
@@ -654,6 +662,24 @@ lease, the command reports a conflict and writes nothing. Use
 completion together. Retry either write with the same `--op` value if its
 reply is lost. In MCP, pass the note as `text` to the `release` or `done`
 action.
+
+If a tab may act later on the claim it reviewed, keep the task version from
+`claim` or `show`. Pass it to `release ID --if-version N` or
+`done ID --if-version N`, including when adding a note. Renewing or
+retaking the claim changes that version even when both tabs use the same
+actor. A conflict leaves the note and action unapplied. Read
+`show ID --since-version N` and check the current holder and handoff
+before choosing what to do. A lease expiring by the clock alone leaves the
+task version unchanged. The check compares a revision of this record and
+cannot distinguish a restored copy with the same ID and version.
+
+Retry an already committed release with its original operation ID, note
+and version. It returns its original result, even after someone else has
+claimed the task. A new operation ID with the old version conflicts. A
+fresh release using the current version can release the new claim if this
+actor holds it. A current client can send the version check to a 0.5.0 service.
+That service can refuse an identical retry because it cannot verify the
+original request. Inspect the task before taking another action.
 
 
 Before an interruption, record the last check someone could verify, where

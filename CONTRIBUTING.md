@@ -22,7 +22,7 @@ checks local inline links in the Markdown guides and `llms.txt`. When
 citing a test or script from the matching checkout, give its repository
 path in code.
 
-The test matrix covers Python 3.11–3.14 on Linux and 3.14 on macOS.
+The test matrix covers Python 3.11–3.15 on Linux and 3.14–3.15 on macOS.
 To reproduce the macOS file-descriptor budget locally, use
 `(ulimit -n 256 && uv run pytest -q)` in a POSIX shell. Tests that open
 path-backed stores should close them explicitly, including on failure.
@@ -48,7 +48,7 @@ See [RELEASING.md](RELEASING.md) for maintainer release checks.
 ## Try a change as a new user or agent
 
 The [agent journeys](docs/research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
-include a local driver for seven synthetic requests. Use it to compare what the
+include a local driver for eight synthetic requests. Use it to compare what the
 person asked for with what an agent actually stored. It works with the real
 CLI and your choice of client. To test what helps a person return to a project,
 compare their usual routine with two real returns and keep the notes private.

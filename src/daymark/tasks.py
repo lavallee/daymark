@@ -36,6 +36,7 @@ from .models import (
     normalize_now,
     require_active_round,
     require_visible_proposal,
+    start_has_arrived,
 )
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
@@ -851,11 +852,8 @@ class Tasks:
                 if current["earliest_start"] and not retry["result"]["earliest_start"]:
                     out["earliest_start"] = None
                 return out
-            if current["earliest_start"]:
-                start, now = Temporal.model_validate(current["earliest_start"]), self.now()
-                today = now.astimezone(ZoneInfo(start.timezone)).date()
-                if (start.date and start.date > today) or (start.at and start.at > now):
-                    out["earliest_start"] = None
+            if not start_has_arrived(current["earliest_start"], self.now()):
+                out["earliest_start"] = None
             return out
 
         return self._act(id, "update", op=op, build=build)

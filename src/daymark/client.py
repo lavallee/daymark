@@ -7,6 +7,11 @@ from urllib.parse import quote, urlencode
 
 from .errors import ClientError, DomainError
 
+_PROFILE_LOOKUP = (
+    "Read view=profiles on the same connection. The CLI lists saved names with "
+    "profile --saved and built-ins with strategies."
+)
+
 
 class Client:
     def __init__(
@@ -302,25 +307,31 @@ class Client:
                               ["Upgrade the service to inspect scoped conditions and related work."])
         return data
 
-    def _optional_profile_read(self, method, path, **kwargs):
+    def _optional_profile_read(self, method, path, *, missing_hint=None, **kwargs):
         """Distinguish an old API from a missing profile on a service with this route."""
         if self._service_paths is not None and method.lower() not in self._service_paths.get(path, {}):
             return None
         try:
             result = self._request(method, path, **kwargs)
         except ClientError as error:
-            if error.status_code not in {404, 405} or path in self._known_profile_routes:
-                raise
-            if method.lower() in self._paths().get(path, {}):
-                raise
-            return None
+            if (error.status_code in {404, 405} and path not in self._known_profile_routes
+                    and method.lower() not in self._paths().get(path, {})):
+                return None
+            if error.status_code == 404 and missing_hint:
+                raise ClientError(404, recovery=missing_hint) from None
+            raise
         self._known_profile_routes.add(path)
         return result
 
     def advice(self, *, profile=None, settings=(), drops=(), scope=None, context=None, now=None, brief=False):
         body = self._params(profile=profile, set=list(settings), drop=list(drops), scope=scope,
                             context=context, now=now, brief=brief or None)
-        result = self._optional_profile_read("POST", "/v1/advice", json=body)
+        hints = []
+        if profile is not None or settings or drops:
+            hints.append(_PROFILE_LOOKUP)
+        if context is not None:
+            hints.append("Look up the context ID on this connection with find --kind context --page or view=find with kind=context.")
+        result = self._optional_profile_read("POST", "/v1/advice", json=body, missing_hint=" ".join(hints))
         if result is None or (scope is None and context is None):
             return result
         if (not isinstance(result, dict) or not isinstance(result.get("picks"), list)
@@ -336,7 +347,8 @@ class Client:
         return result
 
     def profile_read(self, view="catalog", name=None):
-        return self._optional_profile_read("GET", "/v1/profiles", params=self._params(view=view, name=name))
+        hint = _PROFILE_LOOKUP if name is not None else None
+        return self._optional_profile_read("GET", "/v1/profiles", params=self._params(view=view, name=name), missing_hint=hint)
 
     def orientation(self, *, now=None, owner=None, scope=None):
         """Use the authenticated worker's snapshot, or compatible reads on older services."""
@@ -394,12 +406,24 @@ class Client:
         if source is not None:
             return self._source_read(entity_id, source, "brief", now=now, owner=owner, mine=mine or None, before_note=before_note)
         params = self._params(entity_id=entity_id, now=now, owner=owner, mine=mine or None, before_note=before_note)
-        return self._request("GET", "/v1/brief", params=params)
+        try:
+            return self._request("GET", "/v1/brief", params=params)
+        except ClientError as exc:
+            if exc.status_code != 404:
+                raise
+            self._require_filter(
+                "/v1/brief", "entity_id",
+                recovery="Use full show by ID to inspect the current task, or upgrade the service for brief reads.",
+            )
+            raise
 
     def changes_since(self, entity_id=None, *, version, source=None):
         if (entity_id is None) == (source is None):
             raise DomainError("invalid", "Choose exactly one entity ID or source reference")
-        self._require_filter("/v1/comparison", "since_version")
+        self._require_filter(
+            "/v1/comparison", "since_version",
+            recovery="Use full show by ID to inspect the current task, or upgrade the service for version comparisons.",
+        )
         if source is not None:
             return self._source_read(entity_id, source, "changes", since_version=version)
         return self._request("GET", "/v1/comparison", params={"entity_id": entity_id, "since_version": version})

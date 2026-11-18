@@ -179,7 +179,7 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, s
 
 
 def check_task_projection(projection, brief):
-    if projection not in (None, "entity", "card") or (brief and projection == "card"):
+    if projection not in (None, "entity", "card") or (brief and projection is not None):
         raise DomainError("invalid", "Choose full entities, task cards, or brief summaries")
 
 
@@ -709,6 +709,18 @@ def _context_links(store, workspace, id, field, *json_fields):
         yield dict(zip(fields, row))
 
 
+def resume_effects(item, now):
+    """Calendar consequences of resuming this visible waiting task at the read instant."""
+    if item["kind"] != "task" or item["status"] != "waiting" or item["archived"]:
+        return {}
+    lifts_start = not start_has_arrived(item["earliest_start"], now)
+    return {"if_resumed_now": {
+        "earliest_start": "clear" if lifts_start else "preserve",
+        "active_reminders": "cancel" if lifts_start else "preserve",
+        "deadline": "preserve",
+    }}
+
+
 def context(store, workspace, id, *, history=10, now=None, owner=None, actor=None):
     """One entity with what surrounds it: blockers, dependents, children, reminders, history."""
     now = normalize_now(now)
@@ -738,6 +750,7 @@ def context(store, workspace, id, *, history=10, now=None, owner=None, actor=Non
             "entity": item,
             "review_token": store._review_token(workspace, id),
             **readiness,
+            **resume_effects(item, now),
             "blocked_by": blocked,
             **({"blockers": blocker_previews(store, workspace, blocked)} if blocked else {}),
             "dependents": [x["id"] for x in _context_links(store, workspace, id, "depends_on") if x["status"] in LIVE],

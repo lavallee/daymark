@@ -54,6 +54,11 @@ Then work in this loop:
    the reason keeps it waiting until an explicit `resume ID`. If wait or resume reports
    archived or finished work, read the latest handoff before restoring or reopening it.
 
+When a tab is acting on a previously reviewed claim, pass that task's
+version to `done` or `release` as `--if-version N` (MCP `expected_version`).
+A renewal by the same actor also advances the version. On conflict, read
+`show ID --since-version N` before deciding whether the handoff still applies.
+
 Record an ongoing fact the person supplied with `remember TEXT`. Use
 `--scope NAME` for where it applies and `--source SYSTEM:KIND:ID` for an
 actual source. Everyone in the workspace can read it. Search existing facts
@@ -82,6 +87,7 @@ When capturing:
 - Never invent a date or priority. If the person did not give one, leave it out.
 - If the person did not ask for the task, use `daymark propose`. Do not run
   `accept` on their behalf.
+- Before resuming a waiting task, `show ID --brief` reports whether clearing a future start would cancel its active reminders. Full detail lists them.
 - For a reminder, use `remind ID WHEN --to PERSON` (MCP action `remind` with `when` and `recipient`). Ask for any missing time or recipient. Use `show REMINDER_ID --brief` to check its state and recipient. The default worker records locally.
 - For anything that repeats, use `--every`; add `--after-completion` when the
   interval counts from when it was last done.

@@ -190,8 +190,9 @@ None is promised.
 3. **Limits a host system may exceed.** A title is at most 2,000 characters
    and a description 100,000. An application that accepts more must narrow
    its own limits before Daymark can be its only store.
-4. **Conditions checked against other systems.** "Ready when the pull request
-   merges" or "done when the form is acknowledged", observed from the owning
-   system with a freshness state, as an alternative to dependency edges.
+4. **Conditions checked against other systems.** An agent can already
+   record that a pull request merged, cite its source and reassess the
+   condition if the issue reopens. Automatic source checks and an explicit
+   rule for how long an observation stays fresh are open design questions.
 5. **Sync between machines.** One file is simple and safe; it is also one
    machine.

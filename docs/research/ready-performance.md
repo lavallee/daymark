@@ -150,19 +150,26 @@ whole-workspace read.
 
 ## Offering two choices from tasks with a long history
 
-A synthetic fixture held 400 open tasks. Each had a 60,000-character
-description and an 8,000-character note. Some had a hard deadline, an
-estimate, or a decision for the person. At a fixed instant, the brief
-two-choice profile returned 702 bytes of JSON. Reading the selected task
-card fields before applying the built-in strategies reduced median process
-CPU from 82 to 40 ms and peak traced Python allocation from 28.83 to 0.85
-MiB. CPU used five warm reads, and allocation used a separate read. Plain,
-gentle, two-choice and time-fit plus two-choice produced identical JSON with
-both readers. Full Python advice and third-party strategies still receive
-complete records. With the ready read already projected, applying the same
-field selection to all open tasks reduced peak allocation from 29.06 to 1.30 MiB (dense) and
-29.07 to 1.29 MiB (assistant). CPU for assistant stayed near 104 ms. The
-fixture includes 24 deadlines and no waiting tasks or projects.
+Run `uv run python scripts/bench_ready.py --advice` to compare brief advice
+with full advice compacted after evaluation. The fixture imports 400 open
+tasks with fixed timestamps. Each has a 60,000-character description and an
+8,000-character note. There are 24 hard deadlines, 40 missing estimates, and
+no waiting tasks or projects. The harness checks the full response, including
+pick order, explanations, counts, suggested actions and provenance. Plain,
+gentle, dense, assistant, two-choice and time-fit plus two-choice produced
+identical JSON under both reads.
+
+| Profile | Picks | Full then compact, CPU | Brief, CPU | Full then compact, Python peak | Brief, Python peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Two choices | 2 | 55 ms | 40 ms | 28.83 MiB | 0.85 MiB |
+| Dense | 400 | 122 ms | 111 ms | 58.73 MiB | 2.91 MiB |
+| Assistant | 400 | 123 ms | 103 ms | 58.73 MiB | 2.90 MiB |
+
+These measurements used CPython 3.14.6 and SQLite 3.53.1. CPU is the median
+of five warm reads. Peak Python allocation comes from a separate traced
+read. The two choices and their explanation encoded to 678 UTF-8 bytes
+with the harness's JSON serializer. Full Python advice and third-party
+strategies still receive complete records.
 
 ## An idle reminder worker with a history
 

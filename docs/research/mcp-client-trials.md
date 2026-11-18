@@ -343,6 +343,41 @@ actually being advanced. Task status and linkage establish recorded work;
 they cannot establish whether a person is working at the moment.
 All four trials left the seven fixture events intact.
 
+## A claim changed while its tab was still open
+
+Two tabs using the same actor reviewed a claim at version 2. The newer tab
+renewed it to version 3. Ordinary `release` or `done` with a note from the
+older tab could still change the task. A different actor's live claim
+blocked a release, including after a real one-minute expiry and takeover.
+Completion by task ID remained available to workspace writers.
+
+The current plain verbs accept the reviewed version. Against local and
+authenticated stores, a real stdio client tried both stale actions. Both
+refused the write and its note. An agreed release of version 3 with a note
+returned version 5. After a different actor claimed version 6, an exact
+retry returned the original version 5 and preserved the new claim. On a
+0.5.0 service the same initial version guards worked, but a repeat of a
+successful operation required an upgrade to verify its receipt.
+
+Two independent, two-turn Claude Code sessions first inspected the task,
+then received permission to release only the reviewed claim. The stable
+control released version 2 and attached one note. The renewal case found
+the change, reported the extended lease and left version 3 untouched.
+It could establish which actor renewed the claim without identifying a
+particular tab. Both sessions initially supplied a `review_token` along
+with `expected_version`. Both recovered from the argument error and kept
+the version guard. The startup guide now specifies the guard for a reviewed
+completion or release.
+
+A third worker recovered a release with a lost reply from task history. It
+identified the release operation and the later claim under the same actor.
+It made no writes. Its final caution blurred an identical retry with a fresh
+release. The startup guide now distinguishes an operation's original
+result from a current task read. A fresh worker explicitly asked about both
+operation IDs distinguished the original receipt, a fresh attempt with the
+stale version, and a fresh release of the new version. It left version 5
+and the one original note intact.
+
 ## Undo after another worker has edited the task
 
 Two fresh MCP sessions were asked to undo only the previous worker's title

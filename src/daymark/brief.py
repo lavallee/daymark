@@ -172,6 +172,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None, actor=
         cycle = views.blocker_cycle(store, workspace, item, held=blocked or child_count)
     out = {key: item[key] for key in ("id", "kind", "status", "version")}
     out.update(reminder)
+    out.update(views.resume_effects(item, now))
     if item["archived"]:
         out["archived"] = True
     out["review_token"] = review_token

@@ -240,13 +240,23 @@ uv run python scripts/agent_journey.py check /tmp/example-plan-trial
 
 The available scenarios cover a plan with a hard deadline, two kinds of
 dates, waiting for someone, a suggestion, a one-time scoped choice, a
-blocked task and a standing workspace preference. Run `start --help` for their
+blocked task, a standing workspace preference and returning after a week away. Run `start --help` for their
 names. For `blocked` and `one-option`, supply the ID the reader actually
 reported with `check DIRECTORY --answer ID`.
 Checking opens SQLite read-only and exits 0 for a passing outcome or 1 for
 a miss. Record the client and version, the answer shown to the person, and
 any interventions alongside the score. A state-based pass alone cannot tell
 whether the reader understood the request or found the experience easy.
+
+In `return-after-week`, the clock sets the dates when the fixture is created.
+The request names its reference date and cutoff. Transcribe the deadlines the
+reader actually reported into a JSON array and pass its path with
+`check DIRECTORY --answer-file ANSWER.json`. For example, a date-only
+record might read `{"id":"example","deadline":"2030-05-02","waiting_on":null}`.
+Use an ISO timestamp with its offset for a timed deadline. Transcribe a stated
+wait using the recorded reason, or use `null` for an explicit absence of a wait.
+The scorer checks the selected IDs, date precision, waits and unchanged
+workspace. Judge the wording of the original answer separately.
 
 In `standing-window`, the person asks for up to two options that each fit a
 15-minute gap, as a standing choice for the workspace. Neutral wording is
@@ -697,3 +707,55 @@ itself and seven newer filing notes. The release was outside the ten recent
 events in full detail. Three brief pages and one exact note read recovered
 the complete 4,005-character handoff and its author. A workspace checkpoint
 saved before release also recovered all 59 subsequent events across pages.
+
+
+## What moved into or out of a scope during an absence?
+
+A current scoped list can show an arriving task. A departure leaves nothing
+in that list. We tried an opt-in, read-only historical view on a synthetic
+studio project. It used the studio title from before a departure and the title
+after an arrival. Notes contributed an event label. Their bodies and the
+names of other scopes stayed out of the response.
+
+In a paired fresh Claude Code trial with 130 unrelated edits between the
+moves, the ordinary client took eight calls, missed the departure, and read
+a note written before the arriving task joined the studio. The experimental
+client identified both moves in two calls without receiving either private
+title or note. A separate reader with a one-call budget correctly reported
+the unread interval. Nine sessions in all exercised variations of this one
+host, including restored and partial histories.
+
+With 100,000 unrelated changes, the prototype's newest block took 0.74 ms
+locally and returned 465 bytes of compact JSON. Traversing the full interval
+took 782 calls and 273 kB. The existing workspace-wide activity view took
+1,001 calls and 17.48 MB. Historical records can be large. A single 14 MB
+event took 56 ms to read and prepare its continuation. These measurements
+exclude network round trips.
+
+We kept the prototype outside the shipped primer. A sparse native import
+can insert an event inside a range a reader already examined while preserving
+its boundary records. A future scope-history read needs to say exactly which
+retained rows it covered and let the person choose whether to read further.
+A scoped list remains a way to focus one workspace. Separate workspaces
+provide isolation between audiences.
+
+
+## Will resuming this task cancel its reminders?
+
+A printer replied before the scheduled check-in. The coordinator wanted to
+know whether resuming the waiting task would keep two alerts, one about the
+reply and one before the deadline. Two synthetic workspaces had the same
+hard deadline and the same two pending reminders. One task also had a future
+earliest start. Each reader had read-only MCP access. We subsequently
+resumed each task through the ordinary write path and checked both reminders.
+
+With ordinary detail, a fresh Claude Code session took 16 calls on the
+future-start case. It expected the deadline alert to survive. In the
+undated case another session took 20 calls and correctly expected both
+alerts to survive, while saying it could not establish the rule. After
+waiting-task detail reported the effect of resuming at the time of the
+read, two fresh readers used 11 calls each. They correctly distinguished
+cancelling both active alerts when a future start is cleared from
+preserving both when the schedule stays in place. All four readers kept
+the hard deadline on its original civil date. These are observations of
+four sessions on one host.
