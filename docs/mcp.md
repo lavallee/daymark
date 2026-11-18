@@ -18,11 +18,9 @@ retain their timezone. The current service takes `day_zone` on
 
 ## Connect two agents in five minutes
 
-The walkthrough uses the development CLI (`0.6.0.dev0`). The tagged
-`0.5.0` serves six tools and prints its onboarding snippet. The read-only
-MCP switch, `where`, and `onboard --check` require the development version.
-Start in the checkout or unpacked source archive containing this guide.
-The steps below expect `daymark --version` to report `0.6.0.dev0`.
+This walkthrough uses Daymark 0.6.0. Install it from the tag or start in
+the checkout or unpacked source archive containing this guide. The steps
+below expect `daymark --version` to report `0.6.0`.
 
 ```sh
 uv sync

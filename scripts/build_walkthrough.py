@@ -70,7 +70,7 @@ def situations(store):
         [
             "</fieldset>",
             ("<p>These choices apply to this answer. If the person asks to keep a routine, "
-            "the agent can save it for a later session. This example uses the development checkout.</p>"),
+            "the agent can save it for a later session.</p>"),
             "</section>",
         ]
     )

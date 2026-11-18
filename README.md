@@ -20,7 +20,7 @@ waits for the draft. An idea for a poster stays a suggestion.
 Install the CLI with Python 3.11 or newer and uv:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.6.0"
 ```
 
 Run these commands in a new directory with the default database settings.
@@ -56,11 +56,10 @@ shows what is ready, what is waiting, and which facts earlier sessions kept.
 `daymark onboard --write AGENTS.md` to install them when they fit the project.
 To verify two agents share the intended workspace before creating a task,
 see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-minutes).
-Its enforced read-only sessions use the development checkout. From that checkout,
-`daymark onboard --mcp-config claude` or `daymark onboard --mcp-config codex`
+For an enforced read-only session, `daymark onboard --mcp-config claude` or `daymark onboard --mcp-config codex`
 prints the launcher for the installation and workspace you selected.
 For commands supported by the tagged install above, see the
-[0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
+[0.6.0 agent guide](https://github.com/lavallee/daymark/blob/v0.6.0/docs/agents.md).
 
 | You want | Command |
 | --- | --- |
@@ -102,11 +101,11 @@ with closing(Store("daymark.sqlite3")) as store:
         print(task["id"], task["title"])
 ```
 
-The development version also ships its agent skill inside the CLI package.
+Daymark ships its agent skill inside the CLI package.
 Run `daymark onboard --skill` to read the guide that matches the installed version.
 
 For a short list during a busy afternoon or a standing preference, including
-one-call adjustments in the development checkout, see
+one-call adjustments, see
 [working with a person’s preferences](docs/working-preferences.md).
 
 Read the [agent guide](docs/agents.md) for the full surface, and
@@ -121,7 +120,7 @@ epics, milestones that work counts toward, a goal it serves, and fields of your
 own (points, cost, risk). None of it is required, and nothing about a project
 forces a method on it.
 
-The following transcripts use the development checkout. Start each transcript in its own empty
+Start each transcript in its own empty
 directory, run `daymark init --here`, and set `DAYMARK_TZ=Europe/London`.
 Moving house has several
 phases and one date that matters.
@@ -224,7 +223,7 @@ each strategy.
 
 ## Install from source
 
-The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.5.0. This checkout identifies itself as 0.6.0.dev0.
+The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.6.0.
 Use `daymark --version` to tell which CLI your agent will run. Both require
 Python 3.11 or newer.
 

@@ -4,8 +4,7 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
-Development builds identify themselves as `0.6.0.dev0`. The tagged release
-remains `0.5.0`.
+## [0.6.0] - 2026-11-18
 
 ### Upgrade and compatibility
 

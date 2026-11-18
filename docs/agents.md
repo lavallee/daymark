@@ -3,8 +3,8 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
-Check `daymark --version`. This guide accompanies `0.6.0.dev0`.
-For the tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
+Check `daymark --version`. This guide accompanies `0.6.0`.
+For the previous tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 For a first integration, start with the session and reading sections below.
 To connect an editor, run `daymark onboard --mcp-config claude` or
@@ -572,7 +572,7 @@ For a local database import `Store` and `Tasks` from `daymark`. For an
 existing HTTP service install `daymark-core[client]` and import `Client`.
 The credential chooses the workspace and actor. The source archive includes
 the Python examples under “Embed in your transaction” in `README.md`.
-[Embedding example in the tagged release](https://github.com/lavallee/daymark/blob/v0.5.0/README.md#embed-in-your-transaction)
+[Embedding example in 0.5.0](https://github.com/lavallee/daymark/blob/v0.5.0/README.md#embed-in-your-transaction)
 
 `Tasks` wraps these connections with the same verbs:
 `add`, `propose`, `ready`, `agenda`, `show`, `claim`, `release`, `note`,
