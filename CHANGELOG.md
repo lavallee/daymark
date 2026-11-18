@@ -4,6 +4,23 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+- Use `ready --context ID` and `agenda --context ID` to select tasks tagged with an existing context. The filter combines with scope and honors every dependency.
+
+- `show --source SYSTEM:KIND:ID` recovers a capture by exact source reference in the active workspace, including archived entities. It also supports brief and individual note reads.
+
+- `ready --explain` counts eligible and held tasks within the selected filters and names example tasks behind each reason.
+
+- Accepting a proposal with `--waiting-on` now places it in waiting. `accept` and `dismiss` support `--if-version N` for a reviewed proposal. Both full and brief task details show source references.
+
+- `where [--json]` explains local file selection and workspace identity without opening or upgrading a database. For HTTP it reports the service origin.
+- `find --page` returns compact, cursor-based search hits. Filter by kind, status and scope and continue with `--after ID`. Brief startup reads cap task and memory previews.
+
+- `show ID --brief` provides a bounded handoff with attributed note previews, lease and readiness. `--note NOTE_ID` reads the entire note and `--before-note NOTE_ID` pages back through earlier notes.
+
+- Plain-verb retries verify the original write against its existing receipt, including
+  the entity, action and translated fields. `edit --if-version N` lets a caller reject a
+  stale decision. An assessment and its evidence note now commit together.
+
 - Project initialization adds a database-specific Git ignore file when one is absent. It refuses a conflicting database location with `--here`. `onboard --check FILE` checks project instructions without editing them. Refreshes preserve surrounding content and line endings.
 - Task details explain every applicable readiness constraint from the current actor’s perspective.
 
@@ -14,7 +31,7 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
   with `advise --profile NAME`. Saved copies have versions for safe updates.
   Plain and gentle advice only fetch the ready queue for ordinary-sized lists.
 
-- `daymark --as WORKER take [--scope NAME]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.
+- `daymark --as WORKER take [--scope NAME] [--context ID]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.
 
 - MCP negotiates supported protocol revisions, distinguishes request errors from tool refusals,
   validates arguments before writing, and accepts replay keys on every write. Modern clients

@@ -258,6 +258,20 @@ class SourceRef(Model):
     id: str = Field(min_length=1, max_length=500)
 
 
+    @classmethod
+    def parse_ref(cls, value):
+        """Accept an exact source triple, or its CLI system:kind:id spelling."""
+        if isinstance(value, str):
+            parts = value.split(":", 2)
+            if len(parts) != 3:
+                raise DomainError("invalid", "Source must be system:kind:id")
+            value = dict(zip(("system", "kind", "id"), parts))
+        try:
+            return cls.model_validate(value)
+        except ValueError:
+            raise DomainError("invalid", "Source needs a system, kind and ID within their length limits") from None
+
+
 class CheckItem(Model):
     id: str = Field(min_length=1, max_length=128)
     text: str = Field(min_length=1, max_length=2000)

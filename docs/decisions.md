@@ -43,7 +43,7 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A08 Priority direction | 1 is most important, 4 least, 0 unset | Follows iCalendar. Previously undefined; ordering in `ready` now depends on it. |
 | A09 Date input | Fixed grammar; anything else refused | No natural-language interpretation (C03 stands). The phrase used is stored as `expression` beside the resolved value. |
 | A10 Readable identifiers | Short `dm-xxxx` IDs from the plain verbs; `series.N` for rounds of a repeating task | A round falls back to the hashed identity when `series.N` is or was used by an unrelated entity, or exceeds the ID limit; a slot that was ever materialized is never materialized again. Databases written before this change keep their hashed successors. |
-| A11 Plain verbs and versions | The `Tasks` layer reads the current version and retries stale reads | The engine contract (C10) is unchanged: every write still carries an operation ID and expected version. A repeated `op` in the plain layer replays by ID alone, without comparing the request. |
+| A11 Plain verbs and versions (amended) | By default `Tasks` reads the current version and retries stale reads. `edit` accepts a caller-observed version. | Plain verbs verify replay using recorded actor/action/target, the original before-state and the kernel request digest. Changed kernel writes under the same ID conflict. Existing operation receipts and event records carry the proof. |
 | A12 Per-write validation | Each write validates its own references through derived lookup tables | Replaces whole-workspace validation on every write; snapshot import still validates the whole workspace. A randomized test checks the two agree. The 100,000-entity bound now applies to import only. |
 | A13 Journal mode | Path-owned stores use WAL with default synchronous settings | One durable sync per commit. Caller-owned connections keep their own mode. Creates `-wal` and `-shm` files beside the database. |
 | A14 Stored-shape upgrades | A schema marker triggers an in-place rewrite of stored entities when fields are added | Versions and event history are untouched. Snapshots exported by this version contain fields that 0.1.0 rejects. |
@@ -105,7 +105,7 @@ Decision date: 2026-11-15. [Architecture](architecture.md) gives the design and
 | S06 Plugins load by name | Entry points in `daymark.strategies`, imported only when a profile names one | Installing a package never runs its code by itself. No hook may rewrite a write. |
 | S07 Conditions | A `condition` kind with a judged state; its status follows the state | A condition belongs to a goal, cannot be proposed, parked or repeated, and a write that sets its status against its state is refused. "Met" reads as completed, so existing dependency rules apply unchanged. Reopening a met condition marks it unmet; bringing back an archived or dropped one keeps its assessment. Frontier and gap are kernel facts; choosing the bottleneck is a strategy's judgement. |
 | S08 Kernel admission | A field enters the kernel when three independent methods or clients need it stored, or an invariant depends on it | Otherwise it is plugin data. Existing fields that fail this test are listed as debt in the architecture document. |
-| S09 Personal adjustments | A temporary instruction applies to one advice request. Named copies and active defaults are explicit workspace settings. | A saved copy retains strategy order and parameters, can be exported on its own, and has a version checked on replacement or removal. Adopting it copies its configuration. The workspace's active setting guards edits against intervening writes. |
+| S09 Personal adjustments | A temporary instruction applies to one advice request. Named copies and active defaults are explicit workspace settings. | Named copies retain strategy order and parameters, support configuration export, and check their version on replacement or removal. Active settings have a separate revision. Each preference write and its replay receipt commit in one local transaction. A version-guarded undo restores the active setting preceding a change. Configuration receipts stay outside entity exports. |
 
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
@@ -154,7 +154,7 @@ authorized work without treating every open commitment as delegated. A named
 local actor or an authenticated HTTP principal owns the claim. Selection,
 the version check on the selected entity, and its ordinary claim event
 share one database transaction. The workspace-level request uses expected
-version zero because it names no entity. Its receipt binds the actor, scope
+version zero because it names no entity. Its receipt binds the actor, scope, context
 and lease duration to the selected task or the empty result. Replaying a
 selection cannot claim more work.
 
@@ -167,3 +167,21 @@ either database. In a project store, Daymark writes ignore patterns for its
 SQLite file and SQLite sidecars when the directory has no ignore file.
 The project owner controls existing ignore rules. Project instruction updates
 remain opt-in and preserve the text around Daymark's marked section.
+
+### Accepting a proposal with a recorded wait
+
+A proposal created with `--waiting-on` records a dependency on an outside
+person or event while the proposal awaits a decision. On acceptance, its
+status becomes `waiting`. Without a recorded wait, acceptance makes it
+`open`. This preserves the same actionable state as direct capture with
+the same fields. `accept` and `dismiss` accept an optional reviewed-version
+precondition across the plain verbs, CLI and MCP.
+
+
+## Reading by context
+
+A context filter selects explicit membership in a context in the current
+workspace. Filter before ranking and limiting. Prerequisites, child work and
+claims elsewhere in the workspace still determine eligibility. The ordinary
+ready list includes untagged work. A missing context ID produces a diagnostic
+so the caller can discover the available IDs.

@@ -102,3 +102,32 @@ def test_http_mcp_cli_expose_the_same_page(store, tmp_path, capsys):
     assert main(["--db", db, "activity", "--limit", "1", "--json"]) == 0
     page = json.loads(capsys.readouterr().out)
     assert page["events"][0]["id"] == "proofs" and page["cursor"] == page["head"] == 1
+
+
+def test_sql_event_projection_matches_legacy_reader_and_keeps_real_changed_fields():
+    import sqlite3
+
+    class CompatibilityConnection(sqlite3.Connection):
+        without_json = False
+
+        def execute(self, sql, *args):
+            if self.without_json and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    conn = sqlite3.connect(":memory:", factory=CompatibilityConnection)
+    try:
+        store = Store(conn)
+        tasks = Tasks(store, actor="writer")
+        tasks.add("Proof document", id="x", description="same" * 10000)
+        tasks.edit("x", title="Second title", description="amended", minutes=15)
+        tasks.note("x", "Preview\x00 detail")
+        tasks.claim("x")
+        tasks.done("x", note="Checked")
+        expected = tasks.activity(after=0)
+        assert set(expected["events"][1]["changed"]) == {"title", "description", "estimate_minutes"}
+        assert expected["events"][2]["note"]["text"] == "Preview\x00 detail"
+        conn.without_json = True
+        assert tasks.activity(after=0) == expected
+    finally:
+        conn.close()

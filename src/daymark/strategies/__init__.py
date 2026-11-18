@@ -81,10 +81,14 @@ class Advice:
     tone: str = "plain"  # "plain" or "neutral"; read by renderers
     steps: dict[str, str] = field(default_factory=dict)  # task id -> its next small step
     profile: str = "plain"
+    scope: str | None = None
+    profile_source: dict | None = None
 
     def to_dict(self) -> dict:
         return {
             "profile": self.profile,
+            **({"profile_source": self.profile_source} if self.profile_source else {}),
+            **({"scope": self.scope} if self.scope is not None else {}),
             "picks": self.picks,
             "notes": [{"strategy": n.strategy, "text": n.text, "ids": n.ids} for n in self.notes],
             "suggestions": self.suggestions,
@@ -235,14 +239,6 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
     return {**edited_profile, "skipped": skipped} if skipped else edited_profile
 
 
-def select_profile(tasks, name=None, *, settings=(), drops=()) -> dict:
-    """Choose a base and apply the requested adjustments without saving it."""
-    from .preferences import named_profile
-
-    base = stored_profile(tasks) if name is None else named_profile(tasks, name)
-    return edit_profile(base, settings, drops) if settings or drops else base
-
-
 def snapshot(tasks, *, scope: str | None = None, reads=SNAPSHOT_READS) -> Snapshot:
     """Read ready picks and the additional views used by this profile."""
     ready = tasks.ready(limit=READY_LIMIT, scope=scope)
@@ -277,7 +273,7 @@ def advise(tasks, profile: dict | None = None, *, scope: str | None = None) -> A
     stages = [(get(stage["use"]), stage["with"]) for stage in profile["strategies"]]
     reads = {name for strategy, _ in stages for name in strategy.reads}
     view = snapshot(tasks, scope=scope, reads=reads)
-    advice = Advice(picks=list(view.ready), profile=profile["name"])
+    advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope)
     if skipped:
         advice.notes.append(
             Note("profile", "The profile names strategies that could not be used: "

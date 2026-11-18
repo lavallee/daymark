@@ -1,6 +1,8 @@
 """A person's named ways of working are workspace choices, always explicit."""
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -32,7 +34,12 @@ def test_named_copy_survives_restart_and_adoption_is_independent(tmp_path):
         reader = Tasks(store, "studio", actor="reader")
         assert reader.saved_profiles("short-break") == saved
         assert [task["id"] for task in reader.advise(profile="short-break").picks] == ["a"]
-        assert call(reader, "daymark_view", {"view": "profiles"}) == "short-break  version 1"
+        catalog = call(reader, "daymark_view", {"view": "profiles"})
+        assert "short-break  version 1" in catalog and "Active profile: plain" in catalog
+        assert "gentle" in catalog
+        assert "shortlist" in call(
+            reader, "daymark_view", {"view": "profiles", "profile": "gentle"}
+        )
         assert "minutes=20" in call(
             reader, "daymark_view", {"view": "profiles", "profile": "short-break"}
         )
@@ -40,15 +47,30 @@ def test_named_copy_survives_restart_and_adoption_is_independent(tmp_path):
             len(reader.advise(profile="short-break", settings=["time-fit.minutes=50"]).picks) == 2
         )
         assert reader.saved_profiles("short-break") == saved
-        assert reader.profile("short-break") == saved["profile"]
+        adopted = reader.profile("short-break")
+        assert adopted["strategies"] == saved["profile"]["strategies"]
+        assert adopted["version"] == 1 and adopted["workspace"] == "studio"
         reader.save_profile(
             "short-break",
             profile="short-break",
             settings=["time-fit.minutes=50"],
             expected_version=1,
         )
-        assert len(reader.advise().picks) == 1
-        assert len(reader.advise(profile="short-break").picks) == 2
+        active = reader.advise()
+        named = reader.advise(profile="short-break")
+        assert len(active.picks) == 1 and len(named.picks) == 2
+        assert active.to_dict()["profile_source"] == {
+            "kind": "workspace",
+            "version": 1,
+            "name": "short-break",
+            "adjusted": False,
+        }
+        assert named.to_dict()["profile_source"] == {
+            "kind": "saved",
+            "name": "short-break",
+            "version": 2,
+            "adjusted": False,
+        }
         assert Tasks(store, "elsewhere").saved_profiles() == []
         fails("not_found", Tasks(store, "elsewhere").advise, profile="short-break")
     finally:
@@ -82,30 +104,27 @@ def test_unknown_versions_and_recreated_names_cannot_clobber_configuration(tmp_p
         store.close()
 
 
-@pytest.mark.parametrize("setting", ["profile", "profile.library"])
-def test_competing_connections_preserve_intervening_edits(tmp_path, monkeypatch, setting):
+def test_competing_connections_compose_independent_adjustments(tmp_path):
     path = tmp_path / "shared.sqlite3"
     first, second = Store(path), Store(path)
+    gate = threading.Barrier(2)
+
+    def write(store, label, stage):
+        task = Tasks(store)
+        gate.wait(timeout=5)
+        task.profile(settings=[stage], op=f"adjust-{label}")
+        task.save_profile(label, profile="plain", op=f"save-{label}")
+
     try:
-        earlier, later = Tasks(first), Tasks(second)
-        write = first.set_setting
-
-        def intervening(workspace, key, value, **kwargs):
-            if setting == "profile":
-                later.profile(settings=["waiting-check.days=9"])
-            else:
-                later.save_profile("weekly", profile="dense")
-            return write(workspace, key, value, **kwargs)
-
-        monkeypatch.setattr(first, "set_setting", intervening)
-        if setting == "profile":
-            fails("conflict", earlier.profile, settings=["shortlist.size=2"])
-            assert earlier.profile()["strategies"] == [
-                {"use": "waiting-check", "with": {"days": 9}}
-            ]
-        else:
-            fails("conflict", earlier.save_profile, "morning", profile="gentle")
-            assert [entry["name"] for entry in earlier.saved_profiles()] == ["weekly"]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            a = executor.submit(write, first, "morning", "shortlist.size=2")
+            b = executor.submit(write, second, "weekly", "waiting-check.days=9")
+            a.result(timeout=10)
+            b.result(timeout=10)
+        chosen = Tasks(first).profile()
+        assert chosen["version"] == 2
+        assert {stage["use"] for stage in chosen["strategies"]} == {"shortlist", "waiting-check"}
+        assert [entry["name"] for entry in Tasks(first).saved_profiles()] == ["morning", "weekly"]
     finally:
         first.close()
         second.close()
@@ -143,3 +162,162 @@ def test_cli_export_import_replace_remove_and_input_errors(tmp_path, monkeypatch
     file.write_text("[]")
     cli("profile", "--from-file", str(file), "--save-as", "duplicate", expected=5)
     assert cli("profile", "--saved") == [saved]
+
+
+@pytest.mark.parametrize(
+    ("workspace", "key"), [("", "profile"), ("w", ""), ("w", "nested:profile"), ("w", "../other")]
+)
+def test_setting_keys_are_validated_identically_on_read_and_write(tmp_path, workspace, key):
+    store = Store(tmp_path / "settings.sqlite3")
+    try:
+        fails("invalid", store.setting, workspace, key)
+        fails("invalid", store.setting_state, workspace, key)
+        fails("invalid", store.set_setting, workspace, key, {})
+        fails("invalid", store.setting_before, workspace, key, "prior")
+    finally:
+        store.close()
+
+
+def test_preference_receipts_replay_before_derived_state_changes(tmp_path):
+    path = tmp_path / "prefs.sqlite3"
+    store = Store(path)
+    tasks = Tasks(store, "test")
+    before = store.export("test")
+    saved = tasks.save_profile("quiet", profile="gentle", op="save")
+    adopted = tasks.profile("quiet", expected_version=0, op="adopt")
+    removed = tasks.remove_profile("quiet", expected_version=saved["version"], op="remove")
+    changed = tasks.profile(settings=["shortlist.size=1"], expected_version=1, op="adjust")
+    store.close()
+    store = Store(path)
+    try:
+        tasks = Tasks(store, "test")
+        assert tasks.save_profile("quiet", profile="gentle", op="save") == saved
+        assert (
+            tasks.remove_profile("quiet", expected_version=saved["version"], op="remove") == removed
+        )
+        assert tasks.profile("quiet", expected_version=0, op="adopt") == adopted
+        assert (
+            tasks.profile(settings=["shortlist.size=1"], expected_version=1, op="adjust") == changed
+        )
+        assert tasks.saved_profiles() == []
+        assert tasks.profile()["version"] == 2
+        fails("conflict", tasks.save_profile, "other", profile="gentle", op="save")
+        fails("conflict", tasks.profile, "plain", op="save")
+        fails("conflict", tasks.profile, undo="adopt", expected_version=2, op="older")
+        restored = tasks.profile(undo="adjust", expected_version=2, op="restore")
+        assert restored["strategies"] == adopted["strategies"]
+        assert restored["version"] == 3
+        assert tasks.profile(undo="adjust", expected_version=2, op="restore") == restored
+        fails("conflict", tasks.profile, "plain", expected_version=2, op="stale")
+        assert store.export("test") == before
+        other = Tasks(store, "other")
+        assert other.profile()["version"] == 0
+        fails("not_found", other.profile, undo="adopt", op="undo-other")
+    finally:
+        store.close()
+
+
+def test_undo_first_choice_restores_unset_default_and_preserves_revision(tmp_path):
+    store = Store(tmp_path / "prefs.sqlite3")
+    try:
+        tasks = Tasks(store, "w")
+        assert tasks.profile()["version"] == 0
+        adopted = tasks.profile("gentle", op="choose")
+        assert adopted["undo"] == {"operation_id": "choose", "expected_version": 1}
+        restored = tasks.profile(undo="choose", expected_version=1, op="restore")
+        assert restored["name"] == "plain" and restored["version"] == 2
+        assert store.setting("w", "profile") is None
+        fails("conflict", tasks.profile, "dense", expected_version=0, op="stale")
+        assert tasks.profile("gentle", op="choose") == adopted
+        assert tasks.profile()["version"] == 2
+    finally:
+        store.close()
+
+
+def test_caller_rollback_removes_preferences_and_receipts_together():
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    try:
+        store = Store(con)
+        con.commit()
+        tasks = Tasks(store, "w")
+        saved = tasks.profile("gentle", op="choose")
+        assert saved["version"] == 1
+        con.rollback()
+        assert tasks.profile()["version"] == 0
+        fails("not_found", tasks.profile, undo="choose", op="undo")
+        assert tasks.profile("dense", op="choose")["name"] == "dense"
+    finally:
+        con.close()
+
+
+def test_legacy_setting_and_compare_and_set_revision(tmp_path):
+    store = Store(tmp_path / "legacy.sqlite3")
+    try:
+        # The v0.5.0 setting row predates per-setting revisions.
+        store.db.execute(
+            "INSERT INTO daymark_scheduler VALUES(?,?)",
+            ("setting:w:profile", '{"name":"legacy","strategies":[]}'),
+        )
+        store.db.commit()
+        tasks = Tasks(store, "w")
+        assert tasks.profile() == {
+            "name": "legacy",
+            "strategies": [],
+            "workspace": "w",
+            "version": 1,
+        }
+        changed = tasks.profile("gentle", expected_version=1, op="adopt")
+        assert changed["version"] == 2
+        fails("conflict", store.set_setting, "w", "profile", None, expected_version=1)
+        restored = tasks.profile(undo="adopt", expected_version=2)
+        assert restored["version"] == 3 and restored["name"] == "legacy"
+        assert store.setting("w", "profile") == {"name": "legacy", "strategies": []}
+    finally:
+        store.close()
+
+
+def test_simultaneous_same_operation_returns_one_named_copy(tmp_path):
+    path = tmp_path / "race.sqlite3"
+    stores = [Store(path), Store(path)]
+    gate = threading.Barrier(2)
+
+    def save(store):
+        gate.wait(timeout=5)
+        return Tasks(store).save_profile("quiet", profile="gentle", op="same")
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(save, stores))
+        assert results[0] == results[1]
+        assert Tasks(stores[0]).saved_profiles() == [results[0]]
+        assert stores[0].setting_state("default", "profile.library")["version"] == 1
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_cli_prints_reversible_quoted_command_and_accepts_retries(tmp_path, monkeypatch, capsys):
+    import shlex
+
+    monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "test.sqlite3"))
+    assert main(["init"]) == 0
+    capsys.readouterr()
+    args = [
+        "--workspace=--studio group",
+        "profile",
+        "gentle",
+        "--if-version",
+        "0",
+        "--op=--first ' choice",
+    ]
+    assert main(args) == 0
+    first = capsys.readouterr().out
+    command = shlex.split(first.split("Restore the previous settings in this database with ")[1])
+    assert main(command[1:]) == 0
+    restored = capsys.readouterr().out
+    assert "profile: plain" in restored and "active version 2" in restored
+    assert main(args) == 0 and capsys.readouterr().out == first
+    assert main(["--workspace=--studio group", "profile", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["version"] == 2

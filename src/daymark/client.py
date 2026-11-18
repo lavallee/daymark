@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Self
 from urllib.parse import quote
 
+from .models import DomainError
+
 
 class ClientError(Exception):
     """Safe failure containing a status code, never server bodies or credentials."""
@@ -25,6 +27,8 @@ class Client:
 
         if not token:
             raise ValueError("Bearer credential required")
+        self.legacy_search = False
+        self._read_params = None
         self._http = httpx.Client(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {token}"},
@@ -85,6 +89,19 @@ class Client:
     def list(self, kind: str | None = None) -> Any:
         return self._request("GET", "/v1/entities", params={"kind": kind} if kind else {})
 
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
+        body = self._params(text=text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+        if not self.legacy_search:
+            try:
+                return self._request("POST", "/v1/search", json=body)
+            except ClientError as error:
+                if error.status_code not in {404, 405}:
+                    raise
+                self.legacy_search = True
+        from .search import legacy_page
+
+        return legacy_page(self, text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+
     def query(self, filters: dict[str, Any]) -> Any:
         return self._request("POST", "/v1/query", json={"filters": filters})
 
@@ -96,6 +113,19 @@ class Client:
             if value is not None
         }
 
+    def _require_filter(self, path, field):
+        """Older servers ignore unknown query parameters. Never silently widen a filtered read."""
+        from .models import DomainError
+
+        if self._read_params is None:
+            self._read_params = {
+                route: {param["name"] for param in operations.get("get", {}).get("parameters", [])}
+                for route, operations in self.schema()["paths"].items()
+            }
+        if field not in self._read_params.get(path, set()):
+            raise DomainError("invalid", f"This service does not support {field} on {path}",
+                              ["Upgrade the service or choose a supported filter."])
+
     def ready(
         self,
         *,
@@ -104,37 +134,91 @@ class Client:
         mine: bool = False,
         owner: str | None = None,
         next_move: str | None = None,
-        scope: str | None = None,
+        context: str | None = None, scope: str | None = None,
+        brief: bool = False,
     ) -> Any:
-        params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move, scope=scope)
-        return self._request("GET", "/v1/ready", params=params)
+        if context is not None:
+            self._require_filter("/v1/ready", "context")
+        params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move, scope=scope, context=context, brief=brief or None)
+        rows = self._request("GET", "/v1/ready", params=params)
+        if brief:
+            # A 0.5 service ignores the brief query parameter. Keep these
+            # rows bounded before returning them to a session or MCP host.
+            from .models import normalize_now
+            from .views import ready_record
 
-    def agenda(self, *, now: Any = None, days: int = 7, scope: str | None = None) -> Any:
-        params = self._params(now=now, days=days, scope=scope)
+            instant = normalize_now(now)
+            return [ready_record(row, instant) if "created_at" in row else row for row in rows]
+        return rows
+
+    def explain_ready(self, *, limit=20, now=None, owner=None, next_move=None, context: str | None = None, scope: str | None = None, mine=False):
+        params = self._params(limit=limit, now=now, owner=owner, next_move=next_move,
+                              scope=scope, context=context, mine=mine or None)
+        return self._request("GET", "/v1/ready/explanation", params=params)
+
+    def agenda(self, *, now: Any = None, days: int = 7, context: str | None = None, scope: str | None = None) -> Any:
+        if context is not None:
+            self._require_filter("/v1/agenda", "context")
+        params = self._params(now=now, days=days, scope=scope, context=context)
         return self._request("GET", "/v1/agenda", params=params)
 
     def explore(self, goal: str | None = None, *, now: Any = None, scope: str | None = None) -> Any:
+        if scope is not None:
+            self._require_filter("/v1/explore", "scope")
         return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now, scope=scope))
 
     def summary(
-        self, *, now: Any = None, scope: str | None = None,
+        self, *, now: Any = None, context: str | None = None, scope: str | None = None,
         owner: str | None = None, mine: bool = False,
     ) -> Any:
-        params = self._params(now=now, scope=scope, owner=owner, mine=mine or None)
+        if context is not None:
+            self._require_filter("/v1/summary", "context")
+        params = self._params(now=now, scope=scope, context=context, owner=owner, mine=mine or None)
         return self._request("GET", "/v1/summary", params=params)
 
+    def _source_read(self, entity_id, source, detail, **options):
+        from .models import DomainError, SourceRef
+
+        if entity_id is not None:
+            raise DomainError("invalid", "Choose an entity ID or a source reference")
+        ref = SourceRef.parse_ref(source)
+        params = self._params(system=ref.system, kind=ref.kind, ref_id=ref.id, detail=detail, **options)
+        return self._request("GET", "/v1/source", params=params)
+
+    def brief(self, entity_id=None, *, now=None, owner=None, mine=False, before_note=None, source=None):
+        if source is not None:
+            return self._source_read(entity_id, source, "brief", now=now, owner=owner, mine=mine or None, before_note=before_note)
+        params = self._params(entity_id=entity_id, now=now, owner=owner, mine=mine or None, before_note=before_note)
+        return self._request("GET", "/v1/brief", params=params)
+
+    def read_note(self, entity_id, note_id, *, source=None):
+        if source is not None:
+            return self._source_read(entity_id, source, "note", note_id=note_id)
+        return self._request("GET", "/v1/note", params={"entity_id": entity_id, "note_id": note_id})
+
     def context(
-        self, entity_id: str, *, history: int = 10, now: Any = None,
-        owner: str | None = None, mine: bool = False,
+        self, entity_id: str | None = None, *, history: int = 10, now: Any = None,
+        owner: str | None = None, mine: bool = False, source=None,
     ) -> Any:
+        if source is not None:
+            return self._source_read(entity_id, source, "show", history=history, now=now, owner=owner, mine=mine or None)
         params = self._params(history=history, now=now, owner=owner, mine=mine or None)
         return self._request("GET", f"/v1/context/{quote(entity_id, safe='')}", params=params)
 
     def receipt_context(self, operation_id: str, *, action: str, entity_id: str | None = None) -> Any:
-        return self._request(
-            "GET", "/v1/receipt-context",
-            params=self._params(operation_id=operation_id, action=action, entity_id=entity_id),
-        )
+        try:
+            return self._request(
+                "GET", "/v1/receipt-context",
+                params=self._params(operation_id=operation_id, action=action, entity_id=entity_id),
+            )
+        except ClientError as exc:
+            if exc.status_code != 404:
+                raise
+            # Older services can accept a new operation. An existing receipt
+            # alone cannot prove that the callers requested the same change.
+            if self.receipt(operation_id) is None:
+                return None
+            raise DomainError("conflict", "Upgrade the Daymark service to verify this retry") from None
 
     def receipt(self, operation_id: str) -> Any:
         """The stored result of a completed operation ID, or None."""

@@ -41,7 +41,7 @@ the server records its authenticated principal.
 | --- | --- | --- |
 | `daymark_prime` | `{}` | Check the workspace and actor before changing anything. |
 | `daymark_add` | `{"title":"Compare sample readings","move":"agent","op":"capture-readings-01"}` | Capture requested work. For inferred work add `"proposed":true` and leave acceptance to the person. |
-| `daymark_view` | `{"view":"ready","move":"agent"}` | Only tasks explicitly marked for agent action. |
+| `daymark_view` | `{"view":"ready","move":"agent","explain":true}` | See eligible work, how many matching tasks are held, and example IDs for each reason. |
 | `daymark_act` | `{"action":"claim","id":"ID","minutes":30,"op":"claim-readings-01"}` | Take the task before work starts. Substitute the ID returned by capture. |
 | `daymark_edit` | `{"id":"ID","plan":"fri","op":"plan-readings-01"}` | Record the intended day. A hard cutoff belongs in `due`. |
 | `daymark_act` | `{"action":"release","id":"ID","text":"First sample checked. Compare the second next.","op":"handoff-readings-01"}` | Return unfinished work with context for the next session. |
@@ -51,19 +51,85 @@ the server records its authenticated principal.
 Every write accepts `op`. Generate a distinct operation ID for each new
 intent. Reuse that ID on the *same* request after a timeout, disconnection or
 server restart. A successful replay returns the original operation's result,
-including its original version. Read `show` for the latest state.
+including its original version. Read `show` for the latest state. For an edit
+based on that read, pass its `version` as `expected_version` to `daymark_edit`.
+The same guard is available for `accept` and `dismiss`.
+If a teammate has changed the task, Daymark returns `conflict` and the newer
+state survives.
 
 With protocol revision 2025-06-18 or 2025-11-25, a successful write returns the
-entity's ID, kind, status and version in `structuredContent`. Machine clients
+entity's ID, kind, title, status and version in `structuredContent`. Machine clients
 can use the ID directly. Human-readable output stays in `content[0].text`.
 
 ```json
 {
   "isError": false,
   "content": [{"type":"text","text":"dm-7q2t  Compare sample readings  [move:agent]"}],
-  "structuredContent": {"id":"dm-7q2t","kind":"task","status":"open","version":1}
+  "structuredContent": {"id":"dm-7q2t","kind":"task","title":"Compare sample readings","status":"open","version":1}
 }
 ```
+
+A successful `take`, `claim` or `release` also includes `claimed_by` and
+`claim_until`. After release both fields are null. To claim the first eligible
+task without picking an ID first, call
+`daymark_act {"action":"take","scope":"workshop","op":"shift-01"}`.
+An empty take returns `{"task":null}` in structured output.
+
+## Read only the detail you need
+
+By default, views return the same short text an operator sees in the CLI.
+Use `json:true` on any `daymark_view` to get named fields. Modern clients read
+`structuredContent`. The text block identifies where to find it so the payload
+appears once on the wire. A host that only displays text can omit `json`.
+Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
+
+| Question | `daymark_view` arguments |
+| --- | --- |
+| What can this agent pick up? | `{"view":"ready","move":"agent","scope":"workshop","json":true}` |
+| Why is this queue empty? | `{"view":"ready","scope":"workshop","explain":true,"json":true}` |
+| What did the last worker record? | `{"view":"show","id":"sample","brief":true,"json":true}` |
+| Which task came from this external reference? | `{"view":"show","source":"samples:sheet:Q-41","brief":true,"json":true}` |
+| Can I read the whole note? | `{"view":"show","id":"sample","note":"NOTE_ID","json":true}` |
+| Where is the saved fact? | `{"view":"find","kind":"memory","text":"metric","limit":5,"json":true}` |
+| Which tasks changed after my cursor? | `{"view":"activity","after":10,"limit":5,"json":true}` |
+
+A ready row carries its ID, title, current version and the reason for its place.
+Supply `context` with a context entity ID to filter ready work or its explanation.
+Capture and edit accept `contexts`, an array of context IDs.
+A search page returns `items` and `next`. To continue, supply `next` as the
+string `after` and keep the original filters. Activity uses a numeric cursor.
+Show accepts exactly one of `id` or `source`. Its brief supplies individual note
+IDs and a cursor to older previews. The full show includes note IDs, authors,
+timestamps and text.
+
+## Change a local working preference
+
+Use `daymark_view {"view":"profiles","json":true}` to discover available
+profiles and the active version. Preview a different working style with
+`{"view":"advise","profile":"plain"}`. To adopt it for this workspace on the
+local database, send `daymark_act` an action such as the following.
+
+```json
+{"action":"use_profile","id":"plain","expected_version":0,"op":"choose-plain-01"}
+```
+
+Use the version actually returned by the read. An unconfigured workspace
+starts at version zero. Supply `set` or `drop` without `id` to adjust the
+active profile. The receipt identifies the workspace, new version, and the
+operation and expected version needed to restore the earlier settings. Its
+text includes the exact CLI command for use with the same database. Named
+profile administration remains available through `daymark profile` commands.
+
+## Mix client and service versions
+
+The stdio MCP process and the HTTP service can run different versions of
+Daymark. Against the 0.5.0 HTTP service, the current client can capture new
+work, search, and project ready rows to a compact result even when the service
+returns full records. The earlier service can return a previous operation's
+result but lacks the original request evidence needed to verify a retry. The
+current client asks for a service upgrade if that operation already exists.
+Keep the same operation ID for the retry after the upgrade. For guarded retries
+on both sides, upgrade the stdio process as well as the service.
 
 ## Handle refusals
 

@@ -432,8 +432,12 @@ def test_temporary_advice_uses_the_same_adjustments_as_adoption(tasks):
     for invalid in ("shortlist.", "shortlist=2", "shortlist.size=0", "shortlist.=2"):
         code("invalid", tasks.advise, settings=[invalid])
     assert strategies.stored_profile(tasks) == saved
-    strategies.store_profile(tasks, strategies.select_profile(tasks, "gentle", **options))
-    assert tasks.advise(scope="studio").to_dict() == preview.to_dict()
+    tasks.profile("gentle", **options)
+    active = tasks.advise(scope="studio").to_dict()
+    trial = preview.to_dict()
+    assert active.pop("profile_source")["kind"] == "workspace"
+    assert trial.pop("profile_source") == {"kind": "built-in", "name": "gentle", "adjusted": True}
+    assert active == trial
 
 
 def test_preview_from_cli_and_mcp(tmp_path, monkeypatch, capsys):

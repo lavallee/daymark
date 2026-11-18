@@ -22,14 +22,13 @@ from .models import (
     DomainError,
     Entity,
     Recurrence,
+    SourceRef,
     Temporal,
     next_occurrence,
     normalize_now,
     plain_number,
     retry_delay,
 )
-
-_ANY_SETTING = object()
 
 
 def canonical(value):
@@ -650,20 +649,8 @@ class Store:
             )
         return value
 
-    def setting(self, workspace, name):
-        """A named workspace setting (a small JSON value), or None. Settings are
-        configuration, not records: they have no history and are not exported."""
-        with self._lock:
-            if not self._has_schema("daymark_scheduler"):
-                return None
-            row = self.db.execute(
-                "SELECT value FROM daymark_scheduler WHERE key=?",
-                (f"setting:{workspace}:{name}",),
-            ).fetchone()
-            return json.loads(row[0]) if row else None
-
-    def set_setting(self, workspace, name, value, *, expected=_ANY_SETTING):
-        """Store or remove a small JSON setting. Pass its last read value to guard an edit."""
+    @staticmethod
+    def _setting_key(workspace, name):
         if (
             not isinstance(workspace, str)
             or not 1 <= len(workspace) <= 128
@@ -671,19 +658,48 @@ class Store:
             or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) is None
         ):
             invalid("Setting needs a workspace and a short lowercase name")
+        return f"setting:{workspace}:{name}"
+
+    def setting_state(self, workspace, name):
+        """Read a local configuration value and its revision in one snapshot."""
+        key = self._setting_key(workspace, name)
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return {"value": None, "version": 0}
+            data, revision = self.db.execute(
+                "SELECT (SELECT value FROM daymark_scheduler WHERE key=?),"
+                "(SELECT value FROM daymark_scheduler WHERE key=?)",
+                (key, "revision:" + key),
+            ).fetchone()
+        # Older releases stored the value alone. Its first observed version is one.
+        return {
+            "value": json.loads(data) if data is not None else None,
+            "version": int(revision) if revision is not None else int(data is not None),
+        }
+
+    def setting(self, workspace, name):
+        """A named workspace setting (a small JSON value), or None."""
+        return self.setting_state(workspace, name)["value"]
+
+    def set_setting(self, workspace, name, value, *, expected_version=None):
+        """Store or remove a small JSON setting. An observed version guards against stale edits."""
+        key = self._setting_key(workspace, name)
+        if expected_version is not None and (
+            type(expected_version) is not int or expected_version < 0
+        ):
+            invalid("Expected configuration version must be a nonnegative integer")
         try:
             text = None if value is None else canonical(value)
-            previous = None if expected is None or expected is _ANY_SETTING else canonical(expected)
         except (TypeError, ValueError):
             invalid("A setting is plain JSON")
         if text is not None and len(text) > 65_536:
             invalid("Setting exceeds 64 kB")
-        key = f"setting:{workspace}:{name}"
         with self._transaction():
-            if expected is not _ANY_SETTING:
-                row = self.db.execute("SELECT value FROM daymark_scheduler WHERE key=?", (key,)).fetchone()
-                if (row[0] if row else None) != previous:
-                    raise DomainError("conflict", "Workspace setting changed; read it again")
+            state = self.setting_state(workspace, name)
+            if expected_version is not None and expected_version != state["version"]:
+                raise DomainError("conflict", "Workspace setting changed; read it again")
+            if canonical(state["value"]) == canonical(value):
+                return value
             if text is None:
                 self.db.execute("DELETE FROM daymark_scheduler WHERE key=?", (key,))
             else:
@@ -691,7 +707,67 @@ class Store:
                     "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     (key, text),
                 )
+            self.db.execute(
+                "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("revision:" + key, str(state["version"] + 1)),
+            )
         return value
+
+    @staticmethod
+    def _setting_op_key(workspace, operation_id):
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 200:
+            invalid("Configuration operation ID must be 1 to 200 characters")
+        # Workspace and operation IDs can contain separators. JSON preserves the pair.
+        return "setting-op:" + canonical([workspace, operation_id])
+
+    def setting_operation(self, workspace, name, operation_id, request, apply, *, reversible=False):
+        """Commit a local settings write and its replay receipt in one transaction.
+
+        The callback receives the setting's observed state. Settings and their
+        receipts live outside entity exports. A reversible write keeps its prior
+        value, including the distinction between an unset value and a default.
+        """
+        self._setting_key(workspace, name)
+        key = self._setting_op_key(workspace, operation_id)
+        try:
+            digest = hashlib.sha256(canonical([name, request]).encode()).hexdigest()
+        except (TypeError, ValueError):
+            invalid("A configuration request must be plain JSON")
+        with self._transaction():
+            row = self.db.execute(
+                "SELECT value FROM daymark_scheduler WHERE key=?", (key,)
+            ).fetchone()
+            if row:
+                receipt = json.loads(row[0])
+                if receipt["digest"] != digest:
+                    raise DomainError(
+                        "conflict", "Configuration operation ID reused with a different request"
+                    )
+                return receipt["result"]
+            before = self.setting_state(workspace, name)
+            result = apply(before)
+            receipt = {"name": name, "digest": digest, "result": result}
+            if reversible:
+                receipt["before"] = before["value"]
+            self.db.execute("INSERT INTO daymark_scheduler VALUES(?,?)", (key, canonical(receipt)))
+        return result
+
+    def setting_before(self, workspace, name, operation_id):
+        """The prior value and resulting version of a reversible configuration operation."""
+        self._setting_key(workspace, name)
+        key = self._setting_op_key(workspace, operation_id)
+        with self._lock:
+            row = (
+                self.db.execute(
+                    "SELECT value FROM daymark_scheduler WHERE key=?", (key,)
+                ).fetchone()
+                if self._has_schema("daymark_scheduler")
+                else None
+            )
+        receipt = json.loads(row[0]) if row else {}
+        if receipt.get("name") != name or "before" not in receipt:
+            raise DomainError("not_found", "No reversible configuration operation with that ID")
+        return {"value": receipt["before"], "version": receipt["result"]["version"]}
 
     def execute(self, workspace, operation_id, action, payload, expected_version=None, actor=None):
         """Apply one operation. ``actor`` names who is acting; it is recorded on the
@@ -854,6 +930,8 @@ class Store:
         return views.projects(self, workspace, now=now)
 
     def _execute(self, workspace, operation_id, action, payload, expected_version):
+        if action == "take" and payload.get("owner") != self._actor:
+            invalid("Take requires the owner to match the acting worker")
         digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
         if replay is not None:
             return replay
@@ -871,7 +949,7 @@ class Store:
             # attribute its event to the caller's actual operation ID.
             action = "claim"
             expected_version = candidate["version"]
-            payload = {key: value for key, value in payload.items() if key != "scope"}
+            payload = {key: value for key, value in payload.items() if key not in {"scope", "context"}}
             payload["id"] = candidate["id"]
         before = None
         if action == "create":
@@ -974,7 +1052,9 @@ class Store:
                     raise DomainError(
                         "forbidden", "Only a designated decider can accept or dismiss"
                     )
-                raw["status"] = "open" if action == "accept" else "cancelled"
+                raw["status"] = "cancelled"
+                if action == "accept":
+                    raw["status"] = "waiting" if before["waiting_on"] else "open"
             elif action in {"complete", "cancel", "reopen", "archive", "skip", "delete"}:
                 if set(payload) - {"id", "completed_at"}:
                     invalid("Unexpected action fields")
@@ -1091,10 +1171,10 @@ class Store:
 
     def _take_candidate(self, workspace, payload, now):
         """Selection uses the same readiness and ordering that the worker sees."""
-        if set(payload) - {"owner", "scope", "lease_seconds"}:
+        if set(payload) - {"owner", "scope", "context", "lease_seconds"}:
             invalid("Unexpected take fields")
         owner, scope = payload.get("owner"), payload.get("scope")
-        if not isinstance(owner, str) or not owner.strip() or len(owner) > 200 or owner != self._actor:
+        if not isinstance(owner, str) or not owner.strip() or len(owner) > 200:
             invalid("Take requires a named acting worker")
         lease = payload.get("lease_seconds", 3600)
         if type(lease) is not int or not 1 <= lease <= 604_800:
@@ -1103,7 +1183,11 @@ class Store:
             not isinstance(scope, str) or len(scope) > 100 or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", scope)
         ):
             invalid("Invalid scope name")
-        ready = self.ready(workspace, now=now, limit=1, next_move="agent", scope=scope)
+        context = payload.get("context")
+        if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
+            invalid("Context must be an entity ID")
+        ready = self.ready(workspace, now=now, limit=1, next_move="agent", scope=scope,
+                           **({"context": context} if context is not None else {}))
         return ready[0] if ready else None
 
     def _claim_action(self, raw, before, action, payload, now):
@@ -1944,6 +2028,12 @@ class Store:
 
         return compile_node(ast, 0)
 
+    def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
+        """Search titles and descriptions. Continue from the last ID with the same filters."""
+        from .search import page
+
+        return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
         # Top-level kind/status equality narrows the indexed scan; the compiled
@@ -1964,19 +2054,25 @@ class Store:
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]
 
-    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None):
+    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, brief=False):
         """Open tasks that can be acted on now, most pressing first. See views.ready."""
         from . import views
 
         return views.ready(
-            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope
+            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, brief=brief
         )
 
-    def agenda(self, workspace, *, now=None, days=7, scope=None):
+    def explain_ready(self, workspace, *, now=None, limit=20, owner=None, next_move=None, context=None, scope=None):
+        from . import views
+
+        return views.explain_ready(self, workspace, now=now, limit=limit,
+                                   owner=owner, next_move=next_move, scope=scope, context=context)
+
+    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""
         from . import views
 
-        return views.agenda(self, workspace, now=now, days=days, scope=scope)
+        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context)
 
     def explore(self, workspace, goal_id=None, *, now=None, scope=None):
         """The conditions behind a goal (or every goal): what is met, what is next,
@@ -1996,16 +2092,48 @@ class Store:
             ).fetchall()
             return [{"workspace": row[0], "entities": row[1]} for row in rows]
 
-    def context(self, workspace, id, *, history=10, now=None, owner=None):
+    def _read_entity(self, read, workspace, id, source, *args, **kwargs):
+        """Resolve a source and inspect its owner within the very same snapshot."""
+        if source is None:
+            if id is None:
+                invalid("An entity ID or source reference is required")
+            return read(self, workspace, id, *args, **kwargs)
+        if id is not None:
+            invalid("Choose an entity ID or a source reference")
+        ref = SourceRef.parse_ref(source)
+        with self._lock:
+            if not self._has_schema():
+                raise DomainError("not_found", "No entity owns this source")
+            with self._transaction(write=False):
+                row = self.db.execute(
+                    "SELECT entity_id FROM daymark_sources "
+                    "WHERE workspace=? AND system=? AND kind=? AND ref_id=?",
+                    (workspace, ref.system, ref.kind, ref.id),
+                ).fetchone()
+                if row is None:
+                    raise DomainError("not_found", "No entity owns this source")
+                return read(self, workspace, row[0], *args, **kwargs)
+
+    def brief(self, workspace, id=None, *, now=None, owner=None, before_note=None, source=None):
+        from . import brief
+
+        return self._read_entity(brief.read, workspace, id, source, now=now, owner=owner, before_note=before_note)
+
+    def read_note(self, workspace, id, note_id, *, source=None):
+        from . import brief
+
+        return self._read_entity(brief.note, workspace, id, source, note_id)
+
+    def context(self, workspace, id=None, *, history=10, now=None, owner=None, source=None):
         """An entity with its blockers, dependents, children, reminders and history."""
         from . import views
 
-        return views.context(self, workspace, id, history=history, now=now, owner=owner)
+        return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner)
 
-    def summary(self, workspace, *, now=None, scope=None, owner=None):
+    def summary(self, workspace, *, now=None, context=None, scope=None, owner=None):
         from . import views
 
-        return views.summary(self, workspace, now=now, scope=scope, owner=owner)
+        return views.summary(self, workspace, now=now, scope=scope, context=context, owner=owner)
 
     def receipt_context(self, workspace, operation_id, *, action, entity_id=None, actor=None):
         """Recover the original read for a plain-verb retry. Reject unrelated receipts."""

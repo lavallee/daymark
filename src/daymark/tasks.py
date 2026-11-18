@@ -23,7 +23,7 @@ from dateutil.relativedelta import relativedelta
 from dateutil.tz import datetime_exists, resolve_imaginary
 
 from . import plans
-from .models import DomainError, Temporal, normalize_now
+from .models import DomainError, SourceRef, Temporal, normalize_now
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -324,9 +324,9 @@ class Tasks:
     def _retry_context(self, op, action, id=None):
         """Look up the original read, never trust an arbitrary result under the same ID."""
         lookup = getattr(self.engine, "receipt_context", None)
-        if not op or not lookup:
+        if op is None or not lookup:
             return None
-        return lookup(*self._ws, op, action=action, entity_id=id, **self._who)
+        return lookup(*self._ws, self._op_id(op), action=action, entity_id=id, **self._who)
 
     @staticmethod
     def _retry_dates(fields, result, date_keys):
@@ -360,6 +360,8 @@ class Tasks:
 
     def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=()):
         """Apply the caller's intent or verify it against the original kernel receipt."""
+        if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
+            raise DomainError("invalid", "expected_version must be a positive integer")
         key = self._op_id(op)
         for attempt in range(4):
             retry = self._retry_context(op, action, id)
@@ -556,11 +558,8 @@ class Tasks:
             payload["status"] = "proposed"
         elif payload.get("waiting_on"):
             payload["status"] = "waiting"
-        if source:
-            parts = source.split(":", 2)
-            if len(parts) != 3 or not all(parts):
-                raise DomainError("invalid", "Source must be system:kind:id")
-            payload["source_refs"] = [dict(zip(("system", "kind", "id"), parts))]
+        if source is not None:
+            payload["source_refs"] = [SourceRef.parse_ref(source).model_dump()]
         if note:
             # Part of the same write, so a retry can never lose or repeat it.
             saved = next(iter(retry["result"]["notes"]), {}) if retry else {}
@@ -605,8 +604,6 @@ class Tasks:
 
     def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, **fields):
         """Edit fields, optionally refusing if the version observed by the caller is stale."""
-        if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
-            raise DomainError("invalid", "expected_version must be a positive integer")
         changes = self._fields(self._resolve(dict(fields)))
 
         def build(current, retry):
@@ -632,13 +629,17 @@ class Tasks:
         note_op = str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:note:" + base))
         # 0.5.0 appended the closing note before completing. Validate its own
         # receipt before finishing an interrupted legacy operation.
-        old_note = op and action == "complete" and self._retry_context(op + ":note", "note", id)
+        legacy_op = base + ":note"
+        old_note = (
+            op and action == "complete" and len(legacy_op) <= 200
+            and self._retry_context(legacy_op, "note", id)
+        )
         if not note:
             if old_note or (op and self._retry_context(note_op, "note", id)):
                 raise DomainError("conflict", "Operation ID belongs to a request with a note")
             return self._act(id, action, fields, op=op)
         if old_note:
-            self.note(id, note, op=op + ":note")
+            self.note(id, note, op=legacy_op)
             return self._act(id, action, fields, op=op)
         return self._paired_actions(
             id, (note_op, "note", {"text": note, "author": self.actor}), (base, action, fields),
@@ -664,12 +665,12 @@ class Tasks:
     def undo(self, id, *, op=None):
         return self._act(id, "undo", op=op)
 
-    def accept(self, id, *, op=None):
-        """Turn a proposal into an open task. A person's decision, not an agent's."""
-        return self._act(id, "accept", op=op)
+    def accept(self, id, *, op=None, expected_version=None):
+        """Accept the reviewed proposal, retaining a recorded wait."""
+        return self._act(id, "accept", op=op, expected_version=expected_version)
 
-    def dismiss(self, id, *, op=None):
-        return self._act(id, "dismiss", op=op)
+    def dismiss(self, id, *, op=None, expected_version=None):
+        return self._act(id, "dismiss", op=op, expected_version=expected_version)
 
     def claim(self, id, *, minutes=60, op=None):
         """Take a task so parallel workers do not collide. Fails if another holds it."""
@@ -677,7 +678,7 @@ class Tasks:
             id, "claim", {"owner": self.actor, "lease_seconds": int(minutes) * 60}, op=op
         )
 
-    def take(self, *, scope=None, minutes=60, op=None):
+    def take(self, *, scope=None, context=None, minutes=60, op=None):
         """Claim the first unclaimed ready task explicitly delegated to an agent.
 
         Selection and claim share one transaction. Returns None for an empty
@@ -687,9 +688,11 @@ class Tasks:
             raise DomainError("invalid", "Choose a distinct worker with --as NAME or DAYMARK_ACTOR")
         if type(minutes) is not int or not 1 <= minutes <= 10080:
             raise DomainError("invalid", "Claim minutes must be between 1 and 10080")
+        selection = {"owner": self.actor, "scope": scope, "lease_seconds": minutes * 60}
+        if context is not None:
+            selection["context"] = context
         result = self.engine.execute(
-            *self._ws, self._op_id(op), "take",
-            {"owner": self.actor, "scope": scope, "lease_seconds": minutes * 60},
+            *self._ws, self._op_id(op), "take", selection,
             expected_version=0, **self._who,
         )
         return result["task"]
@@ -751,6 +754,12 @@ class Tasks:
     def remind(self, id, when, *, recipient, channel="recording", op=None):
         """Schedule a reminder about a task for a person or principal entity."""
         at = parse_when(when, self.timezone, self._now)
+        retry = self._retry_context(op, "create")
+        if retry and isinstance(when, str) and at.get("expression"):
+            saved = retry["result"]
+            original = parse_when(when, self.timezone, saved["created_at"])
+            if original.get("at") == saved.get("scheduled_at"):
+                at = original
         value = Temporal.model_validate(at)
         if value.at is None:
             raise DomainError("invalid", "A reminder needs a time", [WHEN_FORMS])
@@ -773,41 +782,75 @@ class Tasks:
         """Recent workspace changes, or the next page after a saved cursor."""
         return self.engine.activity(*self._ws, after=after, limit=limit)
 
-    def show(self, id, history=10):
-        return self.engine.context(*self._ws, id, history=history, now=self._now, **self._read_owner())
+    def show(self, id=None, history=10, *, source=None):
+        return self.engine.context(
+            *self._ws, id, history=history, now=self._now, **self._read_owner(),
+            **({"source": source} if source is not None else {}),
+        )
+
+    def brief(self, id=None, *, before_note=None, source=None):
+        """A bounded task handoff, including the latest attributed note previews."""
+        return self.engine.brief(
+            *self._ws, id, now=self._now, before_note=before_note, **self._read_owner(),
+            **({"source": source} if source is not None else {}),
+        )
+
+    def read_note(self, id, note_id, *, source=None):
+        """Read one complete note using the ID from a brief."""
+        return self.engine.read_note(*self._ws, id, note_id, **({"source": source} if source is not None else {}))
 
     def _read_owner(self, mine=True):
         if not mine:
             return {}
-        return {"owner": self.actor} if self._ws else {"mine": True}
+        return {"owner": self.actor} if self._ws else {"mine": True, "owner": self.actor}
 
-    def ready(self, *, limit=20, move=None, mine=True, scope=None):
+    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, brief=False):
         """``scope`` narrows to one scope; ``""`` to tasks that have none."""
         return self.engine.ready(
             *self._ws,
             now=self._now,
             limit=limit,
             **self._read_owner(mine),
+            **({"context": context} if context is not None else {}),
             next_move=move,
+            **({"brief": True} if brief else {}),
             **({} if scope is None else {"scope": scope}),
         )
 
-    def agenda(self, days=7, *, scope=None):
+    def explain_ready(self, *, limit=20, move=None, mine=True, context=None, scope=None):
+        """Count actionable and held work and name examples of each holding reason."""
+        return self.engine.explain_ready(
+            *self._ws, now=self._now, limit=limit, next_move=move, scope=scope, context=context,
+            **self._read_owner(mine),
+        )
+
+    def ready_summary(self, *, limit=20, move=None, mine=True, context=None, scope=None):
+        """Orientation-sized records, in precisely the same order as ready."""
+        return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, brief=True)
+
+    def agenda(self, days=7, *, context=None, scope=None):
         extra = {} if scope is None else {"scope": scope}
+        if context is not None:
+            extra["context"] = context
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
     def advise(self, *, profile=None, settings=(), drops=(), scope=None):
         """Run the chosen profile with one-call adjustments, without saving them."""
         from . import strategies
+        from .strategies.preferences import select_profile
 
-        chosen = strategies.select_profile(self, profile, settings=settings, drops=drops)
-        return strategies.advise(self, chosen, scope=scope)
+        chosen, source = select_profile(self, profile, settings=settings, drops=drops)
+        advice = strategies.advise(self, chosen, scope=scope)
+        advice.profile_source = source
+        return advice
 
-    def profile(self, name=None, *, settings=(), drops=()):
+    def profile(self, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None):
         """Read or adjust the active workspace profile."""
         from .strategies.preferences import active_profile
 
-        return active_profile(self, name, settings=settings, drops=drops)
+        return active_profile(
+            self, name, settings=settings, drops=drops, op=op, expected_version=expected_version, undo=undo,
+        )
 
     def saved_profiles(self, name=None):
         """List named profiles, or inspect one saved configuration and version."""
@@ -821,23 +864,35 @@ class Tasks:
                 return entry
         raise DomainError("not_found", "No saved profile with that name", [name])
 
-    def save_profile(self, name, *, profile=None, settings=(), drops=(), expected_version=0):
+    def profile_catalog(self):
+        """The active choice, built-ins and saved copies available on this connection."""
+        from .strategies.profiles import PROFILES
+
+        return {
+            "active": self.profile(),
+            "builtins": list(PROFILES),
+            "saved": self.saved_profiles() if hasattr(self.engine, "setting") else None,
+        }
+
+    def save_profile(self, name, *, profile=None, settings=(), drops=(), expected_version=0, op=None):
         """Save a reusable copy. Replacing a copy requires its current version."""
         from .strategies.preferences import save_profile
 
         return save_profile(
             self, name, profile=profile, settings=settings, drops=drops,
-            expected_version=expected_version,
+            expected_version=expected_version, op=op,
         )
 
-    def remove_profile(self, name, *, expected_version):
+    def remove_profile(self, name, *, expected_version, op=None):
         """Remove a named copy at the version the caller observed."""
         from .strategies.preferences import remove_profile
 
-        return remove_profile(self, name, expected_version=expected_version)
+        return remove_profile(self, name, expected_version=expected_version, op=op)
 
-    def summary(self, *, scope=None):
+    def summary(self, *, context=None, scope=None):
         extra = {} if scope is None else {"scope": scope}
+        if context is not None:
+            extra["context"] = context
         return self.engine.summary(*self._ws, now=self._now, **self._read_owner(), **extra)
 
     def condition(self, statement, *, goal, requires=None, state="unknown", id=None, op=None):
@@ -1028,6 +1083,12 @@ class Tasks:
 
     def changes(self, project, after):
         return self.engine.changes(*self._ws, project, after)
+
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
+        """Lean search hits, with an ID cursor when more matches remain."""
+        return self.engine.search(
+            *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit
+        )
 
     def find(self, text=None, *, kind="task", status=None, limit=50):
         """Case-insensitive title or description search within one kind."""

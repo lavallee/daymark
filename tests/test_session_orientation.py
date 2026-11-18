@@ -101,3 +101,29 @@ def test_show_explains_each_eligibility_gate_from_the_same_perspective_as_ready(
         assert reasons("review") == set()
     finally:
         store.close()
+
+
+def test_brief_json_limits_titles_memories_and_history_but_keeps_retrieval_ids(tmp_path, capsys):
+    db = tmp_path / "long.db"
+    store = Store(db)
+    try:
+        tasks = Tasks(store)
+        tasks.add("A" * 2000, id="draft", description="x" * 30_000, note="y" * 2000)
+        for i in range(7):
+            tasks.add("m" * 1000, kind="memory", id=f"fact-{i}")
+    finally:
+        store.close()
+    assert main(["--db", str(db), "prime", "--brief", "--json"]) == 0
+    raw = capsys.readouterr().out
+    state = json.loads(raw)
+    assert len(raw.encode()) < 4000
+    assert state["ready"][0]["title"] == "A" * 160 + "…"
+    assert state["next_memory"] == "fact-4"
+    assert [r["id"] for r in state["memories"]] == [f"fact-{i}" for i in range(5)]
+    assert (
+        main(
+            ["--db", str(db), "find", "--kind", "memory", "--after", state["next_memory"], "--json"]
+        )
+        == 0
+    )
+    assert [r["id"] for r in json.loads(capsys.readouterr().out)["items"]] == ["fact-5", "fact-6"]

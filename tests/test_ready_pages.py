@@ -98,3 +98,68 @@ def test_limited_page_hydrates_from_the_snapshot_that_ranked_it(tmp_path, monkey
     finally:
         reader.close()
         writer.close()
+
+
+def test_ready_summary_is_bounded_on_the_wire_and_uses_authenticated_claims():
+    from fastapi.testclient import TestClient
+
+    from daymark.api import create_app
+
+    store = Store(":memory:")
+    try:
+        owner = Tasks(store, "sample", actor="worker")
+        title = "📝\x00" * 200
+        owner.add(title, id="proof", move="agent", priority=1, note="Context belongs in show.")
+        owner.claim("proof")
+        brief = owner.ready_summary()
+        assert brief[0]["title"] == title[:160] + "…"
+        assert brief[0]["claimed_by"] == "worker"
+        assert "description" not in brief[0] and "notes" not in brief[0]
+        assert owner.ready()[0]["title"] == title
+        app = create_app(
+            store,
+            {
+                "owner": {"workspace": "sample", "principal": "worker"},
+                "other": {"workspace": "sample", "principal": "another"},
+            },
+        )
+        with TestClient(app) as client:
+            endpoint = "/v1/ready?brief=true&mine=true"
+            assert client.get(endpoint, headers={"Authorization": "Bearer owner"}).json() == brief
+            assert client.get(endpoint, headers={"Authorization": "Bearer other"}).json() == []
+    finally:
+        store.close()
+
+
+def test_summary_counts_agenda_buckets_without_hydrating_bodies(monkeypatch):
+    now = datetime(2030, 4, 3, 15, tzinfo=UTC)
+    store = Store(":memory:")
+    try:
+        tasks = Tasks(store, "sample", now=now, actor="worker", timezone="UTC")
+        tasks.add("Past cutoff", id="late", due="2030-04-02", scope="work")
+        tasks.add("Waiting but late", id="late-wait", due="2030-04-02", waiting_on="reply")
+        tasks.add("Past plan", id="plan", plan="2030-04-01", scope="work")
+        tasks.add("Today", id="today", due="2030-04-03", scope="work")
+        tasks.add("Later", id="next", due="2030-04-08", scope="work")
+        tasks.add("Outside horizon", id="later", due="2030-04-12")
+        tasks.add("Waiting", id="pause", waiting_on="reply", scope="work")
+        tasks.propose("Proposal with earlier deadline", id="idea", due="2030-04-01")
+        tasks.add("Open", id="open", description="x" * 50_000)
+        expected = {}
+        for scope in ("work", "", None):
+            agenda = tasks.agenda(scope=scope)
+            expected[scope] = {
+                name: len(agenda[name]) for name in ("overdue", "today", "waiting", "proposed")
+            }
+            expected[scope]["next_7_days"] = sum(map(len, agenda["upcoming"].values()))
+            expected[scope]["ready"] = len(tasks.ready(scope=scope))
+
+        def fail(*args, **kwargs):
+            raise AssertionError("Aggregate counts must not fetch full entities")
+
+        monkeypatch.setattr(store, "_rows", fail)
+        monkeypatch.setattr(views, "_fetch", fail)
+        for scope, counts in expected.items():
+            assert tasks.summary(scope=scope) == counts
+    finally:
+        store.close()

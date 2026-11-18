@@ -69,3 +69,41 @@ def test_check_missing_instruction_file_has_no_side_effect(tmp_path):
     target = tmp_path / "AGENTS.md"
     assert main(["onboard", "--check", str(target)]) == 1
     assert not target.exists()
+
+
+def test_where_uses_the_same_resolver_without_creating_or_migrating_files(
+    tmp_path, monkeypatch, capsys
+):
+    import json
+
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user"))
+    monkeypatch.delenv("DAYMARK_DB", raising=False)
+
+    def where(*options):
+        assert main([*options, "where", "--json"]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert where()["database"] is None and list(project.iterdir()) == []
+    missing = tmp_path / "missing.db"
+    assert where("--db", str(missing))["file_exists"] is False and not missing.exists()
+    user_db = tmp_path / "user/daymark/daymark.sqlite3"
+    user_db.parent.mkdir(parents=True)
+    user_db.write_bytes(b"untouched")
+    assert where()["source"] == "user"
+    legacy = project / "daymark.sqlite3"
+    legacy.write_bytes(b"untouched")
+    assert where()["source"] == "legacy"
+    link = project / ".daymark"
+    link.symlink_to(user_db.parent, target_is_directory=True)
+    assert where()["source"] == "project" and where()["resolved_database"] == str(user_db)
+    monkeypatch.setenv("DAYMARK_DB", str(legacy))
+    assert where()["source"] == "DAYMARK_DB" and where("--db", str(missing))["source"] == "--db"
+    assert where("--url", "https://worker:secret@host.invalid/path?token=secret") == {
+        "source": "--url",
+        "endpoint": "https://host.invalid",
+        "identity_source": "server credential",
+    }
+    assert user_db.read_bytes() == legacy.read_bytes() == b"untouched"

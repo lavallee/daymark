@@ -1,0 +1,205 @@
+"""A bounded handoff read of an entity and its latest attributed notes."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+
+from . import views
+from .models import DomainError, normalize_now
+
+_NOTE_LIMIT = 3
+_TEXT_LIMIT = 240
+_PREVIEW_BYTES = 4 * (_TEXT_LIMIT + 1)
+_LINK_LIMIT = 5
+_FIELDS = (
+    "id",
+    "kind",
+    "status",
+    "version",
+    "archived",
+    "next_move",
+    "scope",
+    "waiting_on",
+    "claimed_by",
+    "claim_until",
+    "depends_on",
+    "recurrence",
+    "deadline",
+    "planned",
+    "earliest_start",
+    "latest_target",
+)
+
+
+def _projected_row(store, workspace, id, before_note):
+    paths = ",".join(f"'$.{key}'" for key in _FIELDS)
+    row = store.db.execute(
+        f"SELECT json_extract(data,{paths}), "
+        "substr(CAST(json_extract(data,'$.title') AS BLOB),1,?),"
+        "substr(CAST(json_extract(data,'$.description') AS BLOB),1,?), "
+        "json_array_length(data,'$.notes') FROM daymark_entities WHERE workspace=? AND id=?",
+        (_PREVIEW_BYTES, _PREVIEW_BYTES, workspace, id),
+    ).fetchone()
+    if row is None:
+        raise DomainError("not_found", "Entity not found")
+    item = dict(zip(_FIELDS, json.loads(row[0])))
+    item.update(
+        title=(row[1] or b"").decode(errors="ignore"),
+        description=(row[2] or b"").decode(errors="ignore"),
+    )
+    count = row[3] or 0
+    stop = count
+    if before_note is not None:
+        position = store.db.execute(
+            "SELECT n.key FROM daymark_entities e, json_each(e.data,'$.notes') n "
+            "WHERE e.workspace=? AND e.id=? AND json_extract(n.value,'$.id')=? LIMIT 1",
+            (workspace, id, before_note),
+        ).fetchone()
+        if position is None:
+            raise DomainError("not_found", "Note cursor not found on this entity")
+        stop = position[0]
+    # Position indexes address only the tail; the Python process never
+    # receives the preceding note trail or unbounded descriptions.
+    notes = []
+    for index in range(max(0, stop - _NOTE_LIMIT), stop):
+        prefix = f"$.notes[{index}]"
+        info = store.db.execute(
+            "SELECT json_extract(data,?,?,?), substr(CAST(json_extract(data,?) AS BLOB),1,?) "
+            "FROM daymark_entities WHERE workspace=? AND id=?",
+            (
+                *[prefix + "." + key for key in ("id", "at", "author", "text")],
+                _PREVIEW_BYTES,
+                workspace,
+                id,
+            ),
+        ).fetchone()
+        note_id, at, author = json.loads(info[0])
+        notes.append(
+            {"id": note_id, "at": at, "author": author, "text": info[1].decode(errors="ignore")}
+        )
+    return item, stop, count - stop, notes
+
+
+def _source(store, workspace, id, before_note):
+    try:
+        return _projected_row(store, workspace, id, before_note)
+    except sqlite3.OperationalError as exc:
+        if "no such function" not in str(exc) and "no such table: json_each" not in str(exc):
+            raise
+        item = store.get(workspace, id)
+        notes = item["notes"]
+        stop = len(notes)
+        if before_note is not None:
+            stop = next((i for i, n in enumerate(notes) if n["id"] == before_note), -1)
+            if stop < 0:
+                raise DomainError("not_found", "Note cursor not found on this entity") from None
+        return (
+            item,
+            stop,
+            len(notes) - stop,
+            [dict(n) for n in notes[max(0, stop - _NOTE_LIMIT) : stop]],
+        )
+
+
+def read(store, workspace, id, *, now=None, owner=None, before_note=None):
+    """The current state and a short note trail, with exact references to read further."""
+    now = normalize_now(now)
+    if before_note is not None and (
+        not isinstance(before_note, str) or not 1 <= len(before_note) <= 128
+    ):
+        raise DomainError("invalid", "A note cursor must contain 1 to 128 characters")
+    with store._lock:
+        if not views._usable(store):
+            raise DomainError("not_found", "Entity not found")
+    with store._transaction(write=False):
+        item, note_count, newer, notes = _source(store, workspace, id, before_note)
+        blocked = views.blockers(store, workspace, item)
+        sources = store.db.execute(
+            "SELECT system,kind,ref_id FROM daymark_sources WHERE workspace=? AND entity_id=? "
+            "ORDER BY system,kind,ref_id",
+            (workspace, id),
+        )
+        refs, source_count = [], 0
+        for system, kind, ref_id in sources:
+            if source_count < 3:
+                refs.append({"system": system, "kind": kind, "id": ref_id})
+            source_count += 1
+        active = store.db.execute(
+            "SELECT e.id FROM daymark_refs r JOIN daymark_entities e ON "
+            "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
+            "r.target_id=? AND r.field='parent_id' AND e.kind='task' AND e.archived=0 "
+            "AND e.status IN ('open','waiting') ORDER BY e.id",
+            (workspace, id),
+        )
+        children, child_count = [], 0
+        for (child_id,) in active:
+            if child_count < _LINK_LIMIT:
+                children.append(child_id)
+            child_count += 1
+    out = {key: item[key] for key in ("id", "kind", "status", "version")}
+    clipped = []
+    for key in ("title", "description", "waiting_on"):
+        value = item.get(key) or ""
+        if key == "title" or value:
+            out[key] = value[:_TEXT_LIMIT]
+            if len(value) > _TEXT_LIMIT:
+                clipped.append(key)
+    if clipped:
+        out["truncated"] = clipped
+    for key in ("next_move", "scope", "deadline", "planned", "earliest_start", "latest_target"):
+        if item[key] is not None:
+            out[key] = item[key]
+    if holder := views.claim_holder(item, now):
+        out["claim"] = {"owner": holder, "until": item["claim_until"]}
+    if item["kind"] == "task":
+        reasons = list(
+            views._readiness_reasons(item, now, owner, blocked=blocked, has_children=child_count)
+        )
+        out["readiness"] = {"ready": not reasons, "reasons": reasons}
+    out["blocked_by"] = blocked[:_LINK_LIMIT]
+    out["active_children"] = children
+    for note in notes:
+        if len(note["text"]) > _TEXT_LIMIT:
+            note["text"] = note["text"][:_TEXT_LIMIT]
+            note["truncated"] = True
+    out["notes"] = notes
+    out["omitted"] = {
+        "notes": note_count - len(notes),
+        "newer_notes": newer,
+        "blocked_by": len(blocked) - len(out["blocked_by"]),
+        "active_children": child_count - len(children),
+    }
+    if refs:
+        out["source_refs"] = refs
+    if source_count > len(refs):
+        out["omitted"]["source_refs"] = source_count - len(refs)
+    if out["omitted"]["notes"]:
+        out["next_before_note"] = notes[0]["id"]
+    return out
+
+
+def note(store, workspace, id, note_id):
+    """Return one complete, attributed append-only note by its exact ID."""
+    if not isinstance(note_id, str) or not 1 <= len(note_id) <= 128:
+        raise DomainError("invalid", "A note ID must contain 1 to 128 characters")
+    with store._lock:
+        if not views._usable(store):
+            raise DomainError("not_found", "Entity not found")
+    with store._transaction(write=False):
+        try:
+            row = store.db.execute(
+                "SELECT n.value FROM daymark_entities e, json_each(e.data,'$.notes') n "
+                "WHERE e.workspace=? AND e.id=? AND json_extract(n.value,'$.id')=? LIMIT 1",
+                (workspace, id, note_id),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such function" not in str(exc) and "no such table: json_each" not in str(exc):
+                raise
+            for saved in store.get(workspace, id)["notes"]:
+                if saved["id"] == note_id:
+                    return saved
+        else:
+            if row:
+                return json.loads(row[0])
+    raise DomainError("not_found", "Note not found on this entity")

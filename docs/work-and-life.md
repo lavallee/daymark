@@ -37,8 +37,7 @@ underneath is not lossy.
 
 [Beads](https://github.com/steveyegge/beads) is a dependency-aware issue graph
 for coding agents. Its README and command reference were read on 2026-11-09;
-it was not installed or run for this comparison, so the statements below are
-about its documentation.
+the tables below summarize that documentation. A later [hands-on comparison](research/agent-journeys.md#running-the-same-dependency-handoff-in-beads) exercised dependency, claim, explanation and close on Beads v1.3.4.
 
 Beads showed what makes a tracker usable by an agent, and Daymark adopts those
 ideas directly:

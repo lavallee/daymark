@@ -119,7 +119,13 @@ def test_stdio_restart_retries_keep_one_write_and_return_original_entity(tmp_pat
     assert "Commands" not in context
     receipt = added["structuredContent"]
     task_id = receipt["id"]
-    assert receipt == {"id": task_id, "kind": "task", "status": "open", "version": 1}
+    assert receipt == {
+        "id": task_id,
+        "kind": "task",
+        "title": "Collect samples",
+        "status": "open",
+        "version": 1,
+    }
     assert task_id in added["content"][0]["text"]
 
     writes = [

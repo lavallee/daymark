@@ -1,7 +1,9 @@
 """A plain-language retry must describe the same kernel operation."""
 
+import sqlite3
 from contextlib import ExitStack
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -174,3 +176,158 @@ def test_mcp_and_cli_refuse_a_stale_edit(tmp_path, capsys):
         assert reply["result"]["isError"]
         assert "conflict" in reply["result"]["content"][0]["text"]
         assert tasks.get("s")["priority"] == 1
+
+
+def test_identical_concurrent_capture_returns_one_committed_record(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    path = tmp_path / "sample.sqlite3"
+    barrier = Barrier(2)
+
+    class SimultaneousStore(Store):
+        def execute(self, *args, **kwargs):
+            if not getattr(self, "crossed", False):
+                self.crossed = True
+                barrier.wait(timeout=10)
+            return super().execute(*args, **kwargs)
+
+    def capture(_):
+        store = SimultaneousStore(path)
+        try:
+            return Tasks(store, actor="worker").add("Record readings", note="Counted", op="same")
+        finally:
+            store.close()
+
+    Store(path).close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = pool.map(capture, range(2))
+    assert first == second
+    store = Store(path)
+    try:
+        assert len(store.events("default")) == 1
+        assert len(first["notes"]) == 1
+    finally:
+        store.close()
+
+
+def test_assessment_evidence_is_atomic_and_replayable_after_restore(workspace):
+    tasks, store = workspace
+    tasks.goal("Compare the samples", id="g")
+    baseline = tasks.condition("Both samples labeled", id="condition", goal="g")
+    with pytest.raises((DomainError, ClientError)):
+        tasks.assess("condition", "met", evidence="x" * 100001, op="assessment")
+    assert tasks.get("condition") == baseline
+    done = tasks.assess("condition", "met", evidence="Labels checked", op="assessment")
+    refused(tasks.assess, "condition", "met", evidence="Different evidence", op="assessment")
+    refused(tasks.assess, "condition", "met", op="assessment")
+    copy = Store(":memory:")
+    try:
+        copy.import_snapshot(
+            "sample", store.export("sample"), operation_id="restore", expected_version=0
+        )
+        restored = Tasks(copy, "sample", actor="worker")
+        assert (
+            restored.assess("condition", "met", evidence="Labels checked", op="assessment") == done
+        )
+    finally:
+        copy.close()
+
+
+def test_replay_after_delete_preserves_original_date_and_actor(workspace):
+    tasks, store = workspace
+    original = tasks.add("Rotate samples", every="2 days", op="repeat", note="Marked")
+    tasks._now = datetime(2030, 3, 26, 17, tzinfo=UTC)
+    assert tasks.add("Rotate samples", every="2 days", op="repeat", note="Marked") == original
+    refused(tasks.add, "Rotate samples", every="3 days", op="repeat", note="Marked")
+    result = tasks.defer(original["id"], "tomorrow", op="defer")
+    store.execute("sample", "delete", "delete", {"id": original["id"]}, expected_version=2)
+    tasks._now = datetime(2030, 4, 1, 17, tzinfo=UTC)
+    assert tasks.defer(original["id"], "tomorrow", op="defer") == result
+    refused(Tasks(store, "sample", actor="colleague").defer, original["id"], "tomorrow", op="defer")
+
+
+def test_changed_structured_date_cannot_borrow_a_relative_expression(workspace):
+    tasks, _ = workspace
+    before = tasks.add("Compare samples", due="tomorrow", op="date")
+    changed = {**before["deadline"], "date": "2030-06-12"}
+    refused(tasks.add, "Compare samples", due=changed, op="date")
+
+
+def test_replay_checks_principal_established_by_http(tmp_path):
+    store = Store(tmp_path / "principals.sqlite3")
+    try:
+        with TestClient(
+            create_app(
+                store,
+                {
+                    "token-one": {"workspace": "sample", "principal": "first"},
+                    "token-two": {"workspace": "sample", "principal": "second"},
+                },
+            )
+        ) as http:
+            tasks = Tasks(store, "sample", actor="first")
+            tasks.add("Compare samples", id="s", op="recorded")
+            url = "/v1/receipt-context"
+            params = {"operation_id": "recorded", "action": "create", "entity_id": "s"}
+            assert (
+                http.get(
+                    url, params=params, headers={"Authorization": "Bearer token-one"}
+                ).status_code
+                == 200
+            )
+            assert (
+                http.get(
+                    url, params=params, headers={"Authorization": "Bearer token-two"}
+                ).status_code
+                == 409
+            )
+            assert http.get(url, params=params).status_code == 401
+    finally:
+        store.close()
+
+
+def test_existing_0_3_capture_replays_with_its_original_defaults(tmp_path, capsys):
+    path = tmp_path / "legacy.sqlite3"
+    fixture = Path(__file__).parent / "fixtures" / "daymark-0.3.0.sql"
+    db = sqlite3.connect(path)
+    try:
+        db.executescript(fixture.read_text())
+    finally:
+        db.close()
+    store = Store(path)
+    try:
+        op = next(
+            event["operation_id"]
+            for event in store.events("home")
+            if event["entity_id"] == "rake" and event["action"] == "create"
+        )
+        assert "advances" not in store.receipt("home", op)
+        actor = next(
+            event["actor"] for event in store.events("home") if event["operation_id"] == op
+        )
+        args = [
+            "--db",
+            str(path),
+            "--workspace",
+            "home",
+            "--as",
+            actor,
+            "--tz",
+            "Europe/London",
+            "add",
+            "Rake leaves",
+            "--id",
+            "rake",
+            "--project",
+            "garden",
+            "--note",
+            "Use the green rake",
+            "--op",
+            op,
+        ]
+        assert main(args) == 0
+        assert "rake  Rake leaves" in capsys.readouterr().out
+        assert store.get("home", "rake")["status"] == "cancelled"
+    finally:
+        store.close()

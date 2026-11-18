@@ -93,8 +93,10 @@ kernel fact, so the two can always be compared.
 A preview can adjust the current or named profile for one invocation. A
 named copy is saved separately from the active workspace setting. Adopting it
 copies the configuration. An actor changing a named copy supplies the version
-it read. Competing edits to local settings use a transactional comparison of
-the observed value. Existing plugins receive a full strategy snapshot by
+it read. Active choices also have revisions. Preference writes commit the
+configuration and a local replay receipt together. An active change retains
+its prior settings for a version-guarded undo. Entity exports omit configuration
+receipts. Existing plugins receive a full strategy snapshot by
 default. A plugin can declare only the additional snapshot fields it reads
 in `Strategy.reads` to avoid unrelated workspace queries.
 

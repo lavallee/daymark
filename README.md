@@ -197,7 +197,7 @@ each strategy.
   filter inside a workspace.
 - **Memory.** Append-only notes on each task, durable remembered facts, and a
   full event history with undo.
-- **Safety.** Every write has an operation ID and an expected version, so
+- **Safety.** Entity writes carry an operation ID and an expected version, so
   retries are harmless and stale writes are refused rather than merged.
 
 ## Install from source
@@ -219,9 +219,7 @@ python -m pip install .
 The core needs no HTTP framework, credentials, notification provider, or network service. Install optional HTTP dependencies with `python -m pip install '.[service]'`.
 
 `daymark init` creates a per-user database; `daymark init --here` creates
-`.daymark/daymark.sqlite3` for one project. Commands use `--db`, then
-`DAYMARK_DB`, then the nearest `.daymark/` above the working directory, then
-the per-user database.
+`.daymark/daymark.sqlite3` for one project. `daymark where` explains how the CLI chose its database. The order is `--db`, `DAYMARK_DB`, the nearest project database, a legacy `./daymark.sqlite3`, then the per-user database.
 
 ## The engine
 

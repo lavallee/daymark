@@ -10,11 +10,15 @@ daymark prime
 ```
 
 `prime` starts with the active session, counts, up to five ready tasks and up
-to fifty remembered facts, then prints the command guide. For a returning
-session use `daymark prime --brief`. For a program use `daymark prime --json`.
+to five remembered facts, then prints the command guide. For a returning
+session use `daymark prime --brief`. It includes up to five ready titles and five remembered facts, with a 160-character preview of each title. Use the memory ID with `show` for the full fact. For a program use `daymark prime --json`.
 Local sessions identify the database, workspace, actor and timezone. HTTP
 sessions identify the endpoint and use the workspace and actor bound to the
 credential. The ready count includes the current actor's claims.
+
+`daymark where --json` explains which database an everyday command will use,
+including the selection rule and whether the file exists. Use it when starting
+in an unfamiliar directory. It opens no database and makes no network request.
 
 If there is no database, choose `daymark init` for a per-user database or
 `daymark init --here` for a database in the current folder.
@@ -49,6 +53,18 @@ on later runs. Check it without changing the file with `daymark onboard --check 
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
 | `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
 | `daymark plan PROJECT` | One project as a board: each stage with its tasks in the project's order, dates, owners, and what blocks them from outside. |
+
+If a queue looks unexpectedly short, repeat `ready` with `--explain` and
+the same filters. The answer counts distinct ready and held tasks, with up
+to three example IDs per holding reason. Open work can have several reasons.
+Proposals and waiting tasks are counted under the decision or reply they need.
+Completed, cancelled and archived work is outside this view.
+
+For a long search, use `daymark find TEXT --kind memory --page --limit 10 --json`.
+Each hit gives an ID, title, kind, status, version and any scope. Read a full
+record with `show ID`. When the page returns `next`, repeat the search with
+the same filters and `--after ID`. Results follow ID order within this
+workspace. Newly inserted records before a saved cursor appear on a new search.
 
 A task is **ready** when it is open and not archived, its `--start` date has
 arrived, every task it comes `--after` is completed, cancelled or archived, it
@@ -200,6 +216,9 @@ for it"), and a note names the tasks it is about. If the profile holds tasks
 back it says how many. Choose or change a profile only when the person asks:
 it is their way of working, not yours.
 
+A pick can be a decision for the person. Consult its recorded next move before
+acting. To select work explicitly delegated to an agent, use `ready --move agent`.
+
 Treat “just show me two today” as a one-call instruction. Try
 `daymark advise --set shortlist.size=2` and leave the saved profile alone.
 If the person says “always show me two here,” `daymark profile --set shortlist.size=2`
@@ -215,6 +234,12 @@ When someone asks to reuse a configuration occasionally, `daymark profile
 change or remove an existing copy, pass the version you just read using
 `--if-version N`. MCP's `daymark_view` accepts `view="profiles"` with an
 optional `profile` name for inspection.
+
+Once the person asks for a standing change, pass the active `--if-version`
+from `daymark profile --json` and a fresh `--op`. The result identifies the
+workspace and new version and includes a guarded undo command. Retrying the
+same request returns the recorded result. Re-read the active profile for its
+current value. Named saves and removals accept replay IDs as well.
 
 ## Goals and what must be true
 
@@ -260,11 +285,31 @@ separation matters.
 ## Retrying safely
 
 Each write verb takes `--op NAME`. Repeating a command with the same `--op`
-returns the first result and writes nothing, so a timeout can be retried
-without creating a duplicate. Without `--op`, each invocation is a new write.
+and the same underlying change returns the first result. A reused key on a
+different entity, action or kernel payload returns `conflict`. Daymark checks
+the original actor where event history records one. Use a fresh key for each
+new intent and a stable entity ID for assignees you expect to retry. Without `--op`, each invocation is a new write.
 `--source system:kind:id` gives a second protection for captured items: a
 source can belong to only one entity, so capturing the same message twice is
-refused with `conflict`.
+refused with `conflict`. Recover that record with
+`daymark show --source system:kind:id --brief`. The exact source identifies
+the original capture. Read the stored proposal before deciding whether a new
+message expresses the same intent. A source can still belong to an archived
+or dismissed record. Lookup uses only the current workspace.
+
+Use `tasks.show(source="catalog:drawing:page:42")`, `tasks.brief(source=...)`
+or `tasks.read_note(None, note_id, source=...)` in Python. The ID component
+can contain colons. For a source with punctuation in the system or kind,
+Python also accepts a dictionary with `system`, `kind` and `id`. HTTP accepts
+each component separately at `GET /v1/source?system=…&kind=…&ref_id=…`.
+Set `detail=brief` for a bounded handoff or `detail=note&note_id=…` for a
+specific note. The credential selects the workspace.
+
+An edit based on an earlier read can require that exact version. If `show`
+reported version 3, `daymark edit ID --if-version 3 --priority 2` applies
+only while version 3 is current. On `conflict`, read the task again before
+deciding whether the edit still makes sense. In Python and MCP the argument
+is `expected_version`.
 
 ## Output and errors
 
@@ -388,7 +433,9 @@ task in the proofs scope and claims it in one transaction.
 daymark --as proof-worker-2 take --scope proofs --minutes 30 --op pickup-42
 ```
 
-The normal ready order applies, including the person's focus order. `take`
+Add `--context ID` when the worker needs a particular context. Scope and
+context filters both have to match. The normal ready order applies, including
+the person's focus order. `take`
 passes over every live claim, including the worker's own. It also passes
 over a person's tasks, decisions and tasks whose next move is unset. Use
 `claim ID` when choosing a particular task. Over HTTP, the worker identity
@@ -400,3 +447,67 @@ lease has expired. Start a new selection with a new operation ID. An
 operation ID reused by another worker or with different selection parameters
 gets a conflict. In MCP, call `daymark_act` with
 `{"action":"take","scope":"proofs","op":"pickup-42"}`.
+
+### Read a task with a long history
+
+`daymark show ID --brief` returns the current version, readiness, live claim,
+next move and dates. It previews the title, description and three latest notes
+at up to 240 characters each. Each note carries its original ID, author and
+timestamp. The view shows up to five unresolved dependency IDs and five
+active child IDs, with counts for anything omitted.
+
+```sh
+daymark show proof --brief --json
+daymark show proof --note NOTE_ID
+daymark show proof --before-note NOTE_ID --json
+```
+
+Read a full note using its ID. Use the returned `next_before_note` to page
+backwards through earlier notes. New notes appended by another session do
+not change which notes precede that ID. An unqualified `show` continues to
+return full task details.
+
+Python exposes `Tasks.brief(id, before_note=...)` and
+`Tasks.read_note(id, note_id)`. HTTP serves these reads at
+`GET /v1/brief?entity_id=ID` and `GET /v1/note?entity_id=ID&note_id=NOTE_ID`.
+In MCP, use `daymark_view` with `view: show`, the task `id`, and one of
+`brief: true`, `note: NOTE_ID` or `before_note: NOTE_ID`.
+
+
+For an embedding application that needs a bounded ready list,
+`tasks.ready_summary(limit=5)` returns the same IDs and order as `ready`,
+plus the task's title, version, scope, next move, dates, priority and live
+claim. Titles longer than 160 characters carry an ellipsis. Over HTTP use
+`GET /v1/ready?brief=true&mine=true`.
+
+### Decide what was actually proposed
+
+Read `daymark show ID --brief` for the proposal's source, notes, version and
+any recorded wait. A person who approves version 3 can run
+`daymark accept ID --if-version 3`. To decline that version, use
+`daymark dismiss ID --if-version 3`. A concurrent edit produces a conflict.
+Read the revised proposal before deciding again. The workspace's decider
+policy applies to both commands.
+
+An accepted proposal with a named wait enters the waiting list. It becomes
+actionable when resumed and its other readiness conditions are satisfied.
+An accepted proposal without a wait enters the open list.
+
+## Choose work by context
+
+A scope groups a part of life, such as the studio. A context names a place,
+tool or situation where a task can be done. A task can carry several contexts.
+Use the person's own vocabulary.
+
+```sh
+daymark add "Phone calls" --kind context --id phone
+daymark add "Confirm delivery window" --scope studio --context phone --id delivery
+daymark ready --scope studio --context phone
+daymark agenda --context phone
+```
+
+The context filter selects tasks explicitly tagged with that ID before applying
+the limit. Untagged tasks stay in the ordinary ready list. A blocked phone task
+stays blocked even if its prerequisite belongs to another context. Use
+`daymark find --kind context --page` to discover existing IDs and
+`daymark ready --context phone --explain` to inspect the held work.

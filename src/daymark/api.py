@@ -7,7 +7,7 @@ import hmac
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -45,6 +45,16 @@ class ImportRequest(BaseModel):
     operation_id: str = Field(min_length=1, max_length=200)
     expected_version: int = Field(ge=0)
     snapshot: dict[str, Any]
+
+
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    text: str | None = Field(None, max_length=2000)
+    kind: str = Field("task", min_length=1, max_length=100)
+    status: str | None = Field(None, max_length=30)
+    scope: str | None = Field(None, max_length=100)
+    after: str | None = Field(None, max_length=128)
+    limit: int = Field(50, ge=1, le=1000)
 
 
 class QueryRequest(BaseModel):
@@ -231,6 +241,10 @@ def create_router(store: Any) -> APIRouter:
     def list_entities(request: Request, kind: str | None = None) -> Any:
         return _invoke(store.list, identity(request).workspace, kind=kind)
 
+    @router.post("/search", operation_id="daymark_v1_search")
+    def search(body: SearchRequest, request: Request) -> Any:
+        return _invoke(store.search, identity(request).workspace, **body.model_dump())
+
     @router.post("/query", operation_id="daymark_v1_query")
     def query(body: QueryRequest, request: Request) -> Any:
         return _invoke(store.query, identity(request).workspace, body.filters)
@@ -240,9 +254,11 @@ def create_router(store: Any) -> APIRouter:
         request: Request,
         limit: int = Query(50, ge=1, le=1000),
         mine: bool = False,
+        brief: bool = False,
         owner: str | None = Query(None, max_length=200),
         next_move: str | None = Query(None, max_length=20),
         scope: str | None = Query(None, max_length=100),
+        context: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
         actor = identity(request)
@@ -253,17 +269,32 @@ def create_router(store: Any) -> APIRouter:
             limit=limit,
             owner=actor.principal if mine else owner,
             next_move=next_move,
-            scope=scope,
+            scope=scope, **({"context": context} if context is not None else {}),
+            **({"brief": True} if brief else {}),
         )
+
+    @router.get("/ready/explanation", operation_id="daymark_v1_ready_explanation")
+    def ready_explanation(
+        request: Request, limit: int = Query(20, ge=1, le=1000), mine: bool = False,
+        owner: str | None = Query(None, max_length=200),
+        next_move: str | None = Query(None, max_length=20),
+        scope: str | None = Query(None, max_length=100),
+        context: str | None = Query(None, min_length=1, max_length=128),
+        now: str | None = Query(None, max_length=40),
+    ) -> Any:
+        actor = identity(request)
+        return _invoke(store.explain_ready, actor.workspace, now=now, limit=limit,
+                       owner=actor.principal if mine else owner, next_move=next_move, scope=scope, **({"context": context} if context is not None else {}))
 
     @router.get("/agenda", operation_id="daymark_v1_agenda")
     def agenda(
         request: Request,
         days: int = Query(7, ge=0, le=366),
         scope: str | None = Query(None, max_length=100),
+        context: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
-        return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope)
+        return _invoke(store.agenda, identity(request).workspace, now=now, days=days, scope=scope, **({"context": context} if context is not None else {}))
 
     @router.get("/explore", operation_id="daymark_v1_explore")
     def explore(
@@ -280,10 +311,48 @@ def create_router(store: Any) -> APIRouter:
         scope: str | None = Query(None, max_length=100),
         mine: bool = False,
         owner: str | None = Query(None, max_length=200),
+        context: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
         actor = identity(request)
-        return _invoke(store.summary, actor.workspace, now=now, scope=scope, owner=actor.principal if mine else owner)
+        return _invoke(store.summary, actor.workspace, now=now, scope=scope, **({"context": context} if context is not None else {}), owner=actor.principal if mine else owner)
+
+    @router.get("/source", operation_id="daymark_v1_source")
+    def source(
+        request: Request, system: str = Query(min_length=1, max_length=100),
+        kind: str = Query(min_length=1, max_length=100), ref_id: str = Query(min_length=1, max_length=500),
+        detail: Literal["show", "brief", "note"] = "show", history: int = Query(10, ge=0, le=100),
+        now: str | None = Query(None, max_length=40), owner: str | None = Query(None, max_length=200),
+        mine: bool = False, before_note: str | None = Query(None, min_length=1, max_length=128),
+        note_id: str | None = Query(None, min_length=1, max_length=128),
+    ) -> Any:
+        actor = identity(request)
+        ref = {"system": system, "kind": kind, "id": ref_id}
+        if (detail == "note") != (note_id is not None) or (before_note is not None and detail != "brief"):
+            raise HTTPException(422, "Invalid source detail options")
+        if detail == "note":
+            return _invoke(store.read_note, actor.workspace, None, note_id, source=ref)
+        principal = actor.principal if mine else owner
+        if detail == "brief":
+            return _invoke(store.brief, actor.workspace, source=ref, owner=principal, now=now, before_note=before_note)
+        return _invoke(store.context, actor.workspace, source=ref, owner=principal, now=now, history=history)
+
+    @router.get("/brief", operation_id="daymark_v1_brief")
+    def brief(
+        request: Request, entity_id: str = Query(min_length=1, max_length=128),
+        now: str | None = Query(None, max_length=40), owner: str | None = Query(None, max_length=200),
+        mine: bool = False, before_note: str | None = Query(None, min_length=1, max_length=128),
+    ) -> Any:
+        actor = identity(request)
+        return _invoke(store.brief, actor.workspace, entity_id, now=now,
+                       owner=actor.principal if mine else owner, before_note=before_note)
+
+    @router.get("/note", operation_id="daymark_v1_read_note")
+    def read_note(
+        request: Request, entity_id: str = Query(min_length=1, max_length=128),
+        note_id: str = Query(min_length=1, max_length=128),
+    ) -> Any:
+        return _invoke(store.read_note, identity(request).workspace, entity_id, note_id)
 
     @router.get("/context/{entity_id}", operation_id="daymark_v1_context")
     def context(

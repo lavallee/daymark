@@ -41,22 +41,56 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "daymark"
 
 
-def resolve_db(explicit: str | None) -> str | None:
-    """--db, then DAYMARK_DB, the nearest .daymark/ above the working directory,
-    a legacy ./daymark.sqlite3, then the per-user database."""
+def _location(explicit: str | None) -> tuple[str | None, str]:
+    """The file used by an everyday command, and how it was selected."""
     if explicit:
-        return explicit
+        return explicit, "--db"
     if os.environ.get("DAYMARK_DB"):
-        return os.environ["DAYMARK_DB"]
+        return os.environ["DAYMARK_DB"], "DAYMARK_DB"
     here = Path.cwd()
     for folder in (here, *here.parents):
         candidate = folder / ".daymark" / "daymark.sqlite3"
         if candidate.is_file():
-            return str(candidate)
-    for candidate in (here / "daymark.sqlite3", data_home() / "daymark.sqlite3"):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+            return str(candidate), "project"
+    for path, source in (
+        (here / "daymark.sqlite3", "legacy"),
+        (data_home() / "daymark.sqlite3", "user"),
+    ):
+        if path.is_file():
+            return str(path), source
+    return None, "none"
+
+
+def resolve_db(explicit: str | None) -> str | None:
+    return _location(explicit)[0]
+
+
+def _where(args) -> int:
+    from .render import endpoint_origin
+
+    if args.url:
+        result = {"source": "--url", "endpoint": endpoint_origin(args.url),
+                  "identity_source": "server credential"}
+        message = f"Endpoint {result['endpoint']} (--url). The server credential selects the workspace and actor."
+    else:
+        file, source = _location(args.db)
+        database = str(Path(file).absolute()) if file and file != ":memory:" else file
+        result = {"database": database, "source": source, "workspace": args.workspace,
+                  "actor": args.actor, "file_exists": bool(file and Path(file).is_file())}
+        message = f"Workspace {args.workspace}, actor {args.actor}."
+        if file:
+            message += f"\nDatabase {database} (selected by {source})."
+            if file != ":memory:":
+                real = str(Path(file).resolve())
+                if database != real:
+                    result["resolved_database"] = real
+                    message += f"\nResolves to {real}."
+                if not result["file_exists"]:
+                    message += "\nThe selected file does not exist yet."
+        else:
+            message += "\nNo database selected. Use daymark init or daymark init --here."
+    _print(result) if args.json else print(message)
+    return 0
 
 
 def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
@@ -130,6 +164,7 @@ def _simple_commands(sub) -> None:
     def add(name, help, *, writes=False):
         return sub.add_parser(name, help=help, parents=[common, *([write] if writes else [])])
 
+    add("where", "Explain which database and workspace everyday commands will use")
     init = sub.add_parser("init", help="Create a database: per-user, or --here for this folder")
     init.add_argument("--here", action="store_true", help="Use ./.daymark/ in this directory")
     prime = add("prime", "Print the current state and workflow guide; read this first")
@@ -142,14 +177,15 @@ def _simple_commands(sub) -> None:
     advise.add_argument("--profile", metavar="NAME", help="Try a profile without adopting it")
     advise.add_argument("--scope", metavar="NAME", help="Only this scope")
     advise.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
-    profile = add("profile", "Show or choose the way of working for this workspace")
+    profile = add("profile", "Show or choose the way of working for this workspace", writes=True)
     profile.add_argument("name", nargs="?", help="Adopt this profile (see `daymark strategies`)")
     profile_action = profile.add_mutually_exclusive_group()
     profile_action.add_argument("--saved", nargs="?", const="", metavar="NAME",
                                 help="List saved profiles, or inspect one by name")
     profile_action.add_argument("--save-as", metavar="NAME", help="Save a named copy without adopting it")
     profile_action.add_argument("--remove", metavar="NAME", help="Remove a named copy")
-    profile.add_argument("--if-version", type=int, metavar="N", help="Saved version to replace or remove")
+    profile_action.add_argument("--undo", metavar="OP", help="Restore the settings before an active profile change")
+    profile.add_argument("--if-version", type=int, metavar="N", help="Expected active or saved version")
     profile.add_argument("--from-file", metavar="FILE", help="Import a profile JSON file with --save-as")
     for command in (advise, profile):
         command.add_argument(
@@ -159,12 +195,15 @@ def _simple_commands(sub) -> None:
         command.add_argument("--drop", action="append", default=[], metavar="STRATEGY")
     add("strategies", "List strategies and profiles, with how well each idea is supported")
     ready = add("ready", "Tasks that can be done now, most pressing first")
+    ready.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
+    ready.add_argument("--explain", action="store_true", help="Show why live work is held back within these filters")
     ready.add_argument("-n", "--limit", type=int, default=20)
     ready.add_argument("--move", choices=["person", "answer", "agent"], help="Only this next move")
     for view in (ready,):
         view.add_argument("--scope", metavar="NAME", help="Only this scope")
         view.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     agenda = add("agenda", "Overdue, today, the days ahead, waiting and proposed")
+    agenda.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     agenda.add_argument("--days", type=int, default=7)
     agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
     agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
@@ -172,7 +211,13 @@ def _simple_commands(sub) -> None:
     activity.add_argument("--after", type=int, metavar="CURSOR", help="Read on from a saved cursor")
     activity.add_argument("-n", "--limit", type=int, default=20, help="Events per page (1–100)")
     show = add("show", "One entity with blockers, notes, reminders and history")
-    show.add_argument("id")
+    selector = show.add_mutually_exclusive_group(required=True)
+    selector.add_argument("id", nargs="?")
+    selector.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Inspect the entity captured from this source")
+    detail = show.add_mutually_exclusive_group()
+    detail.add_argument("--brief", action="store_true", help="Bounded handoff with recent notes")
+    detail.add_argument("--before-note", metavar="NOTE_ID", help="Brief with the preceding note page")
+    detail.add_argument("--note", metavar="NOTE_ID", help="Read one complete note from its ID")
     for name, help in (("add", "Capture a task"), ("propose", "Suggest a task for a person")):
         item = add(name, help, writes=True)
         item.add_argument("title")
@@ -197,6 +242,8 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
+        if name in {"accept", "dismiss"}:
+            item.add_argument("--if-version", type=int, metavar="N", help="Decide only the reviewed version")
         if name in {"done", "release"}:
             item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
     claim = add("claim", "Take a task so others leave it alone", writes=True)
@@ -204,6 +251,7 @@ def _simple_commands(sub) -> None:
     claim.add_argument("--minutes", type=int, default=60, help="Claim length (default 60)")
     take = add("take", "Claim one ready task explicitly delegated to an agent", writes=True)
     take.add_argument("--minutes", type=int, default=60, help="Claim length (default 60)")
+    take.add_argument("--context", metavar="ID", help="Only take tasks tagged with this context")
     take_scope = take.add_mutually_exclusive_group()
     take_scope.add_argument("--scope", metavar="NAME", help="Only take from this scope")
     take_scope.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
@@ -229,6 +277,11 @@ def _simple_commands(sub) -> None:
     find.add_argument("text", nargs="?")
     find.add_argument("--kind", default="task")
     find.add_argument("--status")
+    find.add_argument("--page", action="store_true", help="Show compact search hits and a continuation ID")
+    find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
+    find.add_argument("--limit", "-n", type=int, default=50, metavar="N")
+    find.add_argument("--scope", metavar="NAME", help="Filter by scope (uses compact hits)")
+    find.add_argument("--unscoped", action="store_true", help="Only unscoped hits")
     remember = add("remember", "Keep a durable fact for later sessions", writes=True)
     remember.add_argument("text")
     policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
@@ -567,7 +620,9 @@ def _simple(args, engine) -> int:
 
     if name == "prime":
         context = render.session_context(tasks, database=args.db, url=args.url)
-        if as_json:
+        if as_json and args.brief:
+            _print(render.brief_session(tasks, context))
+        elif as_json:
             _print(
                 {
                     "context": context,
@@ -604,13 +659,18 @@ def _simple(args, engine) -> int:
             lean["picks"] = [render.compact(x) for x in advice.picks]
             out(lean, render.advice_text(advice, now))
     elif name == "ready":
-        items = tasks.ready(limit=args.limit, move=args.move, scope=scope)
-        out(
-            [{**render.compact(x), "why": render.why(x, now)} for x in items],
-            render.listing(items, now, "Nothing is ready. Try `daymark agenda`."),
-        )
+        if args.explain:
+            view = tasks.explain_ready(limit=args.limit, move=args.move, scope=scope, context=args.context)
+            out(view, render.ready_explanation(view))
+        else:
+            items = tasks.ready(limit=args.limit, move=args.move, scope=scope, context=args.context)
+            empty = "Nothing is ready" + (" for these filters" if scope is not None or args.move or args.context else "")
+            out(
+                [{**render.compact(x), "why": render.why(x, now)} for x in items],
+                render.listing(items, now, empty + ". Repeat with --explain to see what is held."),
+            )
     elif name == "agenda":
-        view = tasks.agenda(args.days, scope=scope)
+        view = tasks.agenda(args.days, scope=scope, context=args.context)
         lean = {
             key: (
                 {day: [render.compact(x) for x in items] for day, items in value.items()}
@@ -625,8 +685,14 @@ def _simple(args, engine) -> int:
     elif name == "activity":
         page = tasks.activity(after=args.after, limit=args.limit)
         out(page, render.activity_text(page))
+    elif name == "show" and (args.brief or args.before_note is not None):
+        brief = tasks.brief(args.id, before_note=args.before_note, source=args.source)
+        out(brief, render.brief_text(brief))
+    elif name == "show" and args.note is not None:
+        note = tasks.read_note(args.id, args.note, source=args.source)
+        out(note, render.note_text(note))
     elif name == "show":
-        ctx = tasks.show(args.id)
+        ctx = tasks.show(args.id, source=args.source)
         out({**ctx, "entity": render.compact(ctx["entity"])}, render.show_text(ctx, now))
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
@@ -664,7 +730,9 @@ def _simple(args, engine) -> int:
         entity(item)
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op))
-    elif name in {"skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss",
+    elif name in {"accept", "dismiss"}:
+        entity(getattr(tasks, name)(args.id, expected_version=args.if_version, op=op))
+    elif name in {"skip", "cancel", "reopen", "archive", "undo",
                   "resume", "forget", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
     elif name == "condition":
@@ -682,7 +750,7 @@ def _simple(args, engine) -> int:
     elif name == "focus":
         entity(tasks.focus(args.id, args.rank, op=op))
     elif name == "take":
-        selected = tasks.take(scope=scope, minutes=args.minutes, op=op)
+        selected = tasks.take(scope=scope, context=args.context, minutes=args.minutes, op=op)
         if selected is None:
             out(None, render.EMPTY_TAKE)
         else:
@@ -700,8 +768,17 @@ def _simple(args, engine) -> int:
     elif name == "remind":
         entity(tasks.remind(args.id, args.when, recipient=args.to, op=op))
     elif name == "find":
-        items = tasks.find(args.text, kind=args.kind, status=args.status)
-        out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
+        if not 1 <= args.limit <= 1000:
+            from .models import DomainError
+
+            raise DomainError("invalid", "Limit must be between 1 and 1000")
+        if args.page or args.after is not None or scope is not None:
+            page = tasks.search(args.text, kind=args.kind, status=args.status,
+                                scope=scope, after=args.after, limit=args.limit)
+            out(page, render.search_text(page))
+        else:
+            items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
+            out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
     elif name == "remember":
         entity(tasks.remember(args.text, op=op))
     elif name == "project":
@@ -768,14 +845,14 @@ def _profile(tasks, args, out) -> None:
 
     modifying = bool(args.name or args.set or args.drop or args.from_file)
     if args.saved is not None:
-        if modifying or args.if_version is not None:
+        if modifying or args.if_version is not None or args.op is not None:
             raise DomainError("invalid", "--saved reads profiles. Use --save-as to edit one.")
         result = tasks.saved_profiles(args.saved or None)
         out(result, render.saved_profiles_text(result))
     elif args.remove is not None:
         if modifying or args.if_version is None:
             raise DomainError("invalid", "Use --remove NAME --if-version N")
-        result = tasks.remove_profile(args.remove, expected_version=args.if_version)
+        result = tasks.remove_profile(args.remove, expected_version=args.if_version, op=args.op)
         out(result, f"Removed saved profile {args.remove}")
     elif args.save_as is not None:
         base = args.name
@@ -793,13 +870,14 @@ def _profile(tasks, args, out) -> None:
                 raise DomainError("invalid", "A profile file must contain a profile configuration")
         result = tasks.save_profile(
             args.save_as, profile=base, settings=args.set, drops=args.drop,
-            expected_version=0 if args.if_version is None else args.if_version,
+            expected_version=0 if args.if_version is None else args.if_version, op=args.op,
         )
         out(result, render.saved_profiles_text(result))
     else:
-        if args.from_file or args.if_version is not None:
-            raise DomainError("invalid", "--from-file and --if-version require a saved profile action")
-        result = tasks.profile(args.name, settings=args.set, drops=args.drop)
+        if args.from_file:
+            raise DomainError("invalid", "--from-file requires --save-as NAME")
+        result = tasks.profile(args.name, settings=args.set, drops=args.drop, undo=args.undo,
+                               expected_version=args.if_version, op=args.op)
         out(result, render.profile_text(result))
 
 
@@ -842,6 +920,8 @@ def _project(args, tasks, out, entity, op) -> None:
 
 def _fail(args, code: str, message: str, details=()) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
+    if code == "conflict" and args.command in {"add", "propose"} and getattr(args, "source", None):
+        details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
     if getattr(args, "json", False):
         print(
             json.dumps({"error": {"code": code, "message": message, "details": list(details)}}),
@@ -861,6 +941,8 @@ def main(argv: list[str] | None = None) -> int:
     from .models import DomainError
 
     try:
+        if args.command == "where":
+            return _where(args)
         if args.command == "init":
             return _init(args)
         if args.command == "onboard":

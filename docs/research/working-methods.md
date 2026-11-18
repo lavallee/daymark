@@ -117,3 +117,62 @@ words where given:
 3. Rewriting or enforcing the plan: "I want it to suggest, not decide."
 4. Sharing tasks or status with anyone else; some called shared planning "an invasion of privacy".
 5. Inferring someone's state and acting on it ("it feels like it's watching me"), and an agent widening its own authority.
+
+## 6. Five ways to read the same print job
+
+A fixed-clock exercise used eight synthetic tasks on April 3, 2030. Seven
+belonged to a studio print project and one belonged to the home scope.
+The studio needed a five-minute proof approval by April 4, a ten-minute
+caption planned for April 3, paper selection estimated at twenty minutes,
+and a forty-minute invoice check planned for April 5 and due April 11.
+Sending the revised proof depended on approval, the quote was waiting on the
+print shop, and the poster was still a proposal.
+
+Each row below asks a different question of that one workspace. We ran the
+Daymark reads against a local development wheel. The comparisons describe a
+specific practice taken from the publisher's documentation. They supply no
+head-to-head test of the products or evidence that a method suits a particular
+person.
+
+| Borrowed practice | Daymark read and observed result | What the agent still has to learn from the person |
+| --- | --- | --- |
+| **GTD** uses context and available time when choosing a next action. | A one-call `time-fit.minutes=15` preview in the studio scope offered the caption and proof approval. The other two ready studio tasks had longer estimates. | The approval is the person's decision. A task fitting the window says how long it might take. Its recorded next move says who can act. [Choosing what to do](https://gettingthingsdone.com/2023/01/choosing-what-to-do/) |
+| **Things** distinguishes when an item comes to attention from a deadline. | The two-day agenda put the caption in Today, the approval on April 4 and the invoice on April 5. The invoice retained its April 11 cutoff and stayed actionable on April 3. | “I plan to start Friday” can be a movable intention. Ask whether Friday is instead the earliest possible start when the difference would change availability. [Things dates and attention](https://culturedcode.com/things/support/articles/2803579/) |
+| **Todoist** filters express repeatable questions about a task list. | `ready --scope studio --move agent` returned only the caption. The home task was outside the scope, approval required an answer, and the revised proof had a blocker. | A person can want that subset once, often, or by default. Daymark saves strategy settings in a named profile and takes the scope on the individual call. [Todoist filters](https://www.todoist.com/help/todoist/features/introduction-to-filters-V98wIH) |
+| **Personal Kanban** visualizes work and limits work in progress. | The project plan displayed five To do, one Waiting, zero Done and one proposal awaiting a decision. It showed the revised proof on the board with its dependency. | A two-item shortlist limits what is offered. A limit on simultaneous work requires deciding what counts as started and when to take new work. Viewing or shortlisting a card leaves its stage and claim intact. [Personal Kanban](https://personalkanban.com/personal-kanban-101/) |
+| **Bullet Journal migration** reviews unfinished entries and invites a decision about carrying them forward. | The open-task search kept all six open records visible, including the blocked proof and the home task. The agenda separately surfaced the quote and the poster. | The person decides which commitment still matters, whether an intention needs a new day, and whether to drop anything. Reading the list triggered no rollover. [Bullet Journal migration](https://bulletjournal.com/pages/migration) |
+
+The public export compared equal before and after these reads. The caption
+was both today's planned task and the only studio task ready for an agent.
+The five-minute approval also fit the time window, while the workflow still
+required the person's answer. These cases explain why an agent should ask what
+the view is for before turning a preference into a standing default.
+
+## What should an agent learn about a person?
+
+A person's request can change the next answer, the workspace's future advice,
+or the commitments themselves. An agent needs to know which of those changes
+the person intended. Someone asking for two items before a meeting has supplied
+enough information to narrow one answer. Saving that choice for the next
+person who opens the workspace takes a different instruction.
+
+Amershi and colleagues developed 18 human–AI interaction guidelines and
+evaluated them in several rounds, including 49 design practitioners applying
+them to 20 products. Their later HAX library asks designers to support
+correction and dismissal, reveal the effects of feedback, and give users
+control over longer-term adaptation. This evidence concerns the guidelines'
+utility for design. It does not establish that any Daymark profile increases
+productivity. [2019 research paper and abstract](https://www.microsoft.com/en-us/research/publication/guidelines-for-human-ai-interaction/) · [HAX Design Library](https://www.microsoft.com/en-us/haxtoolkit/library/)
+
+| Interaction to test | What the person should be able to observe |
+| --- | --- |
+| “Fewer options right now.” | The current output changes. A fresh session still starts with the prior workspace preference. |
+| “Keep this way of working for this workspace.” | The agent can describe what the setting changes, show it in the next session, and return to the ordinary ready list. |
+| “Why isn't the invitation ready?” | The answer identifies the actual blocker, date, claim or child task. Resolving it changes the same eligibility rule used by the list. |
+| “That is only an idea.” | The suggestion stays out of ready work until a person accepts it. |
+| “Where did you get that preference?” | A saved configuration has a name and inspectable parameters. For a preference learned in conversation, the host needs the person's words or an attributable source. |
+
+The final row marks a boundary for product design. A workspace setting can
+show exactly what will run. It supplies no evidence of *why* an individual
+wants it. A host that learns from conversation should preserve that distinction
+when it decides what to remember.

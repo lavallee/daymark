@@ -5,9 +5,9 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
-Run `daymark prime` first. Check the workspace and actor, then read current
+In an unfamiliar folder, `daymark where` explains which database and workspace you will use. Run `daymark prime` for the session. Check the workspace and actor, then read current
 work and remembered facts. In a returning session, `daymark prime --brief`
-skips the command guide. If it reports no database, choose `daymark init`
+returns five ready and five memory previews. Use `daymark find TEXT --kind memory --page` to retrieve a relevant remembered fact. If it reports no database, choose `daymark init`
 for a per-user database or `daymark init --here` for this folder.
 
 For project onboarding, `daymark onboard --check AGENTS.md` checks whether the startup instructions are current.
@@ -15,7 +15,7 @@ For project onboarding, `daymark onboard --check AGENTS.md` checks whether the s
 Then work in this loop:
 
 1. `daymark ready` shows what can be done now. `daymark agenda` shows the days
-   ahead, what is waiting and what is proposed.
+   ahead, what is waiting and what is proposed. Use `ready --explain` with the same filters to understand a short or empty queue.
 2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions.
 3. Use a distinct `DAYMARK_ACTOR` for each concurrent worker, then `daymark claim ID`.
 4. Do the work. `daymark note ID "what happened"` whenever you learn something
@@ -44,7 +44,7 @@ not ask for. A project with `managed by` set belongs to another system: leave it
 alone.
 
 Every command works in one workspace (`--workspace NAME`); workspaces never
-mix, and `daymark prime` says which one you are in. Inside a workspace,
+mix, and `daymark prime` says which one you are in. Use `ready --context ID` when the person wants tasks tagged for a particular tool or situation. Discover the IDs with `find --kind context --page`. Inside a workspace,
 `--scope NAME` filters to one part of life. `daymark focus ID` puts a task on
 the person's own short list; do it only when they ask.
 
@@ -56,6 +56,9 @@ when the person asks for that workspace preference.
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
 the active profile are shared across callers of this local workspace.
+For a requested standing change, read `daymark profile --json`, supply its
+version with `--if-version`, and reuse the same `--op` on a retry. The
+returned undo command restores the previous settings while that change is current.
 For a goal, `daymark explore GOAL` shows what must be true and what is stuck.
 
 Add `--json` for structured output and `--op NAME` to make a write safe to
@@ -73,7 +76,24 @@ for retries of that same write. Read `structuredContent.id` from a successful
 write on protocol revision 2025-06-18 or newer.
 
 To select work from an agent queue, use `daymark --as WORKER take`, optionally
-with `--scope NAME` and `--minutes N`. It claims one ready, unclaimed task
+with `--scope NAME`, `--context ID` and `--minutes N`. It claims one ready, unclaimed task
 explicitly marked `--move agent`. Each worker needs a distinct name or HTTP
 principal. JSON `null` means the queue is empty. Use a fresh `--op` for each
 new selection and reuse it only to retry that selection.
+
+For an edit based on an earlier `show`, pass `--if-version N` (MCP
+`expected_version`). Re-read on conflict before deciding whether to edit.
+
+For a long-running task, start with `daymark show ID --brief`. It includes the
+latest three notes with authors and IDs. Expand one with
+`daymark show ID --note NOTE_ID`, or follow `next_before_note` with
+`daymark show ID --before-note NOTE_ID` to read older notes.
+
+When presenting a proposal for a person's decision, show the source, note and
+version from `show ID --brief`. The person can accept or dismiss that exact
+version with `--if-version N`. If it changed, present the revision again.
+
+
+When capture reports that a source already belongs to an entity, use
+`daymark show --source SYSTEM:KIND:ID --brief`. Compare the new request with
+the original task before treating it as a duplicate.

@@ -43,6 +43,9 @@ def when(temporal) -> str:
 
 def line(item: dict, now=None, reason=True) -> str:
     """One task on one line: id, priority, title, then only what is set."""
+    # Historical write receipts keep the entity shape of the release that made
+    # them. Apply today's display defaults without rewriting their evidence.
+    item = _DEFAULTS | item
     now = normalize_now(now)
     parts = [item["id"]]
     if item["priority"]:
@@ -90,6 +93,34 @@ def line(item: dict, now=None, reason=True) -> str:
     return "  ".join(parts) + ("  [" + "; ".join(dict.fromkeys(tags)) + "]" if tags else "")
 
 
+def ready_explanation(view):
+    ready, held = view["ready_count"], view["held_count"]
+    if not ready and not held:
+        return "No live tasks match this view."
+    out = [f"{ready} ready, {held} held"]
+    out.extend(f"  {item['id']}  {item['title']}  [{item['why']}]" for item in view["ready"])
+    if len(view["ready"]) < ready:
+        out.append(f"  Showing {len(view['ready'])} of {ready}. Use --limit for more.")
+    labels = {
+        "active_children": "Have unfinished child tasks", "future_start": "Start later",
+        "future_round": "Waiting for the next round's planned day",
+        "claimed_elsewhere": "Claimed by another worker", "dependencies": "Waiting for prerequisites",
+        "proposed": "Awaiting a decision", "waiting": "Waiting on someone or something",
+    }
+    for code, group in sorted(view["reasons"].items()):
+        out.append(f"{labels[code]} ({group['count']}): " + ", ".join(group["examples"]))
+    if held:
+        out.append("Read a task with daymark show ID for its details.")
+    return "\n".join(out)
+
+
+def search_text(page):
+    lines = [f"{item['id']}  {item['title']}  [{item['status']}]" for item in page["items"]]
+    if page["next"] is not None:
+        lines.append(f"More matches. Repeat this search with --after {page['next']}.")
+    return "\n".join(lines) or "No matches."
+
+
 def listing(items, now=None, empty="Nothing here.") -> str:
     return "\n".join(line(item, now) for item in items) if items else empty
 
@@ -131,6 +162,13 @@ def advice_text(advice, now=None) -> str:
     """Picks, then what the profile's strategies noticed."""
     plain = advice.tone != "neutral"
     out = []
+    source = advice.profile_source
+    if source and (source["kind"] in {"built-in", "saved"} or source["adjusted"]):
+        label = f"{source['kind']} profile {source['name']}"
+        if "version" in source:
+            label += f" v{source['version']}"
+        changes = " with temporary adjustments" if source["adjusted"] else ""
+        out.append(f"Using {label}{changes} for this call.")
     for item in advice.picks:
         # In the neutral tone the dates still show; the words "overdue" and "ago" do not.
         out.append(line(item, now, reason=plain))
@@ -139,7 +177,10 @@ def advice_text(advice, now=None) -> str:
     if not advice.picks:
         out.append("No picks for this view." if advice.held_back else "Nothing is ready.")
     if advice.held_back:
-        out.append(f"({advice.held_back} more ready; see `daymark ready`.)")
+        command = "daymark ready"
+        if advice.scope is not None:
+            command += f" --scope {advice.scope}" if advice.scope else " --unscoped"
+        out.append(f"({advice.held_back} more ready; see `{command}`.)")
     for note in advice.notes:
         ids = (
             f"  [{', '.join(note.ids[:8])}{', …' if len(note.ids) > 8 else ''}]" if note.ids else ""
@@ -158,6 +199,14 @@ def profile_text(profile: dict) -> str:
     for name in profile.get("skipped") or []:
         out.append(f"  ! {name}: not available or misconfigured; left out. "
                    f"Choose a profile again or `--drop {name}`.")  # fmt: skip
+    if "workspace" in profile:
+        out.append(f"Workspace {profile['workspace']}, active version {profile['version']}")
+    if undo := profile.get("undo"):
+        from shlex import join
+
+        command = join(["daymark", f"--workspace={profile['workspace']}", "profile",
+                        f"--undo={undo['operation_id']}", "--if-version", str(undo["expected_version"])])
+        out.append(f"Restore the previous settings in this database with {command}")
     return "\n".join(out)
 
 
@@ -221,6 +270,54 @@ def activity_text(view: dict) -> str:
     return "\n".join(out)
 
 
+def note_text(note: dict) -> str:
+    who = f" by {note['author']}" if note.get("author") else ""
+    end = "…" if note.get("truncated") else ""
+    return f"note {note['id']}  {note['at']}{who}  {note['text']}{end}"
+
+
+def source_text(ref: dict) -> str:
+    return f"source {ref['system']}:{ref['kind']}:{ref['id']}"
+
+
+def brief_text(view: dict) -> str:
+    clipped = view.get("truncated", [])
+    title = view["title"] + ("…" if "title" in clipped else "")
+    out = [f"{view['id']}  {title}  [{view['status']}, version {view['version']}]"]
+    if "readiness" in view:
+        state = view["readiness"]
+        out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
+    if "next_move" in view:
+        out.append("Next move: " + view["next_move"])
+    if "claim" in view:
+        out.append(f"Claim: {view['claim']['owner']} until {view['claim']['until']}")
+    if "waiting_on" in view:
+        out.append("Waiting on: " + view["waiting_on"] + ("…" if "waiting_on" in clipped else ""))
+    out.extend(source_text(ref) for ref in view.get("source_refs", []))
+    if extra := view["omitted"].get("source_refs"):
+        out.append(f"{extra} more sources in full detail")
+    if "description" in view:
+        out.append(view["description"] + ("…" if "description" in clipped else ""))
+    for key, label in (("deadline", "Due"), ("planned", "Plan"), ("earliest_start", "Start"),
+                       ("latest_target", "Target")):
+        if key in view:
+            out.append(f"{label}: {when(view[key])}")
+    for key in ("blocked_by", "active_children"):
+        if view[key]:
+            extra = view["omitted"][key]
+            out.append(key.replace("_", " ") + ": " + ", ".join(view[key])
+                       + (f" (+{extra} more)" if extra else ""))
+    omitted_notes = view["omitted"]["notes"]
+    if omitted_notes:
+        out.append(f"{omitted_notes} earlier notes. Read before note {view['next_before_note']}.")
+    if view["omitted"]["newer_notes"]:
+        out.append(f"{view['omitted']['newer_notes']} newer notes outside this page")
+    out.extend(note_text(note) for note in view["notes"])
+    if any(note.get("truncated") for note in view["notes"]):
+        out.append("Read a full note: daymark show ID --note NOTE_ID")
+    return "\n".join(out)
+
+
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
     out = [line(item, now)]
@@ -238,6 +335,7 @@ def show_text(ctx: dict, now=None) -> str:
         }
         why = ", ".join(reasons.get(code, code) for code in state["reasons"])
         out.append("Ready now" if state["ready"] else "Not ready: " + why)
+    out.extend(source_text(ref) for ref in item["source_refs"])
     if item["description"]:
         out.append(item["description"])
     for key, label in (
@@ -255,6 +353,8 @@ def show_text(ctx: dict, now=None) -> str:
     for key in ("project_id", "parent_id", "goal_id", "assignee_id"):
         if item[key]:
             out.append(f"{key.removesuffix('_id')}: {item[key]}")
+    if item.get("context_ids"):
+        out.append("contexts: " + ", ".join(item["context_ids"]))
     for check in item["checklist"]:
         out.append(f"  [{'x' if check['completed'] else ' '}] {check['text']}")
     if ctx["blocked_by"]:
@@ -330,7 +430,7 @@ def _card(card: dict, view: dict, now, *, skip=()) -> str:
     return base + ("  " + "  ".join(tags) if tags else "")
 
 
-def _groups(view: dict, by: str) -> list[tuple[str, list]]:
+def plan_groups(view: dict, by: str) -> list[tuple[str, list]]:
     cards = view["tasks"]
     if by == "stage":
         return [
@@ -419,7 +519,7 @@ def plan_text(view: dict, now=None, by: str = "stage") -> str:
         "parent": ("parent",),
         "assignee": ("assignee",),
     }.get(by, (by,))
-    for title, cards in _groups(view, by):
+    for title, cards in plan_groups(view, by):
         if not cards and by not in {"stage", "milestone"}:
             continue
         out.append(title.replace("{n}", str(len(cards))))
@@ -541,31 +641,32 @@ Leave dates and priority unset unless supplied. Record completion only when it h
 Use distinct actors for concurrent workers and claim before starting shared work.
 
 Commands (add --json to any for structured output)
+  daymark where                     explain database selection without opening it
   daymark prime --brief             current session without the command guide
   daymark onboard --check AGENTS.md  check startup instructions without writing
-  daymark ready [--scope NAME]      what can be done now, most pressing first
+  daymark ready [--scope NAME] [--context ID] [--explain]   actionable work, with optional reasons work is held
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
   daymark show ID                   one task, why it is ready or held, notes and history
   daymark activity [--after CURSOR]  recent changes, or changes since a previous session
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
-  daymark propose "Title" [...]     suggest; a person runs accept/dismiss
+  daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-version N]
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
   daymark advise [--set shortlist.size=3]   try advice for this session; profile saves a choice
   daymark profile --saved           named choices to reuse with advise --profile NAME
-  daymark --as WORKER take [--scope NAME]   claim the next unclaimed ready agent task
+  daymark --as WORKER take [--scope NAME] [--context ID]   claim the next unclaimed ready agent task
   daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
   daymark note ID "text"            progress or context for the next session
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
   daymark skip ID                   pass over one occurrence without completing it
   daymark wait ID --on WHO [--until D] / resume ID
   daymark defer ID D                hide until a date; the deadline does not move
-  daymark edit ID [--title T] [--due D] ...   (--due "" clears)
+  daymark edit ID [--if-version N] [--due D] ...   (--due "" clears)
   daymark block ID --on OTHER / unblock ID --on OTHER
-  daymark find TEXT                 search titles and descriptions
+  daymark find TEXT [--kind memory] [--page]   find work or a remembered fact
   daymark remember "fact"           durable context shown by `daymark prime`
   daymark undo ID                   restore the previous state
 Projects (as plain or as structured as the work needs)
@@ -598,18 +699,44 @@ This project tracks tasks, plans and deadlines in Daymark.
 """
 
 
+def endpoint_origin(url):
+    """An HTTP origin suitable for display, without user info, path or query."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
+
+
 def session_context(tasks, *, database=None, url=None) -> dict:
     """Describe the active session without exposing credentials or guessing HTTP identity."""
     context = {"timezone": tasks.timezone}
     if url:
-        parts = urlsplit(url)
-        context["endpoint"] = f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
+        context["endpoint"] = endpoint_origin(url)
         context["identity_source"] = "server credential"
     else:
         context.update(workspace=tasks.workspace, actor=tasks.actor)
         if database:
             context["database"] = str(Path(database).absolute()) if database != ":memory:" else database
     return context
+
+
+def brief_session(tasks, context):
+    """Bound the amount of task history and remembered text sent at session pickup."""
+    memories = tasks.search(kind="memory", limit=5)
+    references = []
+    for hit in memories["items"]:
+        title = hit["title"]
+        references.append({
+            "id": hit["id"], "title": title[:160] + "…" if len(title) > 160 else title,
+        })
+    result = {
+        "context": context,
+        "summary": tasks.summary(),
+        "ready": [compact(item) for item in tasks.ready_summary(limit=5)],
+        "memories": references,
+        "next_memory": memories["next"],
+    }
+    if getattr(tasks.engine, "legacy_search", False):
+        result["summary_note"] = "The service reports its own ready count. Older servers exclude claimed work and count up to 1,000."
+    return result
 
 
 def prime_text(tasks, where: str | None = None, *, context=None, brief=False) -> str:
@@ -625,18 +752,27 @@ def prime_text(tasks, where: str | None = None, *, context=None, brief=False) ->
         location = f"{context['database']}, " if "database" in context else ""
         out.append(f"Daymark: {location}workspace {context['workspace']}, actor {context['actor']}")
     out.append(now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a") + ", " + tasks.timezone)
-    counts = tasks.summary()
+    state = brief_session(tasks, context)
+    counts = state["summary"]
     out.append("  " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()))
-    top = tasks.ready(limit=5)
-    if top:
+    if state.get("summary_note"):
+        out.append("  " + state["summary_note"])
+    if state["ready"]:
         out.append("Most pressing")
-        out.extend("  " + line(item, now) for item in top)
-    memories = tasks.memories()
-    if memories:
+        for item in state["ready"]:
+            facts = [
+                f"{label} {item[key]}" for key, label in (
+                    ("deadline", "due"), ("planned", "plan"), ("next_move", "move"),
+                    ("claimed_by", "claimed by"),
+                ) if item.get(key)
+            ]
+            details = "  [" + "; ".join(facts) + "]" if facts else ""
+            out.append(f"  {item['id']}  {item['title']}{details}")
+    if state["memories"]:
         out.append("Remembered")
-        out.extend(f"  - {memory['title']}  ({memory['id']})" for memory in memories[:50])
-        if len(memories) > 50:
-            out.append(f"  {len(memories) - 50} more. Use `daymark find TEXT --kind memory`.")
+        out.extend(f"  - {item['title']}  ({item['id']})" for item in state["memories"])
+        if state["next_memory"]:
+            out.append(f"  More facts: daymark find --kind memory --after {state['next_memory']}")
     if not brief:
         out.extend(["", GUIDE])
     return "\n".join(out)

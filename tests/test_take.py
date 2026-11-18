@@ -88,6 +88,15 @@ def test_take_rejects_unlabelled_local_worker_and_changed_request():
         assert plain.claim("sample")["claimed_by"] == "agent"
         worker = Tasks(store, actor="worker")
         assert worker.take(op="pick") is None
+        with pytest.raises(DomainError, match="acting worker"):
+            store.execute(
+                "default",
+                "pick",
+                "take",
+                {"owner": "worker", "scope": None, "lease_seconds": 3600},
+                expected_version=0,
+                actor="different",
+            )
         for options in ({"minutes": 3}, {"scope": "different"}):
             with pytest.raises(DomainError, match="different request"):
                 worker.take(op="pick", **options)
@@ -168,3 +177,25 @@ def test_cli_take_empty_queue_returns_json_null(tmp_path, capsys, monkeypatch):
     assert "--as NAME" in capsys.readouterr().err
     assert main(["--db", path, "--as", "worker", "take", "--json"]) == 0
     assert capsys.readouterr().out.strip() == "null"
+
+
+def test_take_context_is_an_exact_delegation_filter_bound_to_the_operation():
+    store = Store(":memory:")
+    try:
+        t = Tasks(store, actor="worker")
+        t.add("Desk", id="desk", kind="context")
+        t.add("Field", id="field", kind="context")
+        t.add("Untargeted", id="anywhere", move="agent", priority=1)
+        t.add("Field choice", id="field-work", move="agent", scope="project", contexts=["field"])
+        t.add("Desk choice", id="desk-work", move="agent", scope="project", contexts=["desk"])
+        t.add("Person decision", id="human", move="answer", scope="project", contexts=["desk"])
+        assert t.take(context="desk", scope="project", op="pick")["id"] == "desk-work"
+        with pytest.raises(DomainError) as changed:
+            t.take(context="field", scope="project", op="pick")
+        assert changed.value.code == "conflict"
+        assert t.take(context="desk", scope="project") is None
+        assert t.take(context="field", scope="project")["id"] == "field-work"
+        with pytest.raises(DomainError, match="Context"):
+            t.take(context="")
+    finally:
+        store.close()

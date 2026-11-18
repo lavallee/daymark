@@ -135,7 +135,7 @@ def in_scope(item, scope) -> bool:
     return scope is None or (item["scope"] or "") == scope
 
 
-def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None):
+def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None, context=None, brief=False):
     """Open tasks that can be acted on now, most pressing first.
 
     A task is ready when it is open and unarchived, its earliest start has
@@ -146,12 +146,18 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, s
     ``scope`` narrows to one scope, or with ``""`` to items that have none.
     Tasks the person has put in focus come first, in their order.
     """
+    _check_ready_query(limit, next_move, scope)
+    now = normalize_now(now)
+    return _read_ready(store, workspace, now, owner, next_move, scope, context=context, limit=limit, brief=brief)
+
+
+def _check_ready_query(limit, next_move, scope):
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise DomainError("invalid", "Limit must be between 1 and 1000")
     if next_move not in (None, "person", "answer", "agent"):
         raise DomainError("invalid", "next_move must be person, answer or agent")
-    now = normalize_now(now)
-    return _read_ready(store, workspace, now, owner, next_move, scope, limit=limit)
+    if scope is not None and not isinstance(scope, str):
+        raise DomainError("invalid", "Scope must be a name or an empty string")
 
 
 def _readiness_reasons(item, now, owner, *, blocked, has_children):
@@ -192,13 +198,29 @@ _READY_FIELDS = (
 )
 
 
-def _ready_candidates(store, workspace, next_move, scope):
+def _task_fields(store, workspace, statuses, fields, *, next_move=None, scope=None, context=None):
+    if scope is not None and not isinstance(scope, str):
+        raise DomainError("invalid", "Scope must be a name or an empty string")
+    marks = ",".join("?" * len(statuses))
     base = (
-        " FROM daymark_entities WHERE workspace=? AND kind='task' AND status='open' AND archived=0"
+        " FROM daymark_entities WHERE workspace=? AND kind='task' AND archived=0 "
+        f"AND status IN ({marks})"
     )
-    paths = ",".join(f"'$.{field}'" for field in _READY_FIELDS)
-    query = f"SELECT id,json_extract(data,{paths})" + base
-    args = [workspace]
+    args = [workspace, *statuses]
+    if context is not None:
+        if not isinstance(context, str) or not 1 <= len(context) <= 128:
+            raise DomainError("invalid", "Context must be a nonempty entity ID")
+        found = store.db.execute("SELECT kind FROM daymark_entities WHERE workspace=? AND id=?",
+                                 (workspace, context)).fetchone()
+        if not found or found[0] != "context":
+            raise DomainError("not_found", "Context not found in this workspace",
+                              ["List available contexts with daymark find --kind context."])
+        base += (" AND id IN (SELECT source_id FROM daymark_refs "
+                 "WHERE workspace=? AND field='context_ids' AND target_id=?)")
+        args.extend((workspace, context))
+    base_args = tuple(args)
+    paths = ",".join(f"'$.{field}'" for field in fields)
+    query = f"SELECT id,status,json_extract(data,{paths})" + base
     if next_move is not None:
         query += " AND json_extract(data,'$.next_move')=?"
         args.append(next_move)
@@ -212,56 +234,178 @@ def _ready_candidates(store, workspace, next_move, scope):
         # entity representation remains a supported source for embedded users.
         if "no such function: json_extract" not in str(exc):
             raise
-        for (data,) in store.db.execute("SELECT data" + base, (workspace,)):
+        for (data,) in store.db.execute("SELECT data" + base, base_args):
             item = json.loads(data)
             if (next_move is None or item["next_move"] == next_move) and in_scope(item, scope):
-                yield item
+                yield {key: item[key] for key in ("id", "status", "archived", *fields)}
         return
-    for id, values in rows:
+    for id, status, values in rows:
         yield {
             "id": id,
-            "status": "open",
+            "status": status,
             "archived": False,
-            **dict(zip(_READY_FIELDS, json.loads(values))),
+            **dict(zip(fields, json.loads(values))),
         }
 
 
-def _read_ready(store, workspace, now, owner, next_move, scope, *, limit=None):
-    """Count ready items or hydrate the top page, inside one read snapshot."""
+def ready_record(item, now):
+    """Project one eligible task for a bounded read, including its ordering reason."""
+    fields = (
+        "id",
+        "scope",
+        "next_move",
+        "deadline",
+        "planned",
+        "latest_target",
+        "earliest_start",
+        "priority",
+        "claimed_by",
+        "claim_until",
+    )
+    record = {key: item[key] for key in fields}
+    title = item["title"]
+    record.update(kind="task", status="open", version=item["version"],
+                  title=title[:160] + ("…" if len(title) > 160 else ""), why=why(item, now))
+    if not claim_holder(item, now):
+        record.update(claimed_by=None, claim_until=None)
+    return record
+
+
+def _ready_summaries(store, workspace, top, now):
+    details = {}
+    for start in range(0, len(top), 500):
+        ids = [item["id"] for item in top[start : start + 500]]
+        marks = ",".join("?" * len(ids))
+        try:
+            rows = store.db.execute(
+                "SELECT id,version,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644) "
+                f"FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
+                (workspace, *ids),
+            )
+            details.update(
+                (id, (version, title.decode(errors="ignore"))) for id, version, title in rows
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such function: json_extract" not in str(exc):
+                raise
+            raw = store.db.execute(
+                f"SELECT id,version,data FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
+                (workspace, *ids),
+            )
+            details.update(
+                (id, (version, json.loads(data)["title"][:161])) for id, version, data in raw
+            )
+    result = []
+    for item in top:
+        version, title = details[item["id"]]
+        result.append(ready_record({**item, "version": version, "title": title}, now))
+    return result
+
+
+def _readiness_links(store, workspace):
+    # An unfinished (or missing) target blocks its source. Select only the
+    # affected source IDs; a dense graph need not materialize every edge.
+    rows = store.db.execute(
+        "SELECT DISTINCT r.source_id FROM daymark_entities source JOIN daymark_refs r "
+        "ON r.workspace=source.workspace AND r.source_id=source.id AND r.field='depends_on' "
+        "LEFT JOIN daymark_entities target ON target.workspace=r.workspace AND target.id=r.target_id "
+        "WHERE source.workspace=? AND source.kind='task' AND source.status='open' AND source.archived=0 "
+        "AND coalesce(target.archived,0)=0 AND coalesce(target.status,'') NOT IN (?,?)",
+        (workspace, *DONE),
+    )
+    blocked = {id for (id,) in rows}
+    return blocked, _parents_with_live_children(store, workspace)
+
+
+def _is_ready(item, now, owner, blocked, containers):
+    return not any(
+        _readiness_reasons(
+            item, now, owner, blocked=item["id"] in blocked, has_children=item["id"] in containers
+        )
+    )
+
+
+def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=False, context=None):
+    """Rank projected fields and hydrate the selected page inside the same read snapshot."""
     with store._lock:
         if not _usable(store):
-            return 0 if limit is None else []
+            return []
         with store._transaction(write=False):
-            refs = store.db.execute(
-                "SELECT r.source_id,r.target_id FROM daymark_refs r JOIN daymark_entities e "
-                "ON e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? "
-                "AND r.field='depends_on' AND e.kind='task' AND e.status='open' AND e.archived=0",
-                (workspace,),
-            ).fetchall()
-            statuses = _statuses(store, workspace, (target for _, target in refs))
-            blocked = {id for id, target in refs if statuses.get(target) not in DONE}
-            containers = _parents_with_live_children(store, workspace)
-            eligible = (
-                item
-                for item in _ready_candidates(store, workspace, next_move, scope)
-                if not any(
-                    _readiness_reasons(
-                        item,
-                        now,
-                        owner,
-                        blocked=item["id"] in blocked,
-                        has_children=item["id"] in containers,
-                    )
-                )
+            blocked, containers = _readiness_links(store, workspace)
+            items = _task_fields(
+                store, workspace, ("open",), _READY_FIELDS, next_move=next_move, scope=scope, context=context
             )
-            if limit is None:
-                return sum(1 for _ in eligible)
+            eligible = (item for item in items if _is_ready(item, now, owner, blocked, containers))
             top = heapq.nsmallest(limit, eligible, key=lambda item: urgency(item, now)[0])
+            if brief:
+                return _ready_summaries(store, workspace, top, now)
             full = _fetch(store, workspace, (item["id"] for item in top))
             return [full[item["id"]] for item in top]
 
 
-def agenda(store, workspace, *, now=None, days=7, scope=None):
+def explain_ready(store, workspace, *, now=None, limit=20, owner=None, next_move=None, scope=None, context=None):
+    """The ready page and a census of live tasks held back within the selected filters."""
+    _check_ready_query(limit, next_move, scope)
+    now = normalize_now(now)
+    result = {"ready": [], "ready_count": 0, "held_count": 0, "reasons": {},
+              "filters": {"move": next_move, "scope": scope, **({"context": context} if context is not None else {})}}
+
+    def eligible(items, blocked, containers):
+        for item in items:
+            if item["status"] != "open":
+                # The person must decide or resume before other gates matter.
+                reasons = [item["status"]]
+            else:
+                reasons = list(_readiness_reasons(
+                    item, now, owner, blocked=item["id"] in blocked,
+                    has_children=item["id"] in containers,
+                ))
+            if not reasons:
+                result["ready_count"] += 1
+                yield item
+                continue
+            result["held_count"] += 1
+            for code in reasons:
+                group = result["reasons"].setdefault(code, {"count": 0, "examples": []})
+                group["count"] += 1
+                examples = group["examples"]
+                if len(examples) < 3 or item["id"] < examples[-1]:
+                    examples.append(item["id"])
+                    examples.sort()
+                    del examples[3:]
+
+    with store._lock:
+        if not _usable(store):
+            return result
+        with store._transaction(write=False):
+            blocked, containers = _readiness_links(store, workspace)
+            items = _task_fields(store, workspace, LIVE, _READY_FIELDS,
+                                 next_move=next_move, scope=scope, context=context)
+            top = heapq.nsmallest(limit, eligible(items, blocked, containers),
+                                  key=lambda item: urgency(item, now)[0])
+            result["ready"] = _ready_summaries(store, workspace, top, now)
+    return result
+
+
+def _agenda_bucket(item, now, days):
+    if item["status"] == "proposed":
+        return "proposed", None
+    deadline = day_offset(item["deadline"], now) if item["deadline"] else None
+    planned = day_offset(item["planned"], now) if item["planned"] else None
+    if item["deadline"] and _is_past(item["deadline"], now):
+        return "overdue", None
+    if item["status"] == "waiting":
+        return "waiting", None
+    if deadline == 0 or (planned is not None and planned <= 0):
+        return "today", None
+    ahead = [x for x in (deadline, planned) if x is not None and 0 < x <= days]
+    if ahead:
+        source = item["deadline"] if deadline == min(ahead) else item["planned"]
+        return "upcoming", Temporal.model_validate(source).local().date().isoformat()
+    return None, None
+
+
+def agenda(store, workspace, *, now=None, days=7, scope=None, context=None):
     """The shape of the days ahead: what is late, due, planned, waiting or proposed.
 
     Sections do not overlap. A task appears once, in the first section it fits:
@@ -270,33 +414,32 @@ def agenda(store, workspace, *, now=None, days=7, scope=None):
     if type(days) is not int or not 0 <= days <= 366:
         raise DomainError("invalid", "Days must be between 0 and 366")
     now = normalize_now(now)
+    out = {
+        "overdue": [],
+        "today": [],
+        "upcoming": {},
+        "waiting": [],
+        "proposed": [],
+        "later_or_undated": 0,
+    }
     with store._lock:
-        tasks = store._rows(workspace, kind="task", status=list(LIVE)) if _usable(store) else []
-    tasks = [item for item in tasks if in_scope(item, scope)]
-    out = {"overdue": [], "today": [], "upcoming": {}, "waiting": [], "proposed": []}
-    undated = 0
-    for item in sorted(tasks, key=lambda item: urgency(item, now)[0]):
-        if item["status"] == "proposed":
-            out["proposed"].append(item)
-            continue
-        deadline = day_offset(item["deadline"], now) if item["deadline"] else None
-        planned = day_offset(item["planned"], now) if item["planned"] else None
-        if item["deadline"] and _is_past(item["deadline"], now):
-            out["overdue"].append(item)
-        elif item["status"] == "waiting":
-            out["waiting"].append(item)
-        elif deadline == 0 or (planned is not None and planned <= 0):
-            out["today"].append(item)
-        else:
-            ahead = [x for x in (deadline, planned) if x is not None and 0 < x <= days]
-            if ahead:
-                source = item["deadline"] if deadline == min(ahead) else item["planned"]
-                day = Temporal.model_validate(source).local().date().isoformat()
-                out["upcoming"].setdefault(day, []).append(item)
-            else:
-                undated += 1
+        if not _usable(store):
+            return out
+        with store._transaction(write=False):
+            shown = []
+            for item in _task_fields(store, workspace, LIVE, _READY_FIELDS, scope=scope, context=context):
+                bucket, day = _agenda_bucket(item, now, days)
+                if bucket is None:
+                    out["later_or_undated"] += 1
+                else:
+                    shown.append((urgency(item, now)[0], item["id"], bucket, day))
+            full = _fetch(store, workspace, (id for _, id, _, _ in shown))
+            for _, id, bucket, day in sorted(shown):
+                if bucket == "upcoming":
+                    out[bucket].setdefault(day, []).append(full[id])
+                else:
+                    out[bucket].append(full[id])
     out["upcoming"] = dict(sorted(out["upcoming"].items()))
-    out["later_or_undated"] = undated
     return out
 
 
@@ -310,37 +453,105 @@ def activity(store, workspace, *, after=None, limit=20):
         raise DomainError("invalid", "Activity limit must be between 1 and 100")
     if after is not None and (type(after) is not int or after < 0):
         raise DomainError("invalid", "Activity cursor must be a nonnegative integer")
+    with store._lock:
+        if not _usable(store):
+            if after:
+                raise DomainError("conflict", "Cursor is ahead of this empty workspace")
+            return {"events": [], "cursor": 0, "head": 0}
     with store._transaction(write=False):
         head = store.head(workspace)
         if after is not None and after > head:
-            raise DomainError("conflict", "Cursor is ahead of this workspace. Read activity again without a cursor.")
+            raise DomainError(
+                "conflict",
+                "Cursor is ahead of this workspace. Read activity again without a cursor.",
+            )
         if after is None:
             # Imported histories may have gaps, so counting backwards from the
             # head cursor is not equivalent to selecting the last N events.
             previous = store.db.execute(
                 "SELECT seq FROM daymark_event_cursors WHERE workspace=? "
-                "ORDER BY seq DESC LIMIT 1 OFFSET ?", (workspace, limit),
+                "ORDER BY seq DESC LIMIT 1 OFFSET ?",
+                (workspace, limit),
             ).fetchone()
             after = previous[0] if previous else 0
-        events = store.events(workspace, after=after, limit=limit)
+        items = _activity_items(store, workspace, after, limit)
+    return {"events": items, "cursor": items[-1]["seq"] if items else after, "head": head}
+
+
+def _activity_items(store, workspace, after, limit):
+    # Compare inside SQLite. A page of small edits on a task with several
+    # megabytes of notes must not send every pair of full snapshots to Python.
+    try:
+        rows = store.db.execute(
+            """SELECT c.seq,e.created_at,e.action,e.entity_id,e.actor,
+                    json_extract(coalesce(e.after_data,e.before_data),'$.kind','$.title'),
+                    CASE WHEN e.action='note' AND json_array_length(e.after_data,'$.notes')>0
+                         THEN json_extract(e.after_data,
+                             '$.notes['||(json_array_length(e.after_data,'$.notes')-1)||']') END,
+                    CASE WHEN e.before_data IS NOT NULL AND e.after_data IS NOT NULL
+                          AND (e.action!='note' OR coalesce(json_array_length(e.after_data,'$.notes'),0)=0)
+                         THEN (SELECT json_group_array(k.key) FROM json_each(e.after_data) k
+                               WHERE k.key NOT IN ('version','updated_at')
+                               AND k.value IS NOT json_extract(e.before_data,'$.'||k.key)) END
+               FROM daymark_event_cursors c JOIN daymark_events e ON e.seq=c.event_seq
+               WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?""",
+            (workspace, after, limit),
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such function" not in str(exc) and "no such table: json_each" not in str(exc):
+            raise
+        return _activity_without_json(store, workspace, after, limit)
+    result = []
+    for seq, at, action, id, actor, entity, note, changed in rows:
+        kind, title = json.loads(entity)
+        item = {
+            "seq": seq,
+            "at": at,
+            "action": action,
+            "id": id,
+            "kind": kind,
+            "title": title or "",
+            "actor": actor,
+        }
+        if note is not None:
+            item["note"] = json.loads(note)
+        if changed is not None:
+            item["changed"] = sorted(json.loads(changed))
+        result.append(item)
+    return result
+
+
+def _activity_without_json(store, workspace, after, limit):
+    # Older SQLite builds can still read the identical page. Decode a single
+    # before/after pair at a time to keep memory independent of page length.
     items = []
-    for event in events:
+    for _ in range(limit):
+        page = store.events(workspace, after=after, limit=1)
+        if not page:
+            break
+        event = page[0]
         before, end = event["before_data"], event["after_data"]
         entity = end or before
+        after = event["seq"]
         item = {
-            "seq": event["seq"], "at": event["created_at"], "action": event["action"],
-            "id": event["entity_id"], "kind": entity["kind"], "title": entity.get("title", ""),
+            "seq": after,
+            "at": event["created_at"],
+            "action": event["action"],
+            "id": event["entity_id"],
+            "kind": entity["kind"],
+            "title": entity.get("title", ""),
             "actor": event["actor"],
         }
         if event["action"] == "note" and end and end.get("notes"):
             item["note"] = end["notes"][-1]
         elif before and end:
             item["changed"] = sorted(
-                key for key in end if key not in {"version", "updated_at"}
-                and before.get(key) != end[key]
+                key
+                for key in end
+                if key not in {"version", "updated_at"} and before.get(key) != end[key]
             )
         items.append(item)
-    return {"events": items, "cursor": items[-1]["seq"] if items else after, "head": head}
+    return items
 
 
 def context(store, workspace, id, *, history=10, now=None, owner=None):
@@ -395,18 +606,23 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
         }
 
 
-def summary(store, workspace, *, now=None, scope=None, owner=None):
+def summary(store, workspace, *, now=None, scope=None, owner=None, context=None):
     """Counts for a one-glance orientation."""
     now = normalize_now(now)
-    view = agenda(store, workspace, now=now, days=7, scope=scope)
-    return {
-        "ready": _read_ready(store, workspace, now, owner, None, scope),
-        "overdue": len(view["overdue"]),
-        "today": len(view["today"]),
-        "next_7_days": sum(len(x) for x in view["upcoming"].values()),
-        "waiting": len(view["waiting"]),
-        "proposed": len(view["proposed"]),
-    }
+    counts = dict.fromkeys(("ready", "overdue", "today", "next_7_days", "waiting", "proposed"), 0)
+    fields = ("earliest_start", "planned", "recurrence", "claimed_by", "claim_until", "deadline")
+    with store._lock:
+        if not _usable(store):
+            return counts
+        with store._transaction(write=False):
+            blocked, containers = _readiness_links(store, workspace)
+            for item in _task_fields(store, workspace, LIVE, fields, scope=scope, context=context):
+                if _is_ready(item, now, owner, blocked, containers):
+                    counts["ready"] += 1
+                bucket, _ = _agenda_bucket(item, now, 7)
+                if bucket:
+                    counts["next_7_days" if bucket == "upcoming" else bucket] += 1
+    return counts
 
 
 # -- projects and goals: one pass over preloaded records, then pure roll-ups
