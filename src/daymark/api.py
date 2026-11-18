@@ -145,7 +145,7 @@ def create_router(store: Any) -> APIRouter:
     def principal_payload(body: Operation, actor: Identity) -> dict[str, Any]:
         payload = dict(body.payload)
         # The authenticated principal, not the request body, says who is acting.
-        if body.action in {"claim", "release"}:
+        if body.action in {"claim", "release", "take"}:
             payload["owner"] = actor.principal
         elif body.action == "note":
             payload["author"] = actor.principal
@@ -239,17 +239,19 @@ def create_router(store: Any) -> APIRouter:
     def ready(
         request: Request,
         limit: int = Query(50, ge=1, le=1000),
+        mine: bool = False,
         owner: str | None = Query(None, max_length=200),
         next_move: str | None = Query(None, max_length=20),
         scope: str | None = Query(None, max_length=100),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
+        actor = identity(request)
         return _invoke(
             store.ready,
-            identity(request).workspace,
+            actor.workspace,
             now=now,
             limit=limit,
-            owner=owner,
+            owner=actor.principal if mine else owner,
             next_move=next_move,
             scope=scope,
         )
@@ -268,20 +270,40 @@ def create_router(store: Any) -> APIRouter:
         request: Request,
         goal: str | None = Query(None, max_length=128),
         now: str | None = Query(None, max_length=40),
+        scope: str | None = Query(None, max_length=100),
     ) -> Any:
-        return _invoke(store.explore, identity(request).workspace, goal, now=now)
+        return _invoke(store.explore, identity(request).workspace, goal, now=now, scope=scope)
 
     @router.get("/summary", operation_id="daymark_v1_summary")
     def summary(
         request: Request,
         scope: str | None = Query(None, max_length=100),
+        mine: bool = False,
+        owner: str | None = Query(None, max_length=200),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
-        return _invoke(store.summary, identity(request).workspace, now=now, scope=scope)
+        actor = identity(request)
+        return _invoke(store.summary, actor.workspace, now=now, scope=scope, owner=actor.principal if mine else owner)
 
     @router.get("/context/{entity_id}", operation_id="daymark_v1_context")
-    def context(entity_id: str, request: Request, history: int = Query(10, ge=0, le=100)) -> Any:
-        return _invoke(store.context, identity(request).workspace, entity_id, history=history)
+    def context(
+        entity_id: str, request: Request, history: int = Query(10, ge=0, le=100),
+        now: str | None = Query(None, max_length=40), owner: str | None = Query(None, max_length=200),
+        mine: bool = False,
+    ) -> Any:
+        actor = identity(request)
+        return _invoke(store.context, actor.workspace, entity_id, history=history,
+                       now=now, owner=actor.principal if mine else owner)
+
+    @router.get("/receipt-context", operation_id="daymark_v1_receipt_context")
+    def receipt_context(
+        request: Request, operation_id: str, action: str, entity_id: str | None = None
+    ) -> Any:
+        actor = identity(request)
+        return _invoke(
+            store.receipt_context, actor.workspace, operation_id,
+            action=action, entity_id=entity_id, actor=actor.principal,
+        )
 
     @router.get("/receipts/{operation_id}", operation_id="daymark_v1_receipt")
     def receipt(operation_id: str, request: Request) -> Any:
@@ -289,6 +311,12 @@ def create_router(store: Any) -> APIRouter:
         if result is None:
             raise HTTPException(404, "Not found")
         return result
+
+    @router.get("/activity", operation_id="daymark_v1_activity")
+    def activity(
+        request: Request, after: int | None = Query(None, ge=0), limit: int = Query(20, ge=1, le=100)
+    ) -> Any:
+        return _invoke(store.activity, identity(request).workspace, after=after, limit=limit)
 
     @router.get("/events/head", operation_id="daymark_v1_events_head")
     def events_head(request: Request) -> Any:

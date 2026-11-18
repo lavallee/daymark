@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .models import DomainError, Entity, Temporal, normalize_now
@@ -9,6 +11,7 @@ from .views import claim_holder, why
 
 _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
 _ALWAYS = ("id", "kind", "title", "status", "version")
+EMPTY_TAKE = "No unclaimed agent task is ready in this scope."
 _BOOKKEEPING = {"workspace", "created_at", "updated_at"}
 
 
@@ -134,9 +137,9 @@ def advice_text(advice, now=None) -> str:
         if item["id"] in advice.steps:
             out.append(f"    next: {advice.steps[item['id']]}")
     if not advice.picks:
-        out.append("Nothing is ready.")
+        out.append("No picks for this view." if advice.held_back else "Nothing is ready.")
     if advice.held_back:
-        out.append(f"({advice.held_back} more ready; `daymark ready` shows all.)")
+        out.append(f"({advice.held_back} more ready; see `daymark ready`.)")
     for note in advice.notes:
         ids = (
             f"  [{', '.join(note.ids[:8])}{', …' if len(note.ids) > 8 else ''}]" if note.ids else ""
@@ -171,6 +174,14 @@ def strategies_text(listed, profiles: dict) -> str:
     return "\n".join(out)
 
 
+def saved_profiles_text(entries) -> str:
+    if isinstance(entries, dict):
+        return profile_text(entries["profile"]) + f"\nsaved version {entries['version']}"
+    return "\n".join(
+        f"{entry['name']}  version {entry['version']}" for entry in entries
+    ) or "No saved profiles. Create one with `daymark profile --save-as NAME`."
+
+
 def agenda_text(view: dict, now=None) -> str:
     out = []
     for key, label in (("overdue", "OVERDUE"), ("today", "TODAY")):
@@ -189,9 +200,44 @@ def agenda_text(view: dict, now=None) -> str:
     return "\n".join(out) if out else "Nothing scheduled, waiting or proposed."
 
 
+def activity_text(view: dict) -> str:
+    """One line per change; full note text remains available in JSON and show."""
+    out = []
+    for event in view["events"]:
+        who = f" by {event['actor']}" if event["actor"] else ""
+        title = " ".join(event["title"].split())
+        row = f"{event['seq']}  {event['at'][:16]}  {event['action']}{who}  {event['id']}  {title}"
+        if note := event.get("note"):
+            text = " ".join(note["text"].split())
+            row += " — " + (text if len(text) <= 240 else text[:239] + "…")
+        elif event["action"] == "update" and event.get("changed"):
+            row += "  [" + ", ".join(event["changed"]) + "]"
+        out.append(row)
+    if not out:
+        out.append("No activity.")
+    out.append(f"cursor {view['cursor']}")
+    if view["cursor"] < view["head"]:
+        out.append(f"More changes: daymark activity --after {view['cursor']}")
+    return "\n".join(out)
+
+
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
     out = [line(item, now)]
+    if claim_holder(item, normalize_now(now)):
+        out.append(f"claim expires: {item['claim_until']}")
+    if "readiness" in ctx:
+        state = ctx["readiness"]
+        reasons = {
+            "active_children": "finish child work " + ", ".join(state["active_children"]),
+            "future_start": "start has not arrived",
+            "future_round": "this round starts on its planned day",
+            "claimed_elsewhere": "claimed by another actor",
+            "dependencies": "waiting for " + ", ".join(ctx["blocked_by"]),
+            "proposed": "awaiting a decision",
+        }
+        why = ", ".join(reasons.get(code, code) for code in state["reasons"])
+        out.append("Ready now" if state["ready"] else "Not ready: " + why)
     if item["description"]:
         out.append(item["description"])
     for key, label in (
@@ -482,21 +528,25 @@ def presets_text(presets: dict) -> str:
 
 
 GUIDE = """\
-Daymark keeps tasks, plans and time for a person's work and life. Use it instead
-of ad-hoc TODO lists so nothing is lost between sessions.
+Use Daymark to pick up a person's commitments across sessions.
 
-Rules
-- Never invent a date, priority or completion. Record only what is known.
-- A deadline is a hard cutoff (--due). A plan is an intention that may move
-  (--plan). "Not before" hides work until it can start (--start). Do not put an
-  intention in --due.
-- If the person did not ask for a task, propose it; they accept or dismiss.
-- Claim before working when others may be working too. Leave a note when you stop.
+Choose fields from the person's words
+  intended day ("I intend to", "I'd like to")    --plan
+  hard cutoff ("must be submitted by")          --due
+  first possible day ("cannot start until")     --start
+  idea awaiting a decision                      propose
+  existing task waiting on a reply              wait ID --on WHO_OR_WHAT
+  maximum items to show this time               ready --limit N
+Leave dates and priority unset unless supplied. Record completion only when it happened.
+Use distinct actors for concurrent workers and claim before starting shared work.
 
 Commands (add --json to any for structured output)
+  daymark prime --brief             current session without the command guide
+  daymark onboard --check AGENTS.md  check startup instructions without writing
   daymark ready [--scope NAME]      what can be done now, most pressing first
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
-  daymark show ID                   one task with blockers, notes and history
+  daymark show ID                   one task, why it is ready or held, notes and history
+  daymark activity [--after CURSOR]  recent changes, or changes since a previous session
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
@@ -504,8 +554,10 @@ Commands (add --json to any for structured output)
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
-  daymark advise                    what to offer and mention, by this workspace's profile
-  daymark claim ID / release ID     take or give back a task
+  daymark advise [--set shortlist.size=3]   try advice for this session; profile saves a choice
+  daymark profile --saved           named choices to reuse with advise --profile NAME
+  daymark --as WORKER take [--scope NAME]   claim the next unclaimed ready agent task
+  daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
   daymark note ID "text"            progress or context for the next session
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
   daymark skip ID                   pass over one occurrence without completing it
@@ -546,29 +598,45 @@ This project tracks tasks, plans and deadlines in Daymark.
 """
 
 
-def prime_text(tasks, where: str | None = None) -> str:
-    """Orientation for a new session: the guide, then the live state."""
+def session_context(tasks, *, database=None, url=None) -> dict:
+    """Describe the active session without exposing credentials or guessing HTTP identity."""
+    context = {"timezone": tasks.timezone}
+    if url:
+        parts = urlsplit(url)
+        context["endpoint"] = f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
+        context["identity_source"] = "server credential"
+    else:
+        context.update(workspace=tasks.workspace, actor=tasks.actor)
+        if database:
+            context["database"] = str(Path(database).absolute()) if database != ":memory:" else database
+    return context
+
+
+def prime_text(tasks, where: str | None = None, *, context=None, brief=False) -> str:
+    """Show the live session first. The brief form omits the command reference."""
     now = tasks.now()
+    context = context or session_context(tasks)
+    out = []
+    if where:
+        out.append(f"Database: {where}")
+    elif "endpoint" in context:
+        out.append(f"Endpoint: {context['endpoint']} (workspace and actor set by server credential)")
+    else:
+        location = f"{context['database']}, " if "database" in context else ""
+        out.append(f"Daymark: {location}workspace {context['workspace']}, actor {context['actor']}")
+    out.append(now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a") + ", " + tasks.timezone)
     counts = tasks.summary()
-    out = [
-        GUIDE,
-        "",
-        *([f"Database: {where}. Other workspaces are separate and not shown."] if where else []),
-        "Now ("
-        + now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a")
-        + ", "
-        + tasks.timezone
-        + ")",
-    ]
-    out.append(
-        "  " + ", ".join(f"{value} {key.replace('_', ' ')}" for key, value in counts.items())
-    )
-    memories = tasks.memories()
-    if memories:
-        out.append("Remembered")
-        out.extend(f"  - {memory['title']}  ({memory['id']})" for memory in memories[:50])
+    out.append("  " + ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in counts.items()))
     top = tasks.ready(limit=5)
     if top:
         out.append("Most pressing")
         out.extend("  " + line(item, now) for item in top)
+    memories = tasks.memories()
+    if memories:
+        out.append("Remembered")
+        out.extend(f"  - {memory['title']}  ({memory['id']})" for memory in memories[:50])
+        if len(memories) > 50:
+            out.append(f"  {len(memories) - 50} more. Use `daymark find TEXT --kind memory`.")
+    if not brief:
+        out.extend(["", GUIDE])
     return "\n".join(out)

@@ -2,7 +2,7 @@
 
 > A task system that simplifies the complexities of real life. For AI agents handling a person's projects and life: separate hard deadlines from plans, fixed and after-completion recurrence, a single "what is ready now" rule, claims, notes, proposals a person accepts, and durable reminders. One SQLite file; no cloud, model or account. Python 3.11+, MIT.
 
-Start: `daymark init`, then `daymark prime` (prints the rules, commands and current state).
+Start with `daymark init` for a per-user database or `daymark init --here` for a project. Run `daymark prime` for live work and the workflow guide. Returning sessions can use `daymark prime --brief`.
 
 ## Docs
 
@@ -11,3 +11,6 @@ Start: `daymark init`, then `daymark prime` (prints the rules, commands and curr
 - [README](https://github.com/lavallee/daymark/blob/main/README.md): install, quickstart, the typed engine
 - [Decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md): the contract behind each default
 - [Operations](https://github.com/lavallee/daymark/blob/main/docs/operations.md): HTTP service, reminder worker, backup and restore
+
+- [Working preferences](https://github.com/lavallee/daymark/blob/main/docs/working-preferences.md) covers one-call changes and explicit workspace preferences.
+- [MCP clients](https://github.com/lavallee/daymark/blob/main/docs/mcp.md) covers stdio setup, replay and structured results.

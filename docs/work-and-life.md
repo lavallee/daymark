@@ -2,7 +2,7 @@
 
 Daymark's aim is a task system that simplifies the complexities of real life.
 This page explains what that asks of the design, how Daymark relates to Beads,
-the best-known task tracker built for coding agents, and what is deliberately
+a dependency-aware task tracker built for coding agents, and what is deliberately
 left to the layers above. It records design reasoning; the
 [decisions](decisions.md) table is the contract.
 
@@ -72,6 +72,9 @@ for that and Daymark is not. If the work is a person's commitments, where the
 hard part is time, recurrence, waiting and consent, that is what Daymark
 models. The two can sit side by side: a Daymark task can carry a source
 reference to an issue elsewhere without copying it.
+
+For a recent test of startup, handoff and task selection, see the
+[agent journeys](research/agent-journeys.md).
 
 ## One substrate, many owners of truth
 

@@ -6,7 +6,9 @@ one view and missing from another. Nothing in this module writes.
 
 from __future__ import annotations
 
+import heapq
 import json
+import sqlite3
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -149,29 +151,114 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, s
     if next_move not in (None, "person", "answer", "agent"):
         raise DomainError("invalid", "next_move must be person, answer or agent")
     now = normalize_now(now)
+    return _read_ready(store, workspace, now, owner, next_move, scope, limit=limit)
+
+
+def _readiness_reasons(item, now, owner, *, blocked, has_children):
+    """Facts that keep a task out of an unfiltered ready list for this actor."""
+    if item["archived"]:
+        yield "archived"
+    if item["status"] != "open":
+        yield item["status"]
+    if has_children:
+        yield "active_children"
+    if not _started(item, now):
+        yield "future_start"
+    if item["recurrence"] and item["planned"] and day_offset(item["planned"], now) > 0:
+        yield "future_round"
+    if blocked:
+        yield "dependencies"
+    holder = claim_holder(item, now)
+    if holder is not None and holder != owner:
+        yield "claimed_elsewhere"
+
+
+# Only these fields affect eligibility or order. Reading a queue of ten
+# thousand tasks should not materialize ten thousand descriptions and note
+# trails. The full records for the selected page are fetched at the end.
+_READY_FIELDS = (
+    "earliest_start",
+    "planned",
+    "recurrence",
+    "claimed_by",
+    "claim_until",
+    "deadline",
+    "latest_target",
+    "priority",
+    "focus",
+    "created_at",
+    "next_move",
+    "scope",
+)
+
+
+def _ready_candidates(store, workspace, next_move, scope):
+    base = (
+        " FROM daymark_entities WHERE workspace=? AND kind='task' AND status='open' AND archived=0"
+    )
+    paths = ",".join(f"'$.{field}'" for field in _READY_FIELDS)
+    query = f"SELECT id,json_extract(data,{paths})" + base
+    args = [workspace]
+    if next_move is not None:
+        query += " AND json_extract(data,'$.next_move')=?"
+        args.append(next_move)
+    if scope is not None:
+        query += " AND coalesce(json_extract(data,'$.scope'),'')=?"
+        args.append(scope)
+    try:
+        rows = store.db.execute(query, args)
+    except sqlite3.OperationalError as exc:
+        # JSON functions were optional on older SQLite builds. The ordinary
+        # entity representation remains a supported source for embedded users.
+        if "no such function: json_extract" not in str(exc):
+            raise
+        for (data,) in store.db.execute("SELECT data" + base, (workspace,)):
+            item = json.loads(data)
+            if (next_move is None or item["next_move"] == next_move) and in_scope(item, scope):
+                yield item
+        return
+    for id, values in rows:
+        yield {
+            "id": id,
+            "status": "open",
+            "archived": False,
+            **dict(zip(_READY_FIELDS, json.loads(values))),
+        }
+
+
+def _read_ready(store, workspace, now, owner, next_move, scope, *, limit=None):
+    """Count ready items or hydrate the top page, inside one read snapshot."""
     with store._lock:
         if not _usable(store):
-            return []
-        tasks = store._rows(workspace, kind="task", status=["open"])
-        statuses = _statuses(store, workspace, [ref for t in tasks for ref in t["depends_on"]])
-        containers = _parents_with_live_children(store, workspace)
-    result = []
-    for item in tasks:
-        holder = claim_holder(item, now)
-        if (
-            item["id"] in containers
-            or not _started(item, now)
-            # The next round of a repeating task waits for its planned day.
-            or (item["recurrence"] and item["planned"] and day_offset(item["planned"], now) > 0)
-            or any(statuses.get(ref) not in DONE for ref in item["depends_on"])
-            or (holder is not None and holder != owner)
-            or (next_move is not None and item["next_move"] != next_move)
-            or not in_scope(item, scope)
-        ):
-            continue
-        result.append(item)
-    result.sort(key=lambda item: urgency(item, now)[0])
-    return result[:limit]
+            return 0 if limit is None else []
+        with store._transaction(write=False):
+            refs = store.db.execute(
+                "SELECT r.source_id,r.target_id FROM daymark_refs r JOIN daymark_entities e "
+                "ON e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? "
+                "AND r.field='depends_on' AND e.kind='task' AND e.status='open' AND e.archived=0",
+                (workspace,),
+            ).fetchall()
+            statuses = _statuses(store, workspace, (target for _, target in refs))
+            blocked = {id for id, target in refs if statuses.get(target) not in DONE}
+            containers = _parents_with_live_children(store, workspace)
+            eligible = (
+                item
+                for item in _ready_candidates(store, workspace, next_move, scope)
+                if not any(
+                    _readiness_reasons(
+                        item,
+                        now,
+                        owner,
+                        blocked=item["id"] in blocked,
+                        has_children=item["id"] in containers,
+                    )
+                )
+            )
+            if limit is None:
+                return sum(1 for _ in eligible)
+            top = heapq.nsmallest(limit, eligible, key=lambda item: urgency(item, now)[0])
+            full = _fetch(store, workspace, (item["id"] for item in top))
+            return [full[item["id"]] for item in top]
 
 
 def agenda(store, workspace, *, now=None, days=7, scope=None):
@@ -213,11 +300,57 @@ def agenda(store, workspace, *, now=None, days=7, scope=None):
     return out
 
 
-def context(store, workspace, id, *, history=10):
+def activity(store, workspace, *, after=None, limit=20):
+    """Return a bounded page of workspace changes in chronological order.
+
+    Without a cursor, start at the most recent page. With a cursor, return only
+    later events. The page and its head share one SQLite read transaction.
+    """
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise DomainError("invalid", "Activity limit must be between 1 and 100")
+    if after is not None and (type(after) is not int or after < 0):
+        raise DomainError("invalid", "Activity cursor must be a nonnegative integer")
+    with store._transaction(write=False):
+        head = store.head(workspace)
+        if after is not None and after > head:
+            raise DomainError("conflict", "Cursor is ahead of this workspace. Read activity again without a cursor.")
+        if after is None:
+            # Imported histories may have gaps, so counting backwards from the
+            # head cursor is not equivalent to selecting the last N events.
+            previous = store.db.execute(
+                "SELECT seq FROM daymark_event_cursors WHERE workspace=? "
+                "ORDER BY seq DESC LIMIT 1 OFFSET ?", (workspace, limit),
+            ).fetchone()
+            after = previous[0] if previous else 0
+        events = store.events(workspace, after=after, limit=limit)
+    items = []
+    for event in events:
+        before, end = event["before_data"], event["after_data"]
+        entity = end or before
+        item = {
+            "seq": event["seq"], "at": event["created_at"], "action": event["action"],
+            "id": event["entity_id"], "kind": entity["kind"], "title": entity.get("title", ""),
+            "actor": event["actor"],
+        }
+        if event["action"] == "note" and end and end.get("notes"):
+            item["note"] = end["notes"][-1]
+        elif before and end:
+            item["changed"] = sorted(
+                key for key in end if key not in {"version", "updated_at"}
+                and before.get(key) != end[key]
+            )
+        items.append(item)
+    return {"events": items, "cursor": items[-1]["seq"] if items else after, "head": head}
+
+
+def context(store, workspace, id, *, history=10, now=None, owner=None):
     """One entity with what surrounds it: blockers, dependents, children, reminders, history."""
-    item = store.get(workspace, id)
+    now = normalize_now(now)
     with store._lock:
-        _usable(store)
+        if not _usable(store):
+            raise DomainError("not_found", "Entity not found")
+    with store._transaction(write=False):
+        item = store.get(workspace, id)
 
         def linked(field):
             rows = store.db.execute(
@@ -234,13 +367,22 @@ def context(store, workspace, id, *, history=10):
             "e.workspace=? AND e.entity_id=? ORDER BY e.seq DESC LIMIT ?",
             (workspace, id, history),
         ).fetchall()
+        blocked = [ref for ref in item["depends_on"] if statuses.get(ref) not in DONE]
+        children = linked("parent_id")
+        readiness = {}
+        if item["kind"] == "task":
+            active = [x["id"] for x in children if x["kind"] == "task"
+                      and not x["archived"] and x["status"] in ("open", "waiting")]
+            reasons = list(_readiness_reasons(item, now, owner, blocked=blocked, has_children=active))
+            readiness = {"readiness": {"ready": not reasons, "reasons": reasons, "active_children": active}}
         return {
             "entity": item,
-            "blocked_by": [ref for ref in item["depends_on"] if statuses.get(ref) not in DONE],
+            **readiness,
+            "blocked_by": blocked,
             "dependents": [x["id"] for x in linked("depends_on") if x["status"] in LIVE],
             "children": [
                 {"id": x["id"], "title": x["title"], "status": x["status"]}
-                for x in linked("parent_id")
+                for x in children
             ],
             "reminders": [
                 {"id": x["id"], "scheduled_at": x["scheduled_at"], "state": x["reminder_state"]}
@@ -253,12 +395,12 @@ def context(store, workspace, id, *, history=10):
         }
 
 
-def summary(store, workspace, *, now=None, scope=None):
+def summary(store, workspace, *, now=None, scope=None, owner=None):
     """Counts for a one-glance orientation."""
     now = normalize_now(now)
     view = agenda(store, workspace, now=now, days=7, scope=scope)
     return {
-        "ready": len(ready(store, workspace, now=now, limit=1000, scope=scope)),
+        "ready": _read_ready(store, workspace, now, owner, None, scope),
         "overdue": len(view["overdue"]),
         "today": len(view["today"]),
         "next_7_days": sum(len(x) for x in view["upcoming"].values()),
@@ -788,7 +930,7 @@ def tree(store, workspace, root_id, *, depth=3):
         return node(root, 0)
 
 
-def explore(store, workspace, goal_id=None, *, now=None):
+def explore(store, workspace, goal_id=None, *, now=None, scope=None):
     """Conditions and the work moving them, for one goal or the whole workspace.
 
     A condition is on the **frontier** when it is not met and everything it
@@ -808,7 +950,7 @@ def explore(store, workspace, goal_id=None, *, now=None):
         conditions = [
             c
             for c in store._rows(workspace, kind="condition")
-            if goal_id is None or c["goal_id"] == goal_id
+            if (goal_id is None or c["goal_id"] == goal_id) and in_scope(c, scope)
         ]
         requires = {c["id"]: list(c["depends_on"]) for c in conditions}
         statuses = _statuses(store, workspace, [r for refs in requires.values() for r in refs])

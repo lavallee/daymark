@@ -5,18 +5,23 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
-Run `daymark prime` first. It prints the rules, the commands and the current
-state. If it reports no database, run `daymark init`.
+Run `daymark prime` first. Check the workspace and actor, then read current
+work and remembered facts. In a returning session, `daymark prime --brief`
+skips the command guide. If it reports no database, choose `daymark init`
+for a per-user database or `daymark init --here` for this folder.
+
+For project onboarding, `daymark onboard --check AGENTS.md` checks whether the startup instructions are current.
 
 Then work in this loop:
 
 1. `daymark ready` shows what can be done now. `daymark agenda` shows the days
    ahead, what is waiting and what is proposed.
-2. `daymark show ID` before acting: read the notes left by earlier sessions.
-3. `daymark claim ID` if other agents may be active.
+2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions.
+3. Use a distinct `DAYMARK_ACTOR` for each concurrent worker, then `daymark claim ID`.
 4. Do the work. `daymark note ID "what happened"` whenever you learn something
-   or stop.
-5. `daymark done ID`, or `daymark wait ID --on WHO` if it now depends on
+   that affects the task. When stopping mid-task, use
+   `daymark release ID --note "what is verified and what remains"` so another worker can pick it up.
+5. `daymark done ID [--note TEXT]`, or `daymark wait ID --on WHO` if it now depends on
    someone else.
 
 When capturing:
@@ -45,8 +50,30 @@ the person's own short list; do it only when they ask.
 
 If the workspace has a profile, prefer `daymark advise` to `daymark ready`: it
 applies the person's chosen way of working and lists what to raise with them.
+For a temporary request such as “show two today,” use `daymark advise --set
+shortlist.size=2`. Save it with `daymark profile --set shortlist.size=2` only
+when the person asks for that workspace preference.
+For a recurring situation, `daymark profile --save-as NAME` keeps a named
+copy. Use `daymark advise --profile NAME` for that situation. Saved names and
+the active profile are shared across callers of this local workspace.
 For a goal, `daymark explore GOAL` shows what must be true and what is stuck.
 
 Add `--json` for structured output and `--op NAME` to make a write safe to
 retry. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
 5 is an invalid request with the broken rule on standard error.
+
+
+At session pickup, `daymark activity` shows recent changes, including handoff
+notes. To continue from a saved workspace cursor, run
+`daymark activity --after CURSOR`. Read more pages while the JSON `cursor`
+is below `head`.
+
+With MCP, call `daymark_prime` first. Each write tool takes `op`: keep it
+for retries of that same write. Read `structuredContent.id` from a successful
+write on protocol revision 2025-06-18 or newer.
+
+To select work from an agent queue, use `daymark --as WORKER take`, optionally
+with `--scope NAME` and `--minutes N`. It claims one ready, unclaimed task
+explicitly marked `--move agent`. Each worker needs a distinct name or HTTP
+principal. JSON `null` means the queue is empty. Use a fresh `--op` for each
+new selection and reuse it only to retry that selection.

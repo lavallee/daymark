@@ -105,6 +105,7 @@ Decision date: 2026-11-15. [Architecture](architecture.md) gives the design and
 | S06 Plugins load by name | Entry points in `daymark.strategies`, imported only when a profile names one | Installing a package never runs its code by itself. No hook may rewrite a write. |
 | S07 Conditions | A `condition` kind with a judged state; its status follows the state | A condition belongs to a goal, cannot be proposed, parked or repeated, and a write that sets its status against its state is refused. "Met" reads as completed, so existing dependency rules apply unchanged. Reopening a met condition marks it unmet; bringing back an archived or dropped one keeps its assessment. Frontier and gap are kernel facts; choosing the bottleneck is a strategy's judgement. |
 | S08 Kernel admission | A field enters the kernel when three independent methods or clients need it stored, or an invariant depends on it | Otherwise it is plugin data. Existing fields that fail this test are listed as debt in the architecture document. |
+| S09 Personal adjustments | A temporary instruction applies to one advice request. Named copies and active defaults are explicit workspace settings. | A saved copy retains strategy order and parameters, can be exported on its own, and has a version checked on replacement or removal. Adopting it copies its configuration. The workspace's active setting guards edits against intervening writes. |
 
 These choices deliberately avoid parity claims with any surveyed product. A future
 feature should reopen its linked decision with a concrete use case, migration
@@ -126,3 +127,43 @@ Adding a property-testing runtime is deferred; a new dependency is unnecessary t
 exercise this bounded contract. A useful future generated trace should become a
 small explicit regression before broadening the trial. Neither a bounded run nor
 an inspected upstream test is a proof of all interleavings or deployment behavior.
+
+
+## Starting a session
+
+Show the current workspace, actor and live work before the command guide.
+A returning session can opt into a brief view. Over HTTP the credential selects
+the workspace and actor. Ready counts and task listings use the same claim
+perspective, including work claimed by the current actor. The count includes
+every matching task, even when only the first page is displayed.
+
+
+## MCP results and retries
+
+Clients negotiate a supported, dated protocol revision. Invalid requests return
+JSON-RPC errors. A well-formed tool call that Daymark refuses returns an error
+tool result so the agent can correct it. All write tools accept an operation ID.
+Revisions with structured results expose the committed ID and version alongside
+the existing human-readable line. A receipt describes the original write.
+
+### Taking work from an agent queue
+
+`take` uses the canonical ready order and selects only an unclaimed task
+whose recorded next move is `agent`. This lets a worker request one piece of
+authorized work without treating every open commitment as delegated. A named
+local actor or an authenticated HTTP principal owns the claim. Selection,
+the version check on the selected entity, and its ordinary claim event
+share one database transaction. The workspace-level request uses expected
+version zero because it names no entity. Its receipt binds the actor, scope
+and lease duration to the selected task or the empty result. Replaying a
+selection cannot claim more work.
+
+
+## Initializing a project folder
+
+`init --here` selects the current folder explicitly. If an explicit database
+setting points elsewhere, the command reports the conflict before creating
+either database. In a project store, Daymark writes ignore patterns for its
+SQLite file and SQLite sidecars when the directory has no ignore file.
+The project owner controls existing ignore rules. Project instruction updates
+remain opt-in and preserve the text around Daymark's marked section.

@@ -9,15 +9,19 @@ sessions. This page is the whole everyday surface. All examples are synthetic.
 daymark prime
 ```
 
-`prime` prints the working rules, the command list, counts of what is ready,
-overdue, due today, waiting and proposed, every remembered fact, and the five
-most pressing tasks. Read it before anything else. If no database exists it
-says so and names the fix: `daymark init` for a per-user database, or
-`daymark init --here` for one that belongs to the current folder.
+`prime` starts with the active session, counts, up to five ready tasks and up
+to fifty remembered facts, then prints the command guide. For a returning
+session use `daymark prime --brief`. For a program use `daymark prime --json`.
+Local sessions identify the database, workspace, actor and timezone. HTTP
+sessions identify the endpoint and use the workspace and actor bound to the
+credential. The ready count includes the current actor's claims.
+
+If there is no database, choose `daymark init` for a per-user database or
+`daymark init --here` for a database in the current folder.
 
 `daymark onboard` prints a short section for an `AGENTS.md` or `CLAUDE.md`
 file; `daymark onboard --write AGENTS.md` inserts it, and refreshes it in place
-on later runs.
+on later runs. Check it without changing the file with `daymark onboard --check AGENTS.md`. A missing or outdated section exits 1. A malformed section is left for the author to inspect.
 
 ## The rules Daymark holds you to
 
@@ -40,7 +44,7 @@ on later runs.
 | --- | --- |
 | `daymark ready [-n N] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. |
 | `daymark agenda [--days N]` | Overdue, today, each coming day, waiting, proposed. Each task appears once. |
-| `daymark show ID` | One entity: the four dates with the phrase originally used, blockers, what it unblocks, children, reminders, notes, history. |
+| `daymark show ID` | One entity with its dates, blockers, dependents, children, reminders, notes and history. For tasks it explains each fact keeping the item out of this actor’s ready list. |
 | `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. |
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
 | `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
@@ -71,7 +75,7 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | Command | Effect |
 | --- | --- |
 | `focus ID [--rank N]` / `unfocus ID` | Put a task on, or take it off, the person's own short list. Focus is their ordering, set at their request. It is not a date or a priority, and finishing a task clears it. |
-| `claim ID [--minutes N]` / `release ID` | Take or give back a task. A claim lapses on its own (default 60 minutes), so a crashed session cannot hold work forever. |
+| `claim ID [--minutes N]` / `release ID [--note TEXT]` | Take or give back a task. A claim lapses on its own (default 60 minutes), so a crashed session cannot hold work forever. |
 | `note ID "text"` | Append a progress note with your actor name and the time. Notes cannot be rewritten. |
 | `done ID [--note T]` | Complete. A repeating task creates its next round, named `ID.1`, `ID.2`, and so on. |
 | `skip ID` | Pass over one round of a repeating task. Nothing is recorded as completed. |
@@ -185,8 +189,8 @@ you offer the person:
 
 ```sh
 daymark strategies            # what exists, and how well each idea is supported
-daymark profile gentle        # adopt one: plain, assistant, gentle, dense
-daymark profile --set shortlist.size=5 --drop first-step
+daymark advise --profile gentle --set shortlist.size=2    # try it once
+daymark profile gentle --set shortlist.size=2             # save it for this workspace
 daymark advise                # picks, then what the strategies noticed
 ```
 
@@ -195,6 +199,22 @@ waiting on a decision; ask them together", "due in 9 days with no day planned
 for it"), and a note names the tasks it is about. If the profile holds tasks
 back it says how many. Choose or change a profile only when the person asks:
 it is their way of working, not yours.
+
+Treat “just show me two today” as a one-call instruction. Try
+`daymark advise --set shortlist.size=2` and leave the saved profile alone.
+If the person says “always show me two here,” `daymark profile --set shortlist.size=2`
+applies the same adjustment to the workspace. To leave a strategy out of a
+preview, use `advise --drop STRATEGY`. Through MCP, pass `view="advise"` with
+optional `profile`, `set` and `drop` on `daymark_view`. The last two take
+lists of strings. [Working with a person's preferences](working-preferences.md)
+gives examples of turning feedback into one reversible change.
+
+When someone asks to reuse a configuration occasionally, `daymark profile
+--save-as NAME` saves a named copy in the local workspace. Inspect it with
+`daymark profile --saved NAME` and use it with `advise --profile NAME`. To
+change or remove an existing copy, pass the version you just read using
+`--if-version N`. MCP's `daymark_view` accepts `view="profiles"` with an
+optional `profile` name for inspection.
 
 ## Goals and what must be true
 
@@ -273,6 +293,9 @@ that was broken. With `--json` the same content is a JSON object.
 
 ## MCP
 
+For a workspace-bound client configuration, a handoff example, write receipts
+and retry behavior, see [Use Daymark from an MCP client](mcp.md).
+
 ```json
 {"mcpServers": {"daymark": {"command": "daymark", "args": ["mcp"]}}}
 ```
@@ -316,3 +339,64 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
 - One SQLite file is the authority. There is no sync between machines.
 - The default reminder worker records deliveries; it sends nothing. See the
   [operations guide](operations.md).
+
+
+## Hand off unfinished work
+
+Give concurrent workers distinct actor names. A claim hides the task from other
+actors’ ready lists until its holder releases it or the lease expires. Anyone
+who knows the ID can read the holder, expiry and progress in `daymark show ID`.
+
+```sh
+daymark --as writer claim draft
+daymark --as writer release draft --note "Checked the first two sections. Review the index next."
+daymark --as reviewer show draft
+daymark --as reviewer claim draft
+```
+
+The release and its note commit together. If another worker already holds the
+lease, the command reports a conflict and writes nothing. Use
+`done ID --note TEXT` when the work is complete. It records the note and
+completion together. Retry either write with the same `--op` value if its
+reply is lost. In MCP, pass the note as `text` to the `release` or `done`
+action.
+
+
+### Pick up changes across sessions
+
+`daymark activity` shows the latest 20 changes in this workspace, oldest
+first. Each line identifies the task, change and recorded actor. A note
+includes the start of its text. Use `daymark show ID` for the full record.
+
+Keep the cursor printed at the end. On your next visit, run
+`daymark activity --after CURSOR`. Set `--limit N` for 1–100 changes per
+page. In JSON, continue from `cursor` while it is below `head`. Starting
+without a cursor shows the latest page. Use `--after 0` to read from the
+beginning. A cursor belongs to the database and workspace it came from.
+
+Python callers use `tasks.activity(after=cursor, limit=20)`. HTTP exposes
+`GET /v1/activity?after=CURSOR`. In MCP use `daymark_view` with
+`{"view":"activity","after":42}`.
+
+### Let several workers take from one queue
+
+Mark the tasks an agent may do with `--move agent`. Give each local worker
+its own actor name. The following command selects the first unclaimed ready
+task in the proofs scope and claims it in one transaction.
+
+```sh
+daymark --as proof-worker-2 take --scope proofs --minutes 30 --op pickup-42
+```
+
+The normal ready order applies, including the person's focus order. `take`
+passes over every live claim, including the worker's own. It also passes
+over a person's tasks, decisions and tasks whose next move is unset. Use
+`claim ID` when choosing a particular task. Over HTTP, the worker identity
+comes from its bearer token.
+
+An empty queue succeeds with JSON `null`. A retry with the same operation ID
+returns the original result, even if work has since become available or the
+lease has expired. Start a new selection with a new operation ID. An
+operation ID reused by another worker or with different selection parameters
+gets a conflict. In MCP, call `daymark_act` with
+`{"action":"take","scope":"proofs","op":"pickup-42"}`.

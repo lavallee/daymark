@@ -4,6 +4,28 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+- Project initialization adds a database-specific Git ignore file when one is absent. It refuses a conflicting database location with `--here`. `onboard --check FILE` checks project instructions without editing them. Refreshes preserve surrounding content and line endings.
+- Task details explain every applicable readiness constraint from the current actor’s perspective.
+
+- Try profile adjustments for one call with `advise --set` or `--drop`. The
+  optional `time-fit` strategy offers tasks individually estimated to fit a
+  stated window. Save a reusable configuration with `profile --save-as NAME`,
+  inspect or export it with `profile --saved NAME`, and choose it when needed
+  with `advise --profile NAME`. Saved copies have versions for safe updates.
+  Plain and gentle advice only fetch the ready queue for ordinary-sized lists.
+
+- `daymark --as WORKER take [--scope NAME]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.
+
+- MCP negotiates supported protocol revisions, distinguishes request errors from tool refusals,
+  validates arguments before writing, and accepts replay keys on every write. Modern clients
+  receive a machine-readable ID and version with each successful write.
+
+- `daymark activity [--after CURSOR]` reads recent edits and handoff notes in a compact page. Available through Python, HTTP and MCP.
+
+- `prime` shows the active session and live work first. Use `--brief` to skip the guide. Structured output includes session context. The ready count includes the actor’s claims and covers workspaces larger than 1,000 ready tasks.
+
+- `release ID --note TEXT` hands unfinished work back with an attributed note. `done ID --note TEXT` now commits the closing note and completion in a single transaction. `show ID` displays the expiry of an active claim.
+
 ## [0.5.0] - 2026-11-15
 
 ### Upgrading

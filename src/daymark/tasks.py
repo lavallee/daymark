@@ -289,14 +289,16 @@ _DATE_FIELDS = {
 class Tasks:
     """Plain verbs for one workspace. ``actor`` names who is acting, for claims and notes."""
 
-    def __init__(self, engine, workspace="default", *, actor="agent", timezone=None, now=None):
+    def __init__(self, engine, workspace="default", *, actor=None, timezone=None, now=None):
         self.engine = engine
+        self.workspace = workspace
         # The HTTP client is already bound to a workspace by its credential.
         remote = type(engine).__name__ == "Client"
         self._ws = () if remote else (workspace,)
         # Over HTTP the server records its authenticated principal instead.
-        self._who = {} if remote else {"actor": actor}
-        self.actor = actor
+        self._take_identity = remote or actor is not None
+        self.actor = "agent" if actor is None else actor
+        self._who = {} if remote else {"actor": self.actor}
         self.timezone = timezone or local_timezone()
         ZoneInfo(self.timezone)
         self._now = now
@@ -306,9 +308,41 @@ class Tasks:
     def now(self):
         return normalize_now(self._now)
 
-    def _replayed(self, op):
-        receipt = getattr(self.engine, "receipt", None)
-        return receipt(*self._ws, op) if op and receipt else None
+    @staticmethod
+    def _op_id(op):
+        if op is None:
+            return uuid.uuid4().hex
+        if not isinstance(op, str) or not 1 <= len(op) <= 200:
+            raise DomainError("invalid", "Operation ID must be 1 to 200 characters")
+        return op
+
+    @staticmethod
+    def _part_id(base, part):
+        key = f"{base}:{part}"
+        return key if len(key) <= 200 else str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:" + key))
+
+    def _retry_context(self, op, action, id=None):
+        """Look up the original read, never trust an arbitrary result under the same ID."""
+        lookup = getattr(self.engine, "receipt_context", None)
+        if not op or not lookup:
+            return None
+        return lookup(*self._ws, op, action=action, entity_id=id, **self._who)
+
+    @staticmethod
+    def _retry_dates(fields, result, date_keys):
+        # Keep the first absolute value when the caller retries the same relative
+        # expression in the same timezone. The kernel still compares the entire
+        # original request, including which fields were supplied.
+        out = dict(fields)
+        for key in date_keys:
+            value, saved = fields.get(key), result.get(key)
+            if (
+                isinstance(value, dict) and isinstance(saved, dict)
+                and value.get("expression") and value["expression"] == saved.get("expression")
+                and value["timezone"] == saved["timezone"]
+            ):
+                out[key] = saved
+        return out
 
     def _new_id(self):
         for attempt in range(40):
@@ -324,31 +358,28 @@ class Tasks:
                 raise
         return "dm-" + uuid.uuid4().hex
 
-    def _act(self, id, action, fields=None, *, op=None, build=None):
-        """Run an action against the current version, retrying if someone else wrote first."""
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
+    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=()):
+        """Apply the caller's intent or verify it against the original kernel receipt."""
+        key = self._op_id(op)
         for attempt in range(4):
-            current = self.engine.get(*self._ws, id)
-            payload = {"id": id, **(build(current) if build else (fields or {}))}
+            retry = self._retry_context(op, action, id)
+            current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            changes = build(current, retry) if build else (fields or {})
+            if retry:
+                changes = self._retry_dates(changes, retry["result"], date_keys)
+            version = expected_version if expected_version is not None else current["version"]
             try:
                 return self.engine.execute(
-                    *self._ws,
-                    op or uuid.uuid4().hex,
-                    action,
-                    payload,
-                    expected_version=current["version"],
+                    *self._ws, key, action, {"id": id, **changes}, expected_version=version,
                     **self._who,
                 )
             except Exception as exc:
-                conflict = getattr(exc, "code", None) == "conflict" or (
-                    getattr(exc, "status_code", None) == 409
-                )
-                if not conflict or attempt == 3:
+                if getattr(exc, "code", None) != "conflict" or retry or attempt == 3:
                     raise
-                if self.engine.get(*self._ws, id)["version"] == current["version"]:
-                    raise  # A real refusal (for example a live claim), not a stale read.
+                if op and self._retry_context(op, action, id):
+                    continue  # A simultaneous request recorded its result after our first read.
+                if expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
+                    raise  # Stale explicit precondition or a domain refusal such as a live claim.
 
     @staticmethod
     def _missing(exc):
@@ -471,10 +502,11 @@ class Tasks:
                 out[key] = value
         return out
 
-    def _recurrence(self, every, fields, after_completion, index=0):
+    def _recurrence(self, every, fields, after_completion, index=0, fallback=None):
         anchor = (
             fields.get("planned")
             or fields.get("deadline")
+            or fallback
             or parse_when("today", self.timezone, self._now)
         )
         anchor = {**anchor, "expression": None}
@@ -508,12 +540,16 @@ class Tasks:
         waiting_on, labels, contexts, metadata. ``source`` is "system:kind:id"; a
         second add with the same source is refused, so captures are not duplicated.
         """
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
+        retry = self._retry_context(op, "create", id)
         payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields))}
+        if retry:
+            date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
+            payload = self._retry_dates(payload, retry["result"], date_keys)
         if every:
-            payload["recurrence"] = self._recurrence(every, payload, after_completion)
+            original = (retry["result"].get("recurrence") or {}) if retry else {}
+            payload["recurrence"] = self._recurrence(
+                every, payload, after_completion, fallback=original.get("anchor"),
+            )
             if not payload.get("planned") and not payload.get("deadline"):
                 payload["planned"] = payload["recurrence"]["anchor"]
         if proposed:
@@ -527,18 +563,29 @@ class Tasks:
             payload["source_refs"] = [dict(zip(("system", "kind", "id"), parts))]
         if note:
             # Part of the same write, so a retry can never lose or repeat it.
+            saved = next(iter(retry["result"]["notes"]), {}) if retry else {}
             payload["notes"] = [
                 {
-                    "id": uuid.uuid4().hex[:12],
-                    "at": normalize_now().isoformat(),
+                    "id": saved.get("id") or uuid.uuid4().hex[:12],
+                    "at": normalize_now(saved.get("at")).isoformat(),
                     "author": self.actor,
                     "text": note,
                 }
             ]
-        payload["id"] = id or self._new_id()
-        return self.engine.execute(
-            *self._ws, op or uuid.uuid4().hex, "create", payload, expected_version=0, **self._who
-        )
+        payload["id"] = id or (retry["result"]["id"] if retry else self._new_id())
+        try:
+            return self.engine.execute(
+                *self._ws, self._op_id(op), "create", payload, expected_version=0, **self._who
+            )
+        except Exception as exc:
+            if retry or not op or getattr(exc, "code", None) != "conflict":
+                raise
+            if not self._retry_context(op, "create", id):
+                raise
+            return self.add(
+                title, kind=kind, every=every, after_completion=after_completion, note=note,
+                proposed=proposed, source=source, id=id, op=op, **fields,
+            )
 
     def propose(self, title, **fields):
         """Suggest a task for a person to accept or dismiss. It is not ready work."""
@@ -556,33 +603,50 @@ class Tasks:
 
     # -- change
 
-    def edit(self, id, *, every=None, after_completion=False, op=None, **fields):
-        """Change fields. Pass an empty string to clear a date or link."""
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
+    def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, **fields):
+        """Edit fields, optionally refusing if the version observed by the caller is stale."""
+        if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
+            raise DomainError("invalid", "expected_version must be a positive integer")
         changes = self._fields(self._resolve(dict(fields)))
 
-        def build(current):
-            out = dict(changes)
+        def build(current, retry):
+            date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
+            out = self._retry_dates(changes, retry["result"], date_keys) if retry else dict(changes)
             if every == "":
                 out["recurrence"] = None
             elif every:
                 merged = {**current, **out}
                 index = (current["recurrence"] or {}).get("occurrence_index", 0)
-                out["recurrence"] = self._recurrence(every, merged, after_completion, index)
+                fallback = ((retry["result"].get("recurrence") or {}).get("anchor") if retry else None)
+                out["recurrence"] = self._recurrence(every, merged, after_completion, index, fallback)
             return out
 
-        return self._act(id, "update", op=op, build=build)
+        return self._act(id, "update", op=op, build=build, expected_version=expected_version)
 
     def note(self, id, text, *, op=None):
         """Append a progress note: what was done, learned, or left for the next session."""
         return self._act(id, "note", {"text": text, "author": self.actor}, op=op)
 
+    def _with_note(self, id, action, fields, note, op):
+        base = self._op_id(op)
+        note_op = str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:note:" + base))
+        # 0.5.0 appended the closing note before completing. Validate its own
+        # receipt before finishing an interrupted legacy operation.
+        old_note = op and action == "complete" and self._retry_context(op + ":note", "note", id)
+        if not note:
+            if old_note or (op and self._retry_context(note_op, "note", id)):
+                raise DomainError("conflict", "Operation ID belongs to a request with a note")
+            return self._act(id, action, fields, op=op)
+        if old_note:
+            self.note(id, note, op=op + ":note")
+            return self._act(id, action, fields, op=op)
+        return self._paired_actions(
+            id, (note_op, "note", {"text": note, "author": self.actor}), (base, action, fields),
+            retryable=op is not None,
+        )
+
     def done(self, id, *, note=None, op=None):
-        if note:
-            self.note(id, note, op=(op + ":note") if op else None)
-        return self._act(id, "complete", op=op)
+        return self._with_note(id, "complete", {}, note, op)
 
     def skip(self, id, *, op=None):
         """Pass over one occurrence of a recurring task without recording completion."""
@@ -613,21 +677,44 @@ class Tasks:
             id, "claim", {"owner": self.actor, "lease_seconds": int(minutes) * 60}, op=op
         )
 
-    def release(self, id, *, op=None):
-        return self._act(id, "release", {"owner": self.actor}, op=op)
+    def take(self, *, scope=None, minutes=60, op=None):
+        """Claim the first unclaimed ready task explicitly delegated to an agent.
+
+        Selection and claim share one transaction. Returns None for an empty
+        queue. Repeating an operation returns its original selection or None.
+        """
+        if not self._take_identity:
+            raise DomainError("invalid", "Choose a distinct worker with --as NAME or DAYMARK_ACTOR")
+        if type(minutes) is not int or not 1 <= minutes <= 10080:
+            raise DomainError("invalid", "Claim minutes must be between 1 and 10080")
+        result = self.engine.execute(
+            *self._ws, self._op_id(op), "take",
+            {"owner": self.actor, "scope": scope, "lease_seconds": minutes * 60},
+            expected_version=0, **self._who,
+        )
+        return result["task"]
+
+    def release(self, id, *, note=None, op=None):
+        """Give back a claim, optionally recording a handoff note in the same transaction."""
+        return self._with_note(id, "release", {"owner": self.actor}, note, op)
 
     def wait(self, id, on, *, until=None, op=None):
         """Park a task on someone or something else; optionally hide it until a date."""
         changes = {"status": "waiting", "waiting_on": on}
         if until:
             changes["earliest_start"] = parse_when(until, self.timezone, self._now)
-        return self._act(id, "update", changes, op=op)
+        return self._act(id, "update", changes, op=op,
+                         date_keys=("earliest_start",) if isinstance(until, str) else ())
 
     def resume(self, id, *, op=None):
         """Stop waiting and make the task actionable now, lifting a future start date."""
 
-        def build(current):
+        def build(current, retry):
             out = {"status": "open", "waiting_on": None}
+            if retry:
+                if current["earliest_start"] and not retry["result"]["earliest_start"]:
+                    out["earliest_start"] = None
+                return out
             if current["earliest_start"]:
                 start, now = Temporal.model_validate(current["earliest_start"]), self.now()
                 today = now.astimezone(ZoneInfo(start.timezone)).date()
@@ -640,7 +727,8 @@ class Tasks:
     def defer(self, id, until, *, op=None):
         """Hide a task from ready work until a date. Its deadline does not move."""
         return self._act(
-            id, "update", {"earliest_start": parse_when(until, self.timezone, self._now)}, op=op
+            id, "update", {"earliest_start": parse_when(until, self.timezone, self._now)}, op=op,
+            date_keys=("earliest_start",) if isinstance(until, str) else ()
         )
 
     def block(self, id, on, *, op=None):
@@ -649,7 +737,7 @@ class Tasks:
             id,
             "update",
             op=op,
-            build=lambda current: {"depends_on": sorted({*current["depends_on"], on})},
+            build=lambda current, retry: {"depends_on": sorted({*current["depends_on"], on})},
         )
 
     def unblock(self, id, on, *, op=None):
@@ -657,7 +745,7 @@ class Tasks:
             id,
             "update",
             op=op,
-            build=lambda current: {"depends_on": [x for x in current["depends_on"] if x != on]},
+            build=lambda current, retry: {"depends_on": [x for x in current["depends_on"] if x != on]},
         )
 
     def remind(self, id, when, *, recipient, channel="recording", op=None):
@@ -681,8 +769,17 @@ class Tasks:
     def get(self, id):
         return self.engine.get(*self._ws, id)
 
+    def activity(self, *, after=None, limit=20):
+        """Recent workspace changes, or the next page after a saved cursor."""
+        return self.engine.activity(*self._ws, after=after, limit=limit)
+
     def show(self, id, history=10):
-        return self.engine.context(*self._ws, id, history=history)
+        return self.engine.context(*self._ws, id, history=history, now=self._now, **self._read_owner())
+
+    def _read_owner(self, mine=True):
+        if not mine:
+            return {}
+        return {"owner": self.actor} if self._ws else {"mine": True}
 
     def ready(self, *, limit=20, move=None, mine=True, scope=None):
         """``scope`` narrows to one scope; ``""`` to tasks that have none."""
@@ -690,7 +787,7 @@ class Tasks:
             *self._ws,
             now=self._now,
             limit=limit,
-            owner=self.actor if mine else None,
+            **self._read_owner(mine),
             next_move=move,
             **({} if scope is None else {"scope": scope}),
         )
@@ -699,9 +796,49 @@ class Tasks:
         extra = {} if scope is None else {"scope": scope}
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
+    def advise(self, *, profile=None, settings=(), drops=(), scope=None):
+        """Run the chosen profile with one-call adjustments, without saving them."""
+        from . import strategies
+
+        chosen = strategies.select_profile(self, profile, settings=settings, drops=drops)
+        return strategies.advise(self, chosen, scope=scope)
+
+    def profile(self, name=None, *, settings=(), drops=()):
+        """Read or adjust the active workspace profile."""
+        from .strategies.preferences import active_profile
+
+        return active_profile(self, name, settings=settings, drops=drops)
+
+    def saved_profiles(self, name=None):
+        """List named profiles, or inspect one saved configuration and version."""
+        from .strategies.preferences import saved_profiles
+
+        entries = saved_profiles(self)
+        if name is None:
+            return entries
+        for entry in entries:
+            if entry["name"] == name:
+                return entry
+        raise DomainError("not_found", "No saved profile with that name", [name])
+
+    def save_profile(self, name, *, profile=None, settings=(), drops=(), expected_version=0):
+        """Save a reusable copy. Replacing a copy requires its current version."""
+        from .strategies.preferences import save_profile
+
+        return save_profile(
+            self, name, profile=profile, settings=settings, drops=drops,
+            expected_version=expected_version,
+        )
+
+    def remove_profile(self, name, *, expected_version):
+        """Remove a named copy at the version the caller observed."""
+        from .strategies.preferences import remove_profile
+
+        return remove_profile(self, name, expected_version=expected_version)
+
     def summary(self, *, scope=None):
         extra = {} if scope is None else {"scope": scope}
-        return self.engine.summary(*self._ws, now=self._now, **extra)
+        return self.engine.summary(*self._ws, now=self._now, **self._read_owner(), **extra)
 
     def condition(self, statement, *, goal, requires=None, state="unknown", id=None, op=None):
         """Record something that must be true for a goal to be reached."""
@@ -717,21 +854,35 @@ class Tasks:
 
     def assess(self, id, state, *, evidence=None, op=None):
         """Say how a condition stands, with the evidence for saying so."""
-        current = self.get(id)
+        retry = self._retry_context(op, "update", id)
+        current = retry["before"] if retry else self.get(id)
         if current["kind"] != "condition":
             raise DomainError("invalid", "Only a condition can be assessed")
-        item = self._act(id, "update", {"condition": state}, op=op)
+        base = self._op_id(op)
+        evidence_op = self._part_id(base, "evidence")
         if evidence:
-            item = self.note(id, evidence, op=(op + ":evidence") if op else None)
-        return item
+            return self._paired_actions(
+                id, (base, "update", {"condition": state}),
+                (evidence_op, "note", {"text": evidence, "author": self.actor}),
+                retryable=op is not None,
+            )
+        if retry and self._retry_context(evidence_op, "note", id):
+            raise DomainError("conflict", "Operation ID belongs to an assessment with evidence")
+        return self._act(id, "update", {"condition": state}, op=op)
 
-    def explore(self, goal=None):
+    def explore(self, goal=None, *, scope=None):
         """Conditions behind a goal, which are next, and where nothing is moving."""
-        return self.engine.explore(*self._ws, goal, now=self._now)
+        extra = {} if scope is None else {"scope": scope}
+        return self.engine.explore(*self._ws, goal, now=self._now, **extra)
 
     def focus(self, id, rank=None, *, op=None):
         """Put a task on the person's short list. Without a rank it goes last."""
-        if rank is None:
+        retry = self._retry_context(op, "update", id) if rank is None else None
+        if retry:
+            rank = retry["result"]["focus"]
+            if rank is None:
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+        elif rank is None:
             placed = [x["focus"] for x in self.find(status="open", limit=10**6) if x["focus"]]
             rank = max(placed, default=0) + 1
         return self._act(id, "update", {"focus": rank}, op=op)
@@ -800,7 +951,7 @@ class Tasks:
         (None clears). Writes planned and latest_target for start and end, keeps a
         timed value's clock time, and moves a deadline only when given one."""
 
-        def build(current):
+        def build(current, retry):
             return plans.schedule(current, timezone=self.timezone, **dates)
 
         return self._act(id, "update", op=op, build=build)
@@ -827,35 +978,46 @@ class Tasks:
         if stage is None:
             return self._act(id, "place", place, op=op)
         if place is None:
+            if op and self._retry_context(self._part_id(op, "place"), "place", id):
+                raise DomainError("conflict", "Operation ID belongs to a move with a position")
             return self._act(id, "update", {"stage": stage}, op=op)
-        replay = self._replayed(op)
-        if replay is not None:
-            return self._replayed(op + ":place") or replay
-        base = op or uuid.uuid4().hex
+        base = self._op_id(op)
+        return self._paired_actions(
+            id, (base, "update", {"stage": stage}), (self._part_id(base, "place"), "place", place),
+            retryable=op is not None,
+        )
+
+    def _paired_actions(self, id, first, second, *, retryable):
+        """Two ordered changes, checked against both original receipts on replay."""
         for attempt in range(4):
-            version = self.engine.get(*self._ws, id)["version"]
+            retry = self._retry_context(first[0], first[1], id) if retryable else None
+            next_retry = self._retry_context(second[0], second[1], id) if retryable else None
+            if next_retry and not retry:
+                # A simultaneous atomic batch may have committed between our reads.
+                retry = self._retry_context(first[0], first[1], id)
+            if bool(retry) != bool(next_retry):
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+            current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            version = current["version"]
+            versions = (version, next_retry["before"]["version"] if next_retry else version + 1)
             operations = [
                 {
-                    "operation_id": base,
-                    "action": "update",
-                    "payload": {"id": id, "stage": stage},
-                    "expected_version": version,
-                },
-                {
-                    "operation_id": base + ":place",
-                    "action": "place",
-                    "payload": {"id": id, **place},
-                    "expected_version": version + 1,
-                },
+                    "operation_id": key,
+                    "action": action,
+                    "payload": {"id": id, **fields},
+                    "expected_version": versions[index],
+                }
+                for index, (key, action, fields) in enumerate((first, second))
             ]
             result = self.engine.batch(*self._ws, operations, atomic=True, **self._who)
             if result["committed"]:
                 return result["results"][-1]["result"]
             error = next(r["error"] for r in result["results"] if r["error"]["code"] != "aborted")
-            stale = error["code"] == "conflict" and (
-                self.engine.get(*self._ws, id)["version"] != version
-            )
-            if not stale or attempt == 3:
+            if retry or error["code"] != "conflict" or attempt == 3:
+                raise DomainError(error["code"], error["message"], error["details"])
+            if retryable and self._retry_context(first[0], first[1], id):
+                continue
+            if self.engine.get(*self._ws, id)["version"] == version:
                 raise DomainError(error["code"], error["message"], error["details"])
 
     def plan(self, project):

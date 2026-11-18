@@ -1,36 +1,52 @@
 # Daymark
 
-**A task system that simplifies the complexities of real life.**
+**Daymark helps a person and their agents decide what can be done now.** It keeps
+deadlines, intentions, dependencies and suggestions distinct, so a new session
+can pick up a project without asking the person to reconstruct it. It runs on
+one SQLite file and needs no account or model.
 
-Real commitments are not a flat list. A passport has a hard deadline; the trip
-you mean to book on Friday is only a plan. The filter is changed three months
-after it was last changed, not on a calendar date. The leak cannot be fixed
-until the plumber calls back. Daymark keeps those differences in the record, so
-an agent or a person can ask one question, "what can be done now?", and trust
-the answer.
+A venue deposit has a deadline. Drafting the invitation is a plan. Sending it
+must wait for approval of the draft. An idea for a poster is still a suggestion.
+Here is how that looks in Daymark.
 
-It is built for AI agents working on a person's projects and life, and for the
-applications around them: one SQLite file, no cloud, no model, no account.
+## Try it in an empty folder
 
-```console
-$ daymark init
-$ daymark add "Renew passport" --due 2030-05-03 -p 1
-$ daymark add "Book flights" --plan fri --id flights
-$ daymark add "Book hotel" --after flights
-$ daymark add "Water the plants" --every "3 days" --after-completion
-$ daymark ready
-dm-k3f9  Water the plants  [planned today; plan 2030-04-03; repeats]
-flights  Book flights  [plan 2030-04-05]
-dm-y2yj  P1  Renew passport  [due 2030-05-03]
-$ daymark done flights --note "Booked, confirmation in the travel folder"
-$ daymark ready            # the hotel is no longer blocked
+Install the CLI with Python 3.11 or newer and uv:
+
+```sh
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
 ```
+
+Run these commands in a new directory with the default database settings.
+`init --here` gives this example its own database.
+
+```sh
+daymark init --here
+daymark add "Pay venue deposit" --id deposit --due +7d --move person
+daymark add "Draft invitation" --id draft --plan tomorrow --move agent
+daymark add "Approve invitation" --id approve --after draft --move person
+daymark propose "Design a poster" --id poster
+daymark ready --move agent
+```
+
+The agent sees `draft`. A plan for tomorrow leaves it actionable today. The
+deposit belongs to the person, the approval waits for the draft, and the poster
+stays in `agenda` for a decision. When the draft is actually ready for review:
+
+```sh
+daymark done draft --note "Draft is in the event folder."
+daymark ready --move person
+```
+
+The person now sees both the deposit and the approval. In a later session,
+`daymark show draft` explains what happened. For recurring work, a team project,
+or an embedded application, see the examples below.
 
 ## For agents
 
-Run `daymark prime` at the start of a session. It prints the working rules, the
-command list and the current state in about 3,000 characters. `daymark onboard
---write AGENTS.md` adds a short section that tells future sessions to do so.
+Run `daymark prime` when a session starts. It identifies the workspace and
+shows what is ready, what is waiting, and which facts earlier sessions kept.
+`daymark onboard --write AGENTS.md` adds the startup instructions to a project.
 
 | You want | Command |
 | --- | --- |
@@ -69,6 +85,9 @@ tasks.add("Renew passport", due="2030-05-03", priority=1)
 for task in tasks.ready():
     print(task["id"], task["title"])
 ```
+
+For a short list during a busy afternoon or a standing preference, see
+[working with a person’s preferences](docs/working-preferences.md).
 
 Read the [agent guide](docs/agents.md) for the full surface, and
 [work and life](docs/work-and-life.md) for how Daymark relates to code-centred
@@ -187,13 +206,7 @@ The Python import is `daymark`; the distribution is `daymark-core`. The current
 release is 0.5.0. Package registry publication is not yet promised. Requires
 Python 3.11 or newer.
 
-To install the command line tool from the tagged release:
-
-```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
-```
-
-Or from a checkout:
+The quickstart above installs the tagged release. To install from a checkout:
 
 ```sh
 git clone https://github.com/lavallee/daymark.git

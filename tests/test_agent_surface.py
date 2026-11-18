@@ -715,7 +715,7 @@ def test_mcp_survives_malformed_requests(tasks):
         assert reply["error"]["code"] == -32602
     reply = handle(tasks, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
         "name": "daymark_view", "arguments": "ready"}})  # fmt: skip
-    assert reply["result"]["isError"]
+    assert reply["error"]["code"] == -32602
 
 
 def test_views_refuse_a_schema_they_cannot_read(tmp_path):

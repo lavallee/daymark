@@ -414,3 +414,154 @@ def test_a_0_4_0_database_upgrades_in_place(tmp_path):
     upgraded.condition("Works after upgrade", goal="fixture-goal", id="works")
     assert upgraded.explore("fixture-goal")["frontier"] == ["works"]
     store.close()
+
+
+def test_temporary_advice_uses_the_same_adjustments_as_adoption(tasks):
+    for i in range(4):
+        tasks.add(f"Studio item {i}", id=f"s{i}", scope="studio")
+    tasks.add("Other item", id="other")
+    saved = strategies.store_profile(tasks, PROFILES["assistant"])
+    before = tasks.engine.events("w", limit=100)
+    options = {"settings": ["shortlist.size=2"], "drops": ["first-step"]}
+    preview = tasks.advise(profile="gentle", scope="studio", **options)
+    assert preview.profile == "gentle (edited)"
+    assert ([x["id"] for x in preview.picks], preview.held_back) == (["s0", "s1"], 2)
+    assert strategies.stored_profile(tasks) == saved
+    assert tasks.engine.events("w", limit=100) == before
+    assert tasks.advise().profile == "assistant"
+    for invalid in ("shortlist.", "shortlist=2", "shortlist.size=0", "shortlist.=2"):
+        code("invalid", tasks.advise, settings=[invalid])
+    assert strategies.stored_profile(tasks) == saved
+    strategies.store_profile(tasks, strategies.select_profile(tasks, "gentle", **options))
+    assert tasks.advise(scope="studio").to_dict() == preview.to_dict()
+
+
+def test_preview_from_cli_and_mcp(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "tasks.sqlite3"))
+    monkeypatch.setenv("DAYMARK_TZ", "UTC")
+    assert main(["init"]) == 0
+    for i in range(3):
+        assert main(["add", f"Studio item {i}", "--id", f"item{i}"]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "advise",
+                "--profile",
+                "gentle",
+                "--drop",
+                "first-step",
+                "--set",
+                "shortlist.size=1",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    preview = json.loads(capsys.readouterr().out)
+    assert (preview["profile"], len(preview["picks"]), preview["held_back"]) == (
+        "gentle (edited)",
+        1,
+        2,
+    )
+    store = Store(str(tmp_path / "tasks.sqlite3"))
+    try:
+        tasks = Tasks(store, timezone="UTC")
+        args = {
+            "view": "advise",
+            "profile": "gentle",
+            "set": ["shortlist.size=1"],
+            "drop": ["first-step"],
+        }
+        reply = handle(
+            tasks,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "daymark_view", "arguments": args},
+            },
+        )
+        assert not reply["result"]["isError"]
+        assert "(2 more ready" in reply["result"]["content"][0]["text"]
+        assert strategies.stored_profile(tasks) == PROFILES["plain"]
+    finally:
+        store.close()
+
+
+def test_time_fit_uses_only_individual_recorded_estimates(tasks):
+    tasks.add("Draft outline", id="short", minutes=15)
+    tasks.add("Check minutes", id="edge", minutes=20, priority=1)
+    tasks.add("Review packet", id="long", minutes=21, priority=1)
+    tasks.add("Ask for an estimate", id="unknown")
+    tasks.add("Later", id="later", start="+1d", minutes=10)
+    tasks.add("Work elsewhere", id="other", scope="studio", minutes=2)
+    advice = tasks.advise(profile="plain", settings=["time-fit.minutes=20"], scope="")
+    assert [x["id"] for x in advice.picks] == ["edge", "short"]
+    assert advice.held_back == 2
+    assert (
+        advice.notes[0].text
+        == "2 individually estimated at 20 min or less. 1 estimated longer. 1 without an estimate."
+    )
+    assert len(tasks.ready(scope="")) == 4
+    empty = tasks.advise(profile="plain", settings=["time-fit.minutes=5"], scope="")
+    assert not empty.picks and empty.held_back == 4
+    assert "No picks for this view." in advice_text(empty)
+    assert "Nothing is ready" not in advice_text(empty)
+    code("invalid", tasks.advise, settings=["time-fit.minutes=0"])
+
+
+def test_scoped_frontier_filters_which_conditions_to_mention_not_what_moves_them(tasks):
+    tasks.goal("Prepare publication", id="pub")
+    tasks.goal("Arrange a delivery", id="delivery")
+    tasks.add(
+        "Signed proof",
+        kind="condition",
+        goal="pub",
+        condition="unknown",
+        id="proof",
+        scope="studio",
+    )
+    tasks.add(
+        "Print slot confirmed",
+        kind="condition",
+        goal="pub",
+        condition="unmet",
+        id="slot",
+        scope="studio",
+    )
+    tasks.add(
+        "Delivery window known",
+        kind="condition",
+        goal="delivery",
+        condition="unknown",
+        id="window",
+        scope="home",
+    )
+    tasks.add("Check the proof", id="check", scope="home", advances=["proof"])
+    view = tasks.explore(scope="studio")
+    assert set(view["frontier"]) == {"proof", "slot"} and view["gaps"] == ["slot"]
+    advice = tasks.advise(profile="assistant", scope="studio").to_dict()
+    assert "window" not in json.dumps(advice)
+    assert advice["suggestions"][0]["advances"] == ["slot"]
+    assert tasks.explore(scope="")["conditions"] == []
+
+
+def test_readiness_limit_message_requires_actual_truncation(tasks, monkeypatch):
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    tasks.add("One", id="a")
+    tasks.add("Two", id="b")
+    tasks.add("Other scope", id="c", scope="studio")
+    assert not tasks.advise(scope="").notes
+    assert "first 2 of 3" in tasks.advise().notes[0].text
+
+
+def test_shortlist_reads_only_the_ready_view(tasks, monkeypatch):
+    def unneeded(*args, **kwargs):
+        pytest.fail("A preview using only ready picks fetched unrelated workspace data")
+
+    tasks.add("Task", id="sample")
+    for method in ("find", "explore", "agenda"):
+        monkeypatch.setattr(tasks, method, unneeded)
+    assert [x["id"] for x in tasks.advise(settings=["shortlist"]).picks] == ["sample"]
+    assert [x["id"] for x in tasks.advise(profile="gentle").picks] == ["sample"]

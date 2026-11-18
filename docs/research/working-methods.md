@@ -1,5 +1,10 @@
 # How people and their assistants actually work: evidence for Daymark's design
 
+The November 18 follow-up on choosing an action draws on current publisher
+guides from Things, Todoist and Getting Things Done. It connects their
+documented practices to one-call changes of view and an optional time window
+based on task estimates. [Working with a person's preferences](../working-preferences.md)
+
 Research date: 2026-11-15. Bounded lookups, not a systematic review. Each row
 says how well supported it is: **clinical** (trials or reviews), **practitioner**
 (people who do the work, describing it), **folk** (widely repeated, untested),

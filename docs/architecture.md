@@ -55,7 +55,7 @@ layer is organised around them:
 | Kind | Examples in practice | Built in today |
 |---|---|---|
 | rank | urgency scores, "eat the frog", an assistant's batching of decisions | `decisions-first`, `frontier-first` |
-| limit | work-in-progress limits, six tasks a day, capacity checks | `shortlist`, `overbooked` |
+| limit | work-in-progress limits, six tasks a day, capacity checks | `shortlist`, `overbooked`, `time-fit` |
 | hygiene | weekly review, staleness warnings, a missing next action | `stale`, `first-step` |
 | follow-through | waiting-for lists, nudges | `waiting-check` |
 | anticipate | preparation worked backward from a date | `lookahead` |
@@ -89,6 +89,14 @@ honest. A profile is a starting point, not a diagnosis.
 
 `daymark advise` runs the workspace's profile. `daymark ready` stays the plain
 kernel fact, so the two can always be compared.
+
+A preview can adjust the current or named profile for one invocation. A
+named copy is saved separately from the active workspace setting. Adopting it
+copies the configuration. An actor changing a named copy supplies the version
+it read. Competing edits to local settings use a transactional comparison of
+the observed value. Existing plugins receive a full strategy snapshot by
+default. A plugin can declare only the additional snapshot fields it reads
+in `Strategy.reads` to avoid unrelated workspace queries.
 
 ## Plugins
 

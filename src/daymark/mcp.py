@@ -10,12 +10,17 @@ import json
 import sys
 
 from . import __version__, render
+from .client import ClientError
 from .models import DomainError
 
+# Only advertise dated revisions for which we implement the tools/stdio surface.
+_PROTOCOLS = ("2024-11-05", "2025-06-18", "2025-11-25")
+_OP = {"type": "string", "minLength": 1}
+
 _FIELDS = {
-    "due": {"type": "string", "description": "Hard deadline. Date grammar below."},
-    "plan": {"type": "string", "description": "Intended day or time; may move freely."},
-    "start": {"type": "string", "description": "Not actionable before this."},
+    "due": {"type": "string", "description": "Hard cutoff."},
+    "plan": {"type": "string", "description": "Intended date."},
+    "start": {"type": "string", "description": "Earliest start."},
     "target": {"type": "string", "description": "Soft latest target."},
     "every": {
         "type": "string",
@@ -30,36 +35,34 @@ _FIELDS = {
     "waiting_on": {"type": "string"},
     "move": {"type": "string", "enum": ["person", "answer", "agent"]},
     "minutes": {"type": "integer", "description": "Estimated effort."},
-    "scope": {"type": "string", "description": "Part of life, e.g. household."},
+    "scope": {"type": "string"},
     "advances": {"type": "array", "items": {"type": "string"}},
-    "stage": {"type": "string", "description": "Board stage; sets status."},
-    "milestone": {"type": "string", "description": "Milestone it counts toward."},
+    "stage": {"type": "string"},
+    "milestone": {"type": ["string", "boolean"], "description": "Milestone ID or marker."},
     "is_milestone": {"type": "boolean"},
     "type": {"type": "string"},
     "values": {"type": "object", "description": "Project fields by id."},
 }
-_DATES = (
-    "Dates: YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, a weekday name, +Nd, +Nw, +Nm. "
-    "Never invent a date; a deadline is a hard cutoff and a plan is an intention."
-)
+_DATES = "Dates: YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, fri, +Nd, +Nw, +Nm."
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
-    "release", "note", "wait", "resume", "defer", "block", "unblock", "forget",
+    "release", "take", "note", "wait", "resume", "defer", "block", "unblock", "forget",
     "focus", "unfocus", "move", "assess",
 ]  # fmt: skip
 
 TOOLS = [
     {
         "name": "daymark_prime",
-        "description": "Workflow guide plus current state and remembered facts. Call first.",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "Call first for workflow, context and memories.",
+        "annotations": {"readOnlyHint": True},
+        "inputSchema": {"type": "object", "properties": {"brief": {"type": "boolean"}}},
     },
     {
         "name": "daymark_view",
-        "description": "Read tasks. view=ready (actionable now, most pressing first), "
-        "agenda (overdue, today, days ahead, waiting, proposed), show (one task by id "
-        "with blockers, notes, history), find (search by text), projects, or plan (id=project: "
-        "its board in order; by=milestone|type|parent|assignee|FIELD), goals, goal (id).",
+        "annotations": {"readOnlyHint": True},
+        "description": "ready: actionable; activity: recent changes; agenda: dates and waits; show: blockers/notes/history; "
+        "find: text search; plan: project board; explore: goal conditions; "
+        "advise: profile preview.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -68,8 +71,10 @@ TOOLS = [
                     "enum": [
                         "ready",
                         "advise",
+                        "profiles",
                         "explore",
                         "agenda",
+                        "activity",
                         "show",
                         "find",
                         "projects",
@@ -80,19 +85,26 @@ TOOLS = [
                 },
                 "id": {"type": "string"},
                 "text": {"type": "string"},
-                "days": {"type": "integer"},
-                "limit": {"type": "integer"},
+                "after": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Activity cursor.",
+                },
+                "days": {"type": "integer", "minimum": 0, "maximum": 366},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
                 "scope": {"type": "string", "description": 'Only this scope; "" for unscoped.'},
                 "by": {"type": "string"},
+                "profile": {"type": "string", "description": "Built-in or saved profile name."},
+                "set": {"type": "array", "items": {"type": "string"}},
+                "drop": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["view"],
         },
     },
     {
         "name": "daymark_add",
-        "description": "Capture a task. Set proposed=true to suggest work the person did "
-        "not ask for; they accept or dismiss it. " + _DATES,
+        "description": "Capture requested work. Use proposed=true for suggestions. " + _DATES,
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -104,7 +116,7 @@ TOOLS = [
                     "type": "string",
                     "description": "Default task; also project, goal, person.",
                 },
-                "op": {"type": "string", "description": "Repeat to retry safely."},
+                "op": _OP,
                 **_FIELDS,
             },
             "required": ["title"],
@@ -112,18 +124,23 @@ TOOLS = [
     },
     {
         "name": "daymark_edit",
-        "description": "Change fields of an entity. An empty string clears a date. " + _DATES,
+        "description": "Edit fields. Empty string clears a date; expected_version guards a prior read.",
         "inputSchema": {
             "type": "object",
-            "properties": {"id": {"type": "string"}, "title": {"type": "string"}, **_FIELDS},
+            "properties": {
+                "id": {"type": "string"},
+                "expected_version": {"type": "integer", "minimum": 1},
+                "title": {"type": "string"},
+                "op": _OP,
+                **_FIELDS,
+            },
             "required": ["id"],
         },
     },
     {
         "name": "daymark_act",
-        "description": "Act on a task. note needs text; wait needs on (and optional until); "
-        "defer needs until; block/unblock need on (another task id); claim takes minutes. "
-        "done accepts text as a closing note. move takes stage and/or place.",
+        "description": "note/done/release: text; wait: on, until; defer: until; block/unblock: on; "
+        "take: no id, scope/minutes; otherwise id. claim: minutes; move: stage/place; assess: state, text evidence.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -132,6 +149,7 @@ TOOLS = [
                 "text": {"type": "string"},
                 "on": {"type": "string"},
                 "until": {"type": "string"},
+                "scope": {"type": "string"},
                 "minutes": {"type": "integer"},
                 "state": {
                     "type": "string",
@@ -139,21 +157,100 @@ TOOLS = [
                 },
                 "stage": {"type": "string"},
                 "place": {"type": "string", "description": "after:ID, before:ID, first or last"},
-                "op": {"type": "string", "description": "Repeat to retry safely."},
+                "op": _OP,
             },
-            "required": ["action", "id"],
+            "required": ["action"],
         },
     },
     {
         "name": "daymark_remember",
-        "description": "Keep a durable fact about the person or project for later sessions.",
+        "description": "Store a fact for future sessions.",
         "inputSchema": {
             "type": "object",
-            "properties": {"text": {"type": "string"}},
+            "properties": {"text": {"type": "string"}, "op": _OP},
             "required": ["text"],
         },
     },
 ]
+
+
+for tool in TOOLS:
+    tool["inputSchema"]["additionalProperties"] = False
+_TOOLS = {tool["name"]: tool for tool in TOOLS}
+_TYPES = {"string": str, "boolean": bool, "integer": int, "array": list, "object": dict}
+
+# The multiplexed tools have one schema each. Refuse arguments intended for a
+# different verb so a filter or write instruction can never silently disappear.
+_VIEW_ARGS = {
+    "ready": {"limit", "move", "scope"},
+    "advise": {"scope", "profile", "set", "drop"},
+    "profiles": {"profile"},
+    "explore": {"id"},
+    "agenda": {"days", "scope"},
+    "activity": {"after", "limit"},
+    "show": {"id"},
+    "find": {"text", "limit"},
+    "plan": {"id", "by"},
+    "goal": {"id"},
+}
+_ACT_ARGS = {
+    "take": {"scope", "minutes"},
+    "note": {"text"},
+    "done": {"text"},
+    "release": {"text"},
+    "wait": {"on", "until"},
+    "defer": {"until"},
+    "block": {"on"},
+    "unblock": {"on"},
+    "assess": {"state", "text"},
+    "claim": {"minutes"},
+    "move": {"stage", "place"},
+}
+
+
+def _validate_value(key, value, schema):
+    kind = schema["type"]
+    kinds = [kind] if isinstance(kind, str) else kind
+    if not any(type(value) is _TYPES[t] for t in kinds):
+        raise DomainError("invalid", f"{key} must be a JSON {' or '.join(kinds)}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise DomainError("invalid", f"{key} must be one of " + ", ".join(schema["enum"]))
+    if kind == "array":
+        for child in value:
+            _validate_value(f"{key} item", child, schema["items"])
+    if "minLength" in schema and len(value) < schema["minLength"]:
+        raise DomainError(
+            "invalid", f"{key} must contain at least {schema['minLength']} character(s)"
+        )
+    if "minimum" in schema and value < schema["minimum"]:
+        raise DomainError("invalid", f"{key} must be at least {schema['minimum']}")
+    if "maximum" in schema and value > schema["maximum"]:
+        raise DomainError("invalid", f"{key} must be at most {schema['maximum']}")
+
+
+def _validate_arguments(name, args):
+    schema = _TOOLS[name]["inputSchema"]
+    for key in schema.get("required", ()):
+        if key not in args:
+            raise DomainError("invalid", f"missing argument {key}")
+    for key, value in args.items():
+        if key not in schema["properties"]:
+            raise DomainError("invalid", "Unknown argument", [key])
+        _validate_value(key, value, schema["properties"][key])
+    if name == "daymark_view":
+        verb = args["view"]
+        allowed = _VIEW_ARGS.get(verb, set()) | {"view"}
+    elif name == "daymark_act":
+        verb = args["action"]
+        allowed = _ACT_ARGS.get(verb, set()) | {"action", "op"}
+        if verb != "take":
+            if "id" not in args:
+                raise DomainError("invalid", "missing argument id")
+            allowed.add("id")
+    else:
+        return
+    if extra := args.keys() - allowed:
+        raise DomainError("invalid", f"{verb} does not take: {', '.join(sorted(extra))}")
 
 
 def _place(text):
@@ -167,11 +264,18 @@ def _place(text):
     return {side: ref}
 
 
-def call(tasks, name, args):
-    """Run one tool and return its text result."""
+def call(tasks, name, args, *, context=None):
+    """Run one tool and return the same lean text as the command line."""
+    result = _invoke(tasks, name, args, context=context)
+    return render.line(result, tasks.now()) if isinstance(result, dict) else result
+
+
+def _invoke(tasks, name, args, *, context=None):
+    """Reads produce text. Writes return the entity from the committed operation."""
+    _validate_arguments(name, args)
     now = tasks.now()
     if name == "daymark_prime":
-        return render.prime_text(tasks)
+        return render.prime_text(tasks, context=context, brief=args.get("brief", False))
     if name == "daymark_view":
         view = args.get("view")
         if view == "ready":
@@ -181,13 +285,19 @@ def call(tasks, name, args):
             return render.listing(items, now, "Nothing is ready.")
         if view == "explore":
             return render.explore_text(tasks.explore(args.get("id")))
+        if view == "profiles":
+            return render.saved_profiles_text(tasks.saved_profiles(args.get("profile")))
         if view == "advise":
-            from . import strategies
-
-            advice = strategies.advise(
-                tasks, strategies.stored_profile(tasks), scope=args.get("scope")
+            advice = tasks.advise(
+                profile=args.get("profile"),
+                settings=args.get("set", []),
+                drops=args.get("drop", []),
+                scope=args.get("scope"),
             )
             return render.advice_text(advice, now)
+        if view == "activity":
+            page = tasks.activity(after=args.get("after"), limit=args.get("limit", 20))
+            return render.activity_text(page)
         if view == "agenda":
             return render.agenda_text(
                 tasks.agenda(args.get("days", 7), scope=args.get("scope")), now
@@ -195,7 +305,9 @@ def call(tasks, name, args):
         if view == "show":
             return render.show_text(tasks.show(args["id"]), now)
         if view == "find":
-            return render.listing(tasks.find(args.get("text")), now, "No matches.")
+            return render.listing(
+                tasks.find(args.get("text"), limit=args.get("limit", 50)), now, "No matches."
+            )
         if view == "projects":
             return render.projects_text(tasks.projects())
         if view == "plan":
@@ -208,23 +320,24 @@ def call(tasks, name, args):
             "invalid", "view must be ready, agenda, show, find, projects, plan, goals or goal"
         )
     if name in {"daymark_add", "daymark_edit"}:
-        known = next(t for t in TOOLS if t["name"] == name)["inputSchema"]["properties"]
-        if set(args) - set(known):
-            raise DomainError("invalid", "Unknown argument", sorted(set(args) - set(known)))
         args = dict(args)
         if name == "daymark_add":
-            return render.line(tasks.add(args.pop("title"), **args), now)
-        return render.line(tasks.edit(args.pop("id"), **args), now)
+            return tasks.add(args.pop("title"), **args)
+        return tasks.edit(args.pop("id"), **args)
     if name == "daymark_remember":
-        return render.line(tasks.remember(args["text"]), now)
+        return tasks.remember(args["text"], op=args.get("op"))
     if name == "daymark_act":
+        if args["action"] == "take":
+            return tasks.take(
+                scope=args.get("scope"), minutes=args.get("minutes", 60), op=args.get("op")
+            ) or render.EMPTY_TAKE
         action, id, op = args.get("action"), args["id"], args.get("op")
         if action not in _ACTIONS:
             raise DomainError("invalid", "Unknown action")
         if action == "note":
             item = tasks.note(id, args["text"], op=op)
-        elif action == "done":
-            item = tasks.done(id, note=args.get("text"), op=op)
+        elif action in {"done", "release"}:
+            item = getattr(tasks, action)(id, note=args.get("text"), op=op)
         elif action == "wait":
             item = tasks.wait(id, args["on"], until=args.get("until"), op=op)
         elif action == "defer":
@@ -239,78 +352,97 @@ def call(tasks, name, args):
             item = tasks.move(id, stage=args.get("stage"), op=op, **_place(args.get("place")))
         else:
             item = getattr(tasks, action)(id, op=op)
-        return render.line(item, now)
+        return item
     raise DomainError("not_found", "Unknown tool")
 
 
-def handle(tasks, message):
-    """Answer one JSON-RPC message; notifications return None."""
-    method, id = message.get("method"), message.get("id")
-    if id is None:
+def _rpc_error(id, code, message):
+    return {"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}
+
+
+def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1]):
+    """Answer one JSON-RPC request. Valid notifications never get a response."""
+    if not isinstance(message, dict):
+        return _rpc_error(None, -32600, "Invalid request")
+    id = message.get("id")
+    if "id" in message and type(id) not in (str, int):
+        return _rpc_error(None, -32600, "Invalid request id")
+    method = message.get("method")
+    if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        return _rpc_error(id, -32600, "Invalid request")
+    if "id" not in message:
         return None
-    if not isinstance(message.get("params") or {}, dict):
-        return {
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": -32602, "message": "Invalid params"},
-        }
+    params = message.get("params", {})
+    if not isinstance(params, dict):
+        return _rpc_error(id, -32602, "params must be an object")
 
     def reply(result):
         return {"jsonrpc": "2.0", "id": id, "result": result}
 
     if method == "initialize":
-        version = (message.get("params") or {}).get("protocolVersion") or "2024-11-05"
+        version = params.get("protocolVersion")
+        if not isinstance(version, str) or not version:
+            return _rpc_error(id, -32602, "initialize requires protocolVersion")
         return reply(
             {
-                "protocolVersion": version,
+                "protocolVersion": version if version in _PROTOCOLS else _PROTOCOLS[-1],
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "daymark", "version": __version__},
-                "instructions": "Call daymark_prime first. Never invent dates or completions.",
+                "instructions": "Call daymark_prime first. For each write, choose a fresh op "
+                "and reuse it if that same write needs a retry. Never invent dates or completions.",
             }
         )
     if method == "ping":
         return reply({})
     if method == "tools/list":
         return reply({"tools": TOOLS})
-    if method == "tools/call":
-        params = message.get("params") or {}
-        try:
-            arguments = params.get("arguments") or {}
-            if not isinstance(arguments, dict):
-                raise TypeError
-            text, failed = call(tasks, params.get("name"), arguments), False
-        except DomainError as exc:
-            text = "\n".join([f"error: {exc.code}: {exc}", *exc.details])
-            failed = True
-        except KeyError as exc:
-            text, failed = f"error: invalid: missing argument {exc.args[0]}", True
-        except (TypeError, AttributeError):
-            text, failed = "error: invalid: unexpected or missing arguments", True
-        except Exception:  # noqa: BLE001 - never leak stored content through errors
-            text, failed = "error: internal: the request failed", True
-        return reply({"content": [{"type": "text", "text": text}], "isError": failed})
-    return {
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {"code": -32601, "message": "Method not found"},
-    }
+    if method != "tools/call":
+        return _rpc_error(id, -32601, "Method not found")
+    name = params.get("name")
+    arguments = params.get("arguments", {})
+    if not isinstance(name, str) or not isinstance(arguments, dict):
+        return _rpc_error(id, -32602, "tools/call requires a name and an arguments object")
+    if name not in _TOOLS:
+        return _rpc_error(id, -32602, "Unknown tool. Use tools/list for the available names.")
+    try:
+        value = _invoke(tasks, name, arguments, context=context)
+        result = {"isError": False}
+        if isinstance(value, dict):
+            text = render.line(value, tasks.now())
+            if protocol >= "2025-06-18":
+                result["structuredContent"] = {
+                    key: value[key] for key in ("id", "kind", "status", "version")
+                }
+        else:
+            text = value
+        result["content"] = [{"type": "text", "text": text}]
+    except DomainError as exc:
+        text = "\n".join([f"error: {exc.code}: {exc}", *exc.details])
+    except KeyError as exc:
+        text = f"error: invalid: missing argument {exc.args[0]}"
+    except ClientError as exc:
+        text = f"error: {exc.code}: {exc}"
+    except Exception:  # noqa: BLE001 - never leak stored content through errors
+        return _rpc_error(id, -32603, "The request failed")
+    else:
+        return reply(result)
+    return reply({"content": [{"type": "text", "text": text}], "isError": True})
 
 
-def serve(tasks, stdin=None, stdout=None):
+def serve(tasks, stdin=None, stdout=None, *, context=None):
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
+    protocol = _PROTOCOLS[0]
     for raw in stdin:
         if not raw.strip():
             continue
         try:
             message = json.loads(raw)
         except ValueError:
-            response = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": "Parse error"},
-            }
+            response = _rpc_error(None, -32700, "Parse error")
         else:
-            response = handle(tasks, message) if isinstance(message, dict) else None
+            response = handle(tasks, message, context=context, protocol=protocol)
+            if response and "protocolVersion" in response.get("result", {}):
+                protocol = response["result"]["protocolVersion"]
         if response is not None:
             stdout.write(json.dumps(response) + "\n")
             stdout.flush()

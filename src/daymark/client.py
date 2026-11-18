@@ -11,6 +11,9 @@ class ClientError(Exception):
 
     def __init__(self, status_code: int | None = None) -> None:
         self.status_code = status_code
+        self.code = {403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}.get(
+            status_code, "remote"
+        )
         super().__init__(f"Daymark request failed ({status_code or 'transport'})")
 
 
@@ -98,26 +101,39 @@ class Client:
         *,
         now: Any = None,
         limit: int = 50,
+        mine: bool = False,
         owner: str | None = None,
         next_move: str | None = None,
         scope: str | None = None,
     ) -> Any:
-        params = self._params(now=now, limit=limit, owner=owner, next_move=next_move, scope=scope)
+        params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move, scope=scope)
         return self._request("GET", "/v1/ready", params=params)
 
     def agenda(self, *, now: Any = None, days: int = 7, scope: str | None = None) -> Any:
         params = self._params(now=now, days=days, scope=scope)
         return self._request("GET", "/v1/agenda", params=params)
 
-    def explore(self, goal: str | None = None, *, now: Any = None) -> Any:
-        return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now))
+    def explore(self, goal: str | None = None, *, now: Any = None, scope: str | None = None) -> Any:
+        return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now, scope=scope))
 
-    def summary(self, *, now: Any = None, scope: str | None = None) -> Any:
-        return self._request("GET", "/v1/summary", params=self._params(now=now, scope=scope))
+    def summary(
+        self, *, now: Any = None, scope: str | None = None,
+        owner: str | None = None, mine: bool = False,
+    ) -> Any:
+        params = self._params(now=now, scope=scope, owner=owner, mine=mine or None)
+        return self._request("GET", "/v1/summary", params=params)
 
-    def context(self, entity_id: str, *, history: int = 10) -> Any:
+    def context(
+        self, entity_id: str, *, history: int = 10, now: Any = None,
+        owner: str | None = None, mine: bool = False,
+    ) -> Any:
+        params = self._params(history=history, now=now, owner=owner, mine=mine or None)
+        return self._request("GET", f"/v1/context/{quote(entity_id, safe='')}", params=params)
+
+    def receipt_context(self, operation_id: str, *, action: str, entity_id: str | None = None) -> Any:
         return self._request(
-            "GET", f"/v1/context/{quote(entity_id, safe='')}", params={"history": history}
+            "GET", "/v1/receipt-context",
+            params=self._params(operation_id=operation_id, action=action, entity_id=entity_id),
         )
 
     def receipt(self, operation_id: str) -> Any:
@@ -128,6 +144,9 @@ class Client:
             if exc.status_code == 404:
                 return None
             raise
+
+    def activity(self, *, after: int | None = None, limit: int = 20) -> Any:
+        return self._request("GET", "/v1/activity", params=self._params(after=after, limit=limit))
 
     def events(self, after: int = 0, limit: int = 100, project: str | None = None) -> Any:
         params = self._params(after=after, limit=limit, project=project)

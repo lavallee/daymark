@@ -28,11 +28,47 @@ def _shortlist(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="shortlist",
+        reads=(),
         kind="limit",
         summary="Offer only the first few ready tasks; say how many more there are.",
         evidence="practitioner",  # Ivy Lee's six; Marvin's truncated list; CBT for adult ADHD
         apply=_shortlist,
         params={"size": Param(6, "How many tasks to offer", 1, 50)},
+    )
+)
+
+
+def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
+    minutes = params["minutes"]
+    fits, longer, unknown = [], 0, 0
+    for item in advice.picks:
+        estimate = item["estimate_minutes"]
+        if estimate is None:
+            unknown += 1
+        elif estimate > minutes:
+            longer += 1
+        else:
+            fits.append(item)
+    advice.picks = fits
+    advice.held_back += longer + unknown
+    if fits or longer or unknown:
+        message = f"{len(fits)} individually estimated at {minutes} min or less."
+        if longer:
+            message += f" {longer} estimated longer."
+        if unknown:
+            message += f" {unknown} without an estimate."
+        advice.notes.append(Note("time-fit", message))
+
+
+register(
+    Strategy(
+        name="time-fit",
+        reads=(),
+        kind="limit",
+        summary="Offer tasks individually estimated to fit the available time.",
+        evidence="practitioner",
+        apply=_time_fit,
+        params={"minutes": Param(30, "Minutes available for one task", 1, 1440)},
     )
 )
 
@@ -54,6 +90,7 @@ def _first_step(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="first-step",
+        reads=(),
         kind="hygiene",
         summary="Show each task's next unchecked step; flag older tasks that have none.",
         evidence="clinical",  # breaking tasks into steps is a taught skill in adult ADHD CBT
@@ -74,6 +111,7 @@ def _stale(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="stale",
+        reads=("open",),
         kind="hygiene",
         summary="List open tasks nobody has touched for a while, for review.",
         evidence="practitioner",  # GTD weekly review; OmniFocus review; Marvin staleness warning
@@ -96,6 +134,7 @@ def _waiting_check(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="waiting-check",
+        reads=("waiting",),
         kind="follow-through",
         summary="Point out waiting items that have been quiet long enough to chase.",
         evidence="practitioner",  # executive-assistant waiting-for lists; GTD waiting-for
@@ -134,6 +173,7 @@ def _overbooked(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="overbooked",
+        reads=(),
         kind="limit",
         summary="Warn when what is due, planned or in focus today exceeds the time available.",
         evidence="practitioner",  # EA capacity checks; "add a commitment, subtract one" (CHADD)
@@ -169,6 +209,7 @@ def _lookahead(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="lookahead",
+        reads=("open",),
         kind="anticipate",
         summary="Find deadlines coming up that have no day set aside to work on them.",
         evidence="practitioner",  # assistants plan backward from fixed dates
@@ -199,6 +240,7 @@ def _decisions_first(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="decisions-first",
+        reads=(),
         kind="rank",
         summary="Lead with what only the person can answer, batched instead of drip-fed.",
         evidence="practitioner",  # assistants batch questions for one sync
@@ -215,6 +257,7 @@ def _neutral_aging(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="neutral-aging",
+        reads=(),
         kind="tone",
         summary='Show a late task\'s date without the words "overdue" or "ago".',
         evidence="practitioner",  # qualitative studies of ADHD and planners; weak but consistent
@@ -253,6 +296,7 @@ def _frontier_first(view: Snapshot, advice: Advice, params: dict) -> None:
 register(
     Strategy(
         name="frontier-first",
+        reads=("exploration",),
         kind="rank",
         summary="Lead with work that moves a condition which is next for a goal; name the gaps.",
         evidence="practitioner",  # prerequisite trees; work backward from the outcome
