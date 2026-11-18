@@ -42,10 +42,10 @@ The engine tests also cover late completions across daylight-saving changes,
 invalid civil calendar dates, bounded lookahead, snapshot/restart of a
 completion-based count budget, and replay after a completed round is reopened.
 Moving a fixed occurrence keeps its original series slot across a native
-snapshot restore. [Calendar tests](../../tests/test_temporal_adversarial.py)
-[Store and restore tests](../../tests/test_store.py)
-[Occurrence identity and skip tests](../../tests/test_boundaries.py)
-[Brief and mixed-date checks](../../tests/test_brief.py)
+snapshot restore. In the matching source checkout, the calendar, restore,
+occurrence identity and mixed-date checks are in
+`tests/test_temporal_adversarial.py`, `tests/test_store.py`,
+`tests/test_boundaries.py` and `tests/test_brief.py`, respectively.
 
 ## Representing two dates that both move
 
@@ -143,7 +143,8 @@ its existing successor just to check the occurrence key. A fixture with 72
 notes of about 2,000 characters peaked at 13.9 MB of Python allocations on
 the development interpreter. Projecting the occurrence key and checking
 the current successor first reduced that peak to 26 KB. Deleted or reused
-IDs still reserve their recorded slots. [Calendar return tests](../../tests/test_recurring_return.py)
+IDs still reserve their recorded slots. The calendar return tests are in
+`tests/test_recurring_return.py` in the matching source checkout.
 
 ## Checking local clock input across timezones
 
@@ -181,3 +182,84 @@ In a separate retry experiment, an installed candidate resolved “tomorrow
 altering the system clock. A fresh process retried the same operation at
 00:00:06. Both results identified the same reminder at November 18,
 14:00 UTC, and the workspace still had three events.
+
+## Pre-decision recurrence study
+
+The coordinator returned on November 18 with four missed weekly press
+inspections. The first plan had been moved from October 21 to October 23.
+The original hard deadline was October 22. A second task repeated weekly from
+completion, with a timed deadline and an inclusive `UNTIL` limit. The tasks
+and records were synthetic. This was a walkthrough of the coordinator's
+questions using the actual CLI and Python task interface.
+
+| Question before approval | What the existing surfaces answered |
+| --- | --- |
+| Which round am I looking at? Which date changes? | `show` displayed current dates, status, cadence and history summaries. `show --brief` and `Tasks.brief` also identified the round number and advancing field. The how-to explained that the deadline is copied when the plan drives recurrence. |
+| Does one skip clear the four misses? | The how-to says one transition advances one round. Forecasting the date of that round requires the recurrence calculation. The moved date in CLI detail would suggest October 30 if used as the weekly starting point. The engine uses the historical October 21 slot, yielding October 28. `Tasks.show` exposes structured recurrence and history, which still require interpretation. |
+| Will COUNT or UNTIL stop the series, and what happens if I choose skip? | The views display the rule. Applying the count and cutoff, including the time zone and the instant of a completion-based skip, requires calculation. The previous how-to named actual completion as the anchor without spelling out the skip case. |
+| Will a successor be created or was that slot already used? | The how-to warned that reopening keeps later evidence. The ordinary views did not resolve current and historical slot reservations. A successful operation's `recurrence.create` event confirms actual materialization and its ID. |
+| When will a worker act or a reminder be delivered? | Readiness, claims and recorded reminder state describe known facts. Future action and delivery depend on the worker and delivery system. |
+
+The coordinator needs the successor date and slot outcome to decide which
+work to reconcile. The candidate adds `daymark show ID --forecast skip`
+and `daymark show ID --forecast done` locally and over HTTP, with `--json` for
+structured results. Read-only MCP uses `daymark_view` with `view=show` and
+`forecast=skip|done`. Use an exact ID or source on each surface. Authenticated
+HTTP uses the `forecast` query parameter on the existing context and source
+reads. The forecast evaluates one fresh transition at the displayed instant
+for a visible open or waiting recurring task. It shows the
+snapshot's task version and UTC evaluation time, the selected round's
+projected status, and whether a successor would be created, the rule ended,
+or the slot or fallback ID was already reserved. When a successor would be
+created it reports its ID, plan and deadline. Skip records cancellation with
+no completion time. Both actions use the evaluation instant for a
+completion-based rule.
+
+The forecast uses the same historical first-slot lookup, recurrence engine and
+ID reservation checks as materialization. The CLI opens SQLite read-only and
+does not initiate a schema upgrade. The forecast covers the calendar effect.
+A working claim is advisory. Both writes can proceed under another actor's
+live claim and clear it on the finished round. The forecast does not model
+authorization, readiness, notes, reminders, other write side effects, or
+operation replay. Its version describes the selected round. Successor
+availability is checked again when the write runs.
+Refresh before approval. Even with the same task version, another record can
+take the expected ID, and the effective time of the write can cross a cutoff.
+The HTTP client checks the service schema for the exact selector route.
+In a test against the v0.5.0 service, ordinary show by ID succeeded, and
+forecast by either selector stopped at the authenticated schema read.
+Explain the recorded rule with ordinary show when available and check
+activity or events for `recurrence.create` after an authorized write.
+
+Each skip and finish in the comparison ran as a genuine version-guarded
+operation on its own SQLite backup. The moved round produced October 28 with
+the October 22 deadline. In the four-miss trial, each skip advanced one slot,
+reaching November 18 after four writes. The trials covered fixed and
+completion-based COUNT, readable ID collision, and successors that were
+live, deleted or deleted and replaced by unrelated work. For the timed
+New York series, a write at November 18 16:00 UTC produced a deadline at
+November 25 11:00 EST, exactly the UTC cutoff. At 16:00:01 UTC the rule
+produced no successor. The source store's exported facts and main database
+bytes matched before and after forecast reads. Separate read-only SQLite
+connections for MCP and the authenticated HTTP service agreed for ID and
+exact source, and the response stayed compact with large stored series fields.
+The comparison tests are in `tests/test_recurrence_forecast.py` in the
+matching source checkout.
+
+### Asking before changing a missed round
+
+Six fresh Claude Code sessions inspected two synthetic weekly print jobs over
+read-only MCP. Both jobs started with an October 21 plan, an October 22 hard
+deadline and a one-off move of the first plan to October 23. In the second
+workspace, an earlier skip had generated the next round. Someone then deleted
+that round and reopened the original. Each session received the same question
+about the result of one skip, and each workspace export stayed unchanged.
+
+| Available read | Moved first round | Previously created and deleted next round |
+| --- | --- | --- |
+| Ordinary detail and activity | Estimated November 20 and 19 after 18 tool calls. Qualified the estimate. | Estimated another round was likely after 25 calls. |
+| Forecast with a short outcome code | Correctly predicted October 28 with the original October 22 cutoff in 7 calls. | Answered no in 11 calls, but said the reason was unavailable. |
+| Forecast naming the reason in structured data | Returned the two dates in 6 calls. | Explained in 10 calls that the already-created round stays reserved after deletion. |
+
+Each cell is one run. The repeated question exercised calendar consequences,
+not permission to skip or whether the person wanted a different deadline.

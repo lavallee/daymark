@@ -36,6 +36,15 @@ jobs:
       - run: uv run python scripts/build_walkthrough.py --check
       - run: uv build
       - run: uv run python scripts/check_sdist.py dist/*.tar.gz
+      - name: Test the oldest supported direct runtime dependencies
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        shell: bash
+        run: |
+          floor_env="$RUNNER_TEMP/daymark-minimum"
+          uv venv "$floor_env" --python 3.11
+          uv pip compile pyproject.toml --extra service --python-version 3.11 --resolution lowest-direct -o "$RUNNER_TEMP/daymark-minimum.txt"
+          uv pip install --python "$floor_env/bin/python" -r "$RUNNER_TEMP/daymark-minimum.txt" dist/*.whl 'pytest>=8'
+          "$floor_env/bin/python" -m pytest -q
       - name: Verify clean core wheel and source installs
         shell: bash
         run: |

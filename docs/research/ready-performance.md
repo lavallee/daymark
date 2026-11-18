@@ -74,7 +74,7 @@ the count and the list. The current compact orientation counts and ranks a
 single stream of live tasks, fetches the memory previews, and reads the
 activity cursor within the same SQLite transaction. A two-connection test
 commits changes during that read and checks that the next activity page
-contains both changes. [Snapshot tests](../../tests/test_orientation_snapshot.py)
+contains both changes. See `tests/test_orientation_snapshot.py` in the matching source checkout.
 
 The benchmark creates 1,000 tasks with twelve notes of 1,024 characters each
 plus twelve memories with 2,000-character titles. It compares one compact
@@ -86,7 +86,7 @@ times were 41.09 and 168.18 ms versus 19.87 and 71.84 ms. Peak traced Python
 allocations were 0.069 MiB and 0.032 MiB, respectively. The machine was also
 running other tests. These measurements exclude setup, HTTP and native SQLite
 allocations. Run `uv run python scripts/bench_orientation.py` to reproduce
-the fixture and parity check. [Benchmark](../../scripts/bench_orientation.py)
+the fixture and parity check from that checkout.
 
 A separate local ASGI trial used twelve 2,000-emoji memory titles and twenty
 tasks with 50,000-character descriptions and 8,000-character notes. The three
@@ -127,6 +127,42 @@ four-second wall-clock limit on the loaded host. After the change Python
 complete suite on that interpreter passed the existing limit. These
 measurements describe this fixture and host. Serving time under load also
 depends on the SQLite and application processes sharing the machine.
+
+For a scoped review, the reader follows project membership and related records
+through the relationship index. A task in another scope can still block a
+project member. Seven alternating reads at a fixed instant compared this
+selection with reading the whole workspace before selecting projects. Each
+pair returned the same canonical JSON. Median process CPU times on CPython
+3.14.6 and SQLite 3.53.1 were:
+
+| Workspace | Selected projects | Whole-workspace read | Scoped read |
+| --- | ---: | ---: | ---: |
+| 101 projects, 20,000 tasks | 2 | 280 ms | 31 ms |
+| Same workspace | 99 | 465 ms | 544 ms |
+| 51 projects, 5,400 tasks | 1 holding 3,600 tasks | 131 ms | 113 ms |
+| Same workspace | 3 small projects | 90 ms | 15 ms |
+| 191 projects, 3,382 tasks including 3,000 outside any project | 187 | 63 ms | 27 ms |
+
+Selecting almost every task in the first workspace cost an additional 79 ms.
+In the last workspace, even selecting nearly every project avoided decoding
+thousands of unrelated tasks. An unfiltered portfolio still uses the
+whole-workspace read.
+
+## Offering two choices from tasks with a long history
+
+A synthetic fixture held 400 open tasks. Each had a 60,000-character
+description and an 8,000-character note. Some had a hard deadline, an
+estimate, or a decision for the person. At a fixed instant, the brief
+two-choice profile returned 702 bytes of JSON. Reading the selected task
+card fields before applying the built-in strategies reduced median process
+CPU from 82 to 40 ms and peak traced Python allocation from 28.83 to 0.85
+MiB. CPU used five warm reads, and allocation used a separate read. Plain,
+gentle, two-choice and time-fit plus two-choice produced identical JSON with
+both readers. Full Python advice and third-party strategies still receive
+complete records. With the ready read already projected, applying the same
+field selection to all open tasks reduced peak allocation from 29.06 to 1.30 MiB (dense) and
+29.07 to 1.29 MiB (assistant). CPU for assistant stayed near 104 ms. The
+fixture includes 24 deadlines and no waiting tasks or projects.
 
 ## An idle reminder worker with a history
 
@@ -191,3 +227,15 @@ median MCP handshake took 197 ms. A read on an established session took
 1.1 ms elapsed, versus 246 ms for a fresh CLI process. These are local
 synthetic measurements of Daymark. They exclude model generation and
 network latency.
+
+## A build of SQLite without JSON functions
+
+We compiled SQLite 3.46.1 with `SQLITE_OMIT_JSON` and linked it into the
+system CPython 3.14.7 driver for a Linux run. The amalgamation's SHA3-256
+matched the SQLite release record. The running interpreter reported the
+expected source ID, returned 1 for the compile option, and refused
+`json_extract`. At Daymark revision `0d22544`, all 872 tests passed in this
+configuration, including real worker, CLI and HTTP subprocesses. These checks
+exercise the fallback on an actual SQLite library. Timings for JSON-enabled
+projections elsewhere on this page describe different builds.
+[SQLite 3.46.1 release hashes](https://www.sqlite.org/releaselog/3_46_1.html) · [SQLite compilation options](https://www.sqlite.org/compile.html#omit_json)

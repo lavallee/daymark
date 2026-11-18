@@ -1,24 +1,37 @@
-"""Daymark: tasks, plans and time for work and life.
-
-Start with `daymark init`, then `daymark prime`. Everyday verbs: add, ready,
-agenda, show, claim, note, done. The lower-level commands (create, update,
-action, query, events, export, import) expose the engine's explicit operation
-IDs and expected versions.
-"""
+"""Daymark's command-line interface."""
 
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
 import shlex
 import sqlite3
 import sys
-import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+from .snapshot_files import copy_database as _copy_database
+from .snapshot_files import write_export
+
+_QUICK_START = """Daymark keeps track of a person's tasks, plans and decisions across sessions.
+
+Choose where to work
+  daymark where                     Show the selected database and workspace
+  daymark init --here               Set up here (daymark init is per-user)
+
+Capture work
+  daymark propose "Review cover"    Save a suggestion for someone's decision
+  daymark add "Review cover"        Record work already agreed
+
+Return to the same folder
+  daymark prime --brief             See the current state
+  daymark find --status proposed    Find suggestions still awaiting a decision
+  daymark show ID                   Read one record
+
+  daymark propose --help            See the options for one command
+  daymark --help                    List every command and global option"""
 
 
 def _activity_cursor(text):
@@ -236,6 +249,9 @@ def _simple_commands(sub) -> None:
     selector.add_argument("id", nargs="?")
     selector.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Inspect the entity captured from this source")
     detail = show.add_mutually_exclusive_group()
+    detail.add_argument(
+        "--forecast", choices=("skip", "done"), help="Read-only recurrence forecast"
+    )
     detail.add_argument("--brief", action="store_true", help="Bounded handoff with recent notes")
     detail.add_argument("--before-note", metavar="NOTE_ID", help="Brief with the preceding note page")
     detail.add_argument("--since-version", type=int, metavar="N", help="Compare the current record with a reviewed version")
@@ -266,8 +282,9 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "done", "release"}:
             item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
             item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
             item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
@@ -313,8 +330,9 @@ def _simple_commands(sub) -> None:
     remember.add_argument("--scope", metavar="NAME", help="Where this preference or fact applies")
     remember.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Exact source of this fact")
     policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
-    policy.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
-    policy.add_argument("--clear", action="store_true", help="Let any writer decide again")
+    policy_change = policy.add_mutually_exclusive_group()
+    policy_change.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
+    policy_change.add_argument("--clear", action="store_true", help="Let any writer decide again")
     focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
     focus.add_argument("id")
     focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
@@ -420,7 +438,9 @@ def _simple_commands(sub) -> None:
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        prog="daymark", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="daymark", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Run daymark alone for a short guide. Use daymark COMMAND --help for one command.",
+        epilog=_QUICK_START,
     )
     from . import __version__
 
@@ -532,49 +552,6 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-def _copy_database(source: Path, destination: Path) -> None:
-    """SQLite online backup API includes committed WAL; refuses destination overwrite."""
-    if not source.is_file():
-        raise ValueError("Source database missing")
-    if source.stat().st_size == 0:
-        raise ValueError("Source is an empty file, not a SQLite backup")
-    if os.path.lexists(destination):
-        raise FileExistsError("Destination already exists")
-    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
-        fd, name = tempfile.mkstemp(prefix=".daymark-backup-", dir=destination.parent)
-        os.close(fd)
-        prepared = Path(name)
-        try:
-            with closing(sqlite3.connect(prepared)) as writer:
-                reader.backup(writer)
-                # A sealed backup may live on a read-only volume without WAL sidecars.
-                # Daymark re-enables WAL when a restored path is opened for writing.
-                writer.execute("PRAGMA journal_mode=DELETE")
-                if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                    raise ValueError("Database integrity check failed")
-            # Publish a closed, checked snapshot. A competing creator keeps its file.
-            if os.name == "nt":
-                os.rename(prepared, destination)  # Windows rename refuses an existing name.
-            else:
-                try:
-                    os.link(prepared, destination)
-                except OSError as exc:
-                    if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
-                        raise
-                    # Some removable filesystems cannot link two names to one file.
-                    # SQLite commits the checked snapshot to an exclusively created file.
-                    fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    os.close(fd)
-                    try:
-                        with closing(sqlite3.connect(prepared)) as copy, closing(sqlite3.connect(destination)) as dest:
-                            copy.backup(dest)
-                    except BaseException:
-                        destination.unlink(missing_ok=True)
-                        raise
-        finally:
-            prepared.unlink(missing_ok=True)
-
-
 def _stored_schema(path):
     """The schema marker of an existing Daymark database, read without writing:
     None for a new or empty file, "" for Daymark tables without a marker."""
@@ -651,7 +628,6 @@ def _init(args) -> int:
         except FileExistsError:
             pass
     _open_store(str(target)).close()
-    os.chmod(target, 0o600)
     print(f"{'Using existing' if existed else 'Created'} {target}")
     visible = resolve_db(None)
     command = "daymark prime" if visible and Path(visible).resolve() == target.resolve() else (
@@ -790,6 +766,9 @@ def _simple(args, engine) -> int:
         page = tasks.activity(after=args.after, limit=args.limit)
         session = render.session_context(tasks, database=args.db, url=args.url)
         out(page, render.activity_text(page, session=session, limit=args.limit))
+    elif name == "show" and args.forecast:
+        forecast = tasks.recurrence_forecast(args.id, action=args.forecast, source=args.source)
+        out(forecast, render.recurrence_forecast_text(forecast))
     elif name == "show" and args.since_version is not None:
         comparison = tasks.changes_since(args.id, version=args.since_version, source=args.source)
         out(comparison, render.comparison_text(comparison))
@@ -838,7 +817,7 @@ def _simple(args, engine) -> int:
             )
         entity(item)
     elif name in {"done", "release"}:
-        entity(getattr(tasks, name)(args.id, note=args.note, op=op))
+        entity(getattr(tasks, name)(args.id, note=args.note, op=op, expected_version=args.if_version))
     elif name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
     elif name in {"skip", "cancel", "reopen", "archive",
@@ -1056,6 +1035,10 @@ def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        print(_QUICK_START)
+        return 0
     args = parser().parse_args(argv)
     from .errors import ClientError, DomainError
 
@@ -1076,6 +1059,8 @@ def main(argv: list[str] | None = None) -> int:
                     ["Run `daymark init` (per-user) or `daymark init --here` (this folder)."],
                 )
             args.db = found or "daymark.sqlite3"
+        if args.command == "show" and args.forecast is not None:
+            args.read_only = True
         if args.command in {"backup", "restore"}:
             if args.url:
                 raise ValueError("Backup commands require a local database")
@@ -1115,8 +1100,11 @@ def main(argv: list[str] | None = None) -> int:
             ordinary_read = args.command == "workspaces" or (
                 args.command in SIMPLE and args.command != "mcp" and not _simple_write(args)
             )
+            inspect_existing = ordinary_read or args.command in {"get", "query", "events", "export", "health"} or (
+                args.command == "policy" and args.deciders is None and not args.clear
+            )
             engine = _open_store(args.db, read_only=getattr(args, "read_only", False),
-                                 require_existing=ordinary_read and args.db != ":memory:")
+                                 require_existing=inspect_existing and args.db != ":memory:")
         try:
             ws = [] if args.url else [args.workspace]
             if args.command == "workspaces":
@@ -1129,8 +1117,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.url:
                     raise ValueError("Policy is set on the local database")
                 if args.clear or args.deciders is not None:
-                    names = [] if args.clear else [x.strip() for x in args.deciders.split(",")]
-                    engine.set_policy(args.workspace, deciders=[x for x in names if x])
+                    names = [name.strip() for name in (args.deciders or "").split(",") if name.strip()]
+                    if not names and not args.clear:
+                        raise DomainError("invalid", "Supply at least one decision maker or use policy --clear")
+                    engine.set_policy(args.workspace, deciders=names)
                 _print(engine.policy(args.workspace))
                 return 0
             if args.command in SIMPLE:
@@ -1175,10 +1165,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = engine.health()
             else:
                 result = engine.export(*ws)
-                with open(
-                    args.output, "x", encoding="utf-8", opener=lambda p, f: os.open(p, f, 0o600)
-                ) as handle:
-                    json.dump(result, handle, default=str, sort_keys=True)
+                write_export(Path(args.output), result)
                 return 0
             _print(result)
         finally:

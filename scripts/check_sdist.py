@@ -1,10 +1,13 @@
-"""Check a built sdist ships what the contributor docs promise.
+"""Check the contributor files and standalone documentation links in a built sdist.
 
 Usage: python scripts/check_sdist.py dist/daymark_core-X.Y.Z.tar.gz
 """
 
+import posixpath
+import re
 import sys
 import tarfile
+from urllib.parse import unquote, urlsplit
 
 REQUIRED = [
     "AGENTS.md",
@@ -33,14 +36,33 @@ REQUIRED = [
 ]
 
 
-def missing(archive: str) -> list[str]:
+def problems(archive: str) -> list[str]:
     with tarfile.open(archive) as tar:
-        names = {n.split("/", 1)[1] for n in tar.getnames() if "/" in n}
-    return [path for path in REQUIRED if path not in names]
+        files = {
+            member.name.partition("/")[2]: member
+            for member in tar.getmembers() if member.isfile()
+        }
+        errors = [f"sdist is missing {path}" for path in REQUIRED if path not in files]
+        for path, member in files.items():
+            if not (path.startswith("docs/") and (path.endswith(".md") or path == "docs/llms.txt")):
+                continue
+            with tar.extractfile(member) as source:
+                text = source.read().decode("utf-8")
+            # Check the inline links used by the guides. Fenced examples may
+            # contain illustrative paths that aren't navigation destinations.
+            prose = re.sub(r"(?ms)^```[^\n]*\n.*?^```[ \t]*$", "", text)
+            for href in re.findall(r"\]\(([^\s)]+)\)", prose):
+                link = urlsplit(href)
+                if link.scheme or link.netloc or not link.path:
+                    continue
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(path), unquote(link.path)))
+                if not target.startswith("docs/") or target not in files:
+                    errors.append(f"{path}: {href} is unavailable in the standalone docs")
+    return errors
 
 
 if __name__ == "__main__":
-    gone = missing(sys.argv[1])
-    if gone:
-        raise SystemExit("sdist is missing: " + ", ".join(gone))
-    print("sdist contains the contributor files")
+    errors = problems(sys.argv[1])
+    if errors:
+        raise SystemExit("\n".join(errors))
+    print("sdist contains the contributor files and standalone documentation link targets")

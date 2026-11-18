@@ -309,3 +309,34 @@ def test_reminder_scan_preserves_workspace_order_precise_instants_and_dormant_wo
         assert store.health()["leased"] == 4
     finally:
         connection.close()
+
+
+def test_simultaneous_wal_setup_retries_only_transient_contention(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    connect = sqlite3.connect
+    failures = [sqlite3.SQLITE_BUSY]
+
+    class FirstOpen(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if sql == "PRAGMA journal_mode=WAL" and failures:
+                error = sqlite3.OperationalError("Synthetic first-open contention")
+                error.sqlite_errorcode = failures.pop()
+                raise error
+            return super().execute(sql, *args)
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: connect(*a, **kw, factory=FirstOpen))
+    with closing(Store(tmp_path / "first.db")) as store:
+        assert store.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        assert create(store, "proof")["id"] == "proof"
+
+    failures.append(sqlite3.SQLITE_READONLY)
+    with pytest.raises(sqlite3.OperationalError) as result:
+        Store(tmp_path / "no-retry.db")
+    assert result.value.sqlite_errorcode == sqlite3.SQLITE_READONLY
+
+    failures.append(sqlite3.SQLITE_BUSY)
+    monkeypatch.setattr("daymark.store._OPEN_TIMEOUT", 0)
+    with pytest.raises(DomainError) as result:
+        Store(tmp_path / "busy.db")
+    assert result.value.code == "conflict" and "Retry" in result.value.details[0]

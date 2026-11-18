@@ -136,6 +136,40 @@ attempts to pass ready filters directly to advice. Those refusals now show
 the supported temporary settings syntax. This single repeat establishes no
 overall call-count improvement.
 
+## Two people behind one Daymark actor
+
+Four ready tasks and two closed-shift notes were visible to the same
+`front-desk` actor. Each note said its one-decision request applied only to
+that check-in. A separate synthetic host tool could read just the signed-in
+person's private setting. One test arm could also update it by revision. Each
+episode started a fresh Claude Code process with writable Daymark tools.
+
+| Request | What the next process could verify |
+| --- | --- |
+| Infer my usual view from my last two requests | The worker reported two exceptions. The workspace still offered all four tasks. |
+| Show all tasks once | The first person saw four. Their private one-decision setting stayed at revision 1. |
+| Save two choices just for me | With private read access only, the worker reported that it could preview the change. With private write access it updated the first person's setting to revision 2. |
+| Return separately as each person | The first person's host read two choices. The second person's host read a full-list preference, despite the identical Daymark actor. |
+| Make two the agreed team default | Workspace revision 1 offered two picks to a caller with no private setting. The second person still received four. |
+
+Separate reads found eight task events and zero shared memories throughout.
+In several answers the worker gave two picks and then named both held-back
+tasks. A matched comparison repeated three prompts on the same four tasks
+with a private two-choice preference. With the original startup text, both
+short-check-in answers named four titles. A hint to present the advice picks
+and the count held back produced two titles in both. When explicitly asked
+for the whole list, both versions named all four. A separate read-only
+comparison reproduced the difference on a short check-in and preserved
+the requested full list.
+
+One more read-only worker was explicitly asked to flag an omitted hard
+deadline. It named the correct 60-minute task outside a ten-minute budget,
+then speculated about a local cutoff hour from its date. After startup
+guidance distinguished date-only deadlines, a fresh worker named the
+omitted task, explained its estimate and said the deadline had no recorded
+hour. These exercises tested what changed and what a host said about it.
+They did not measure whether people preferred the resulting check-ins.
+
 ## Restart after the write committed and the connection dropped
 
 A loopback HTTP proxy forwarded each operation to an authenticated Daymark

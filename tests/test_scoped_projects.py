@@ -1,6 +1,7 @@
 """A project belongs to one scope. Its members can live in several."""
 
 import json
+import sqlite3
 from contextlib import closing
 
 import httpx
@@ -12,6 +13,35 @@ from daymark.api import create_app
 from daymark.cli import main
 from daymark.client import Client
 from daymark.mcp import call
+
+
+def test_scoped_project_health_keeps_foreign_facts_and_custom_person_values():
+    class Connection(sqlite3.Connection):
+        no_json = False
+
+        def execute(self, sql, *args):
+            if self.no_json and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    with closing(sqlite3.connect(":memory:", factory=Connection)) as conn:
+        store = Store(conn)
+        t = Tasks(store, "sample")
+        t.add("Reader", id="person", kind="person", scope="home")
+        t.goal("Printed", id="printed", scope="studio")
+        t.project("Edition", id="press", scope="studio", fields="reader:Reader:person", goal="printed")
+        t.project("Warehouse", id="warehouse", scope="home")
+        t.add("Receive parcel", id="receive", project="warehouse", due="2030-05-14")
+        t.add("Pack materials", id="pack", project="press", parent="receive", after=["receive"],
+              plan="2030-05-01", values={"reader": "person"})
+        t.add("Separately completed", id="old", project="warehouse")
+        t.archive("old")
+        t.add("Seal envelope", id="seal", project="press", after=["old"])
+        expected = next(p for p in t.projects()["projects"] if p["id"] == "press")
+        assert (expected["health"]["warnings"], expected["health"]["dependency_conflicts"],
+                expected["health"]["blocked"]) == (1, 1, 1)
+        for conn.no_json in (False, True):
+            assert t.projects(scope="studio")["projects"] == [{**expected, "scope": "studio"}]
 
 
 def test_scoped_portfolio_retains_counts_and_hides_outside_links(tmp_path, capsys):

@@ -13,6 +13,7 @@ This guide covers the engine commands, the service and the worker. The everyday
 verbs (`add`, `ready`, `done` and the rest) are in the [agent guide](agents.md).
 On POSIX, the CLI creates a new database with mode 0600 before SQLite opens
 it. Its journal and shared-memory files inherit the database permissions.
+Running `init` on an existing file preserves its operator-selected mode.
 Backup checks the completed copy and stores it in SQLite's rollback-journal
 mode so an offline, read-only reader needs no sidecar files. The live source
 retains its journal mode. Opening a restored path for writing with Daymark
@@ -23,12 +24,17 @@ On filesystems without hard links, the command reserves the new destination
 and commits the checked SQLite copy there. A hard interruption of this
 fallback can leave an uninitialized file. Restore refuses a zero-byte source.
 A file already at the destination is preserved.
+Workspace JSON exports also serialize to a private temporary file before publication.
+On volumes without hard links, publication copies the finished bytes into an
+exclusively created destination. After a hard interruption during that fallback,
+check the destination before retrying.
 
 A path-owned database runs in SQLite WAL mode, so `-wal` and `-shm` files
 appear beside it; back up with `daymark backup`, not by copying the main file.
 
 Use `daymark where --json` to inspect the selected path without opening SQLite.
-The everyday task views and `workspaces` require an existing Daymark database.
+The everyday task views and local inspections (`workspaces`, `policy`, `health`,
+`events`, `get`, `query`, and `export`) require an existing Daymark database.
 The low-level `list` command retains its legacy create-on-open behavior when
 given a new filename. Use `where` for preflight and `init` for deliberate setup.
 
@@ -359,7 +365,8 @@ Stop or upgrade every process that uses the file (CLI wrappers, the service, the
 worker, embedding applications) together. To roll back, stop them, restore the
 backup into a new path and point the older release at it; writes made after the
 upgrade are not in the backup. A database written by a newer Daymark is refused
-with `conflict`; Daymark never downgrades a file.
+with `conflict`. An unrecognized marker also stops the upgrade and leaves the stored
+value available for inspection. A native backup still works.
 
 ### What happened with older installations
 
@@ -431,3 +438,18 @@ source observations and independently derived regression designs. Daymark's own
 barrier, subprocess, transaction, and restore tests establish its behavior; static
 upstream inspection and upstream test assertions are not Daymark pass results.
 No additional scheduler or task engine is required for the core.
+
+### Several agents opening a new database
+
+When eight independent processes first opened the same new path together,
+SQLite sometimes returned `SQLITE_BUSY` while selecting the journal mode,
+before any task operation had started. In 50 Linux trials using a new file
+each time, 200 of 400 distinct task captures succeeded. Daymark now retries
+that opening step within its connection timeout. Repeating the same 50
+eight-process trials committed all 400 captures. Each resulting workspace
+contained exactly eight events. On Apple Silicon macOS, 319 of 400
+succeeded before the change and 400 of 400 afterward. An application-provided connection keeps its
+own journal settings. A separate CLI check launched eight fresh processes
+at a time. Across five trials per scenario, distinct captures produced eight
+events, identical submissions produced one, and the same operation submitted
+to two workspaces produced one in each. [SQLite busy handlers](https://sqlite.org/c3ref/busy_handler.html) · [WAL journal mode](https://sqlite.org/wal.html#persistence_of_wal_mode)

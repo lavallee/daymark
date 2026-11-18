@@ -239,14 +239,19 @@ class Client:
         owner: str | None = None,
         next_move: str | None = None,
         context: str | None = None, scope: str | None = None, project: str | None = None,
-        brief: bool = False,
+        brief: bool = False, projection: str | None = None,
     ) -> Any:
+        from .views import check_task_projection, task_card
+
+        check_task_projection(projection, brief)
         if context is not None:
             self._require_filter("/v1/ready", "context")
         params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move,
                               scope=scope, context=context, project=project, brief=brief or None)
         rows = self._selected_request("GET", "/v1/ready", project=project, context=context, params=params)
         self._check_project_rows(rows, project)
+        if projection == "card":
+            return [task_card(row) for row in rows]
         if brief:
             # A 0.5 service ignores the brief query parameter. Keep these
             # rows bounded before returning them to a session or MCP host.
@@ -315,7 +320,20 @@ class Client:
     def advice(self, *, profile=None, settings=(), drops=(), scope=None, context=None, now=None, brief=False):
         body = self._params(profile=profile, set=list(settings), drop=list(drops), scope=scope,
                             context=context, now=now, brief=brief or None)
-        return self._optional_profile_read("POST", "/v1/advice", json=body)
+        result = self._optional_profile_read("POST", "/v1/advice", json=body)
+        if result is None or (scope is None and context is None):
+            return result
+        if (not isinstance(result, dict) or not isinstance(result.get("picks"), list)
+                or (scope is not None and result.get("scope") != scope)
+                or (context is not None and result.get("context") != context)):
+            raise DomainError("invalid", "The service did not confirm the requested advice selection")
+        for row in result["picks"]:
+            if not isinstance(row, dict) or (scope is not None and (row.get("scope") or "") != scope):
+                raise DomainError("invalid", "The service returned advice outside the requested scope")
+            if context is not None and (not isinstance(row.get("context_ids"), list)
+                                        or context not in row["context_ids"]):
+                raise DomainError("invalid", "The service did not confirm the requested context on an advice pick")
+        return result
 
     def profile_read(self, view="catalog", name=None):
         return self._optional_profile_read("GET", "/v1/profiles", params=self._params(view=view, name=name))
@@ -401,6 +419,17 @@ class Client:
             raise DomainError("invalid", "An entity ID or source reference is required")
         params = self._params(history=history, now=now, owner=owner, mine=mine or None)
         return self._read_id("context/{id}", "context", "entity_id", entity_id, **params)
+
+    def recurrence_forecast(self, entity_id=None, *, action, source=None, now=None):
+        if action not in ("skip", "done"):
+            raise DomainError("invalid", "Choose skip or done")
+        if (entity_id is None) == (source is None):
+            raise DomainError("invalid", "Choose exactly one entity ID or source reference")
+        path = "/v1/source" if source is not None else "/v1/context"
+        self._require_filter(path, "forecast")
+        if source is not None:
+            return self._source_read(entity_id, source, "show", forecast=action, now=now)
+        return self._request("GET", path, params=self._params(entity_id=entity_id, forecast=action, now=now))
 
     def receipt_context(self, operation_id: str, *, action: str, entity_id: str | None = None) -> Any:
         try:

@@ -398,10 +398,14 @@ class Tasks:
                 raise
         return "dm-" + uuid.uuid4().hex
 
-    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=(), review_token=None):
-        """Apply the caller's intent or verify it against the original kernel receipt."""
+    @staticmethod
+    def _check_expected_version(expected_version):
         if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
             raise DomainError("invalid", "expected_version must be a positive integer")
+
+    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=(), review_token=None):
+        """Apply the caller's intent or verify it against the original kernel receipt."""
+        self._check_expected_version(expected_version)
         key = self._op_id(op)
         for attempt in range(4):
             retry = self._retry_context(op, action, id)
@@ -712,7 +716,8 @@ class Tasks:
         """Append a progress note: what was done, learned, or left for the next session."""
         return self._act(id, "note", {"text": text, "author": self.actor}, op=op)
 
-    def _with_note(self, id, action, fields, note, op):
+    def _with_note(self, id, action, fields, note, op, expected_version):
+        self._check_expected_version(expected_version)
         base = self._op_id(op)
         note_op = str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:note:" + base))
         # 0.5.0 appended the closing note before completing. Validate its own
@@ -725,17 +730,20 @@ class Tasks:
         if not note:
             if old_note or (op and self._retry_context(note_op, "note", id)):
                 raise DomainError("conflict", "Operation ID belongs to a request with a note")
-            return self._act(id, action, fields, op=op)
+            return self._act(id, action, fields, op=op, expected_version=expected_version)
         if old_note:
+            if expected_version is not None and old_note["before"]["version"] != expected_version:
+                raise DomainError("conflict", "Version mismatch")
             self.note(id, note, op=legacy_op)
-            return self._act(id, action, fields, op=op)
+            completion_version = None if expected_version is None else expected_version + 1
+            return self._act(id, action, fields, op=op, expected_version=completion_version)
         return self._paired_actions(
             id, (note_op, "note", {"text": note, "author": self.actor}), (base, action, fields),
-            retryable=op is not None,
+            retryable=op is not None, expected_version=expected_version,
         )
 
-    def done(self, id, *, note=None, op=None):
-        return self._with_note(id, "complete", {}, note, op)
+    def done(self, id, *, note=None, op=None, expected_version=None):
+        return self._with_note(id, "complete", {}, note, op, expected_version)
 
     def skip(self, id, *, op=None):
         """Pass over one occurrence of a recurring task without recording completion."""
@@ -806,9 +814,9 @@ class Tasks:
         )
         return result["task"]
 
-    def release(self, id, *, note=None, op=None):
+    def release(self, id, *, note=None, op=None, expected_version=None):
         """Give back a claim, optionally recording a handoff note in the same transaction."""
-        return self._with_note(id, "release", {"owner": self.actor}, note, op)
+        return self._with_note(id, "release", {"owner": self.actor}, note, op, expected_version)
 
     @staticmethod
     def _check_wait_state(current, retry):
@@ -937,6 +945,12 @@ class Tasks:
             **({"source": source} if source is not None else {}),
         )
 
+    def recurrence_forecast(self, id=None, *, action, source=None):
+        """Read the calendar effect of skipping or finishing one recurring round."""
+        return self.engine.recurrence_forecast(
+            *self._ws, id, action=action, source=source, now=self._now
+        )
+
     def brief(self, id=None, *, before_note=None, source=None):
         """A bounded task handoff, including the latest attributed note previews."""
         return self.engine.brief(
@@ -957,8 +971,8 @@ class Tasks:
             return {}
         return {"owner": self.actor} if self._ws else {"mine": True, "owner": self.actor}
 
-    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None, brief=False):
-        """Select eligible tasks by their own scope, context memberships and explicit project."""
+    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None, brief=False, projection=None):
+        """Select eligible tasks. A card projection retains planning and checklist fields."""
         return self.engine.ready(
             *self._ws,
             now=self._now,
@@ -968,6 +982,7 @@ class Tasks:
             **({"project": project} if project is not None else {}),
             next_move=move,
             **({"brief": True} if brief else {}),
+            **({"projection": projection} if projection is not None else {}),
             **({} if scope is None else {"scope": scope}),
         )
 
@@ -1002,6 +1017,7 @@ class Tasks:
 
     def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None, brief=False):
         """Run the chosen profile with one-call adjustments, without saving them."""
+        from .store import Store
         from .strategies import selected_advice
         from .strategies.remote import advice as service_advice
 
@@ -1011,12 +1027,12 @@ class Tasks:
         if isinstance(self.engine, Client):
             result = service_advice(self, profile, brief=brief, **options)
         else:
-            result = selected_advice(self, profile, **options)
+            result = selected_advice(self, profile, brief=brief and isinstance(self.engine, Store), **options)
         if brief:
             from .render import list_record
 
             now = result.as_of or self.now()
-            result.picks = [list_record(item, now, line_fields=True) for item in result.picks]
+            result.picks = [list_record(item, now, line_fields=True, context=context) for item in result.picks]
         return result
 
     def profile(self, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None):
@@ -1252,7 +1268,7 @@ class Tasks:
             retryable=op is not None,
         )
 
-    def _paired_actions(self, id, first, second, *, retryable):
+    def _paired_actions(self, id, first, second, *, retryable, expected_version=None):
         """Two ordered changes, checked against both original receipts on replay."""
         for attempt in range(4):
             retry = self._retry_context(first[0], first[1], id) if retryable else None
@@ -1263,10 +1279,11 @@ class Tasks:
             if bool(retry) != bool(next_retry):
                 raise DomainError("conflict", "Operation ID belongs to a different request")
             current = retry["before"] if retry else self.engine.get(*self._ws, id)
-            version = current["version"]
+            version = current["version"] if expected_version is None else expected_version
             if not retry and not self._ws and second[1] == "complete" and current["status"] != "proposed":
                 require_active_round(current, "complete")
-            versions = (version, next_retry["before"]["version"] if next_retry else version + 1)
+            next_version = next_retry["before"]["version"] if next_retry and expected_version is None else version + 1
+            versions = (version, next_version)
             operations = [
                 {
                     "operation_id": key,
@@ -1284,7 +1301,7 @@ class Tasks:
                 raise DomainError(error["code"], error["message"], error["details"])
             if retryable and self._retry_context(first[0], first[1], id):
                 continue
-            if self.engine.get(*self._ws, id)["version"] == version:
+            if expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
                 raise DomainError(error["code"], error["message"], error["details"])
 
     def plan(self, project):
@@ -1314,16 +1331,34 @@ class Tasks:
             *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
         )
 
-    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None, brief=False):
+    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None, brief=False, projection=None):
         """Find full records by title or description. A brief retains the fields for a listing."""
         from .search import entity_filters, fold_text, line_record, matches_text
         from .store import Store
+        from .views import check_task_projection, task_card
 
+        check_task_projection(projection, brief)
         filters = entity_filters(kind, status, scope=scope, context=context)
         # Keep Python slice semantics for unbounded reads (also used by caller
         # strategies). A service with only the original query API still gets
         # all scope and context predicates before it returns any records.
-        bounded = type(limit) is int and 1 <= limit <= 1000 and (text is None or len(text) <= 2000)
+        searchable = text is None or len(text) <= 2000
+        bounded = type(limit) is int and 1 <= limit <= 1000 and searchable
+        if projection == "card":
+            if kind != "task":
+                raise DomainError("invalid", "A task card requires kind=task")
+            if isinstance(self.engine, Store) and searchable and (bounded or limit is None):
+                found, after = [], None
+                with self.engine.read_snapshot():
+                    while True:
+                        page = self.engine.search(*self._ws, text, kind=kind, status=status, scope=scope,
+                                                  context=context, projection="card", limit=limit or 1000, after=after)
+                        found.extend(page["items"])
+                        after = page["next"]
+                        if limit is not None or after is None:
+                            return found
+            rows = self.find(text, kind=kind, status=status, limit=limit, scope=scope, context=context)
+            return [task_card(item) for item in rows]
         if bounded and isinstance(self.engine, (Store, Client)):
             options = {"projection": "line" if brief else "entity"}
             if context is not None:

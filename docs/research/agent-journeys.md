@@ -324,7 +324,7 @@ task. The text reply and brief for an archived memory also omitted its archive
 state, and startup omitted recorded scope labels. The scripted trial exercises
 recorded state and machine-visible output. It does not measure whether a
 person would choose a given convention or whether a model can infer it.
-[Memory lifecycle regression](../../tests/test_memory_journey.py)
+The regression is in `tests/test_memory_journey.py` in the matching source checkout.
 
 
 ## What a short time window leaves out

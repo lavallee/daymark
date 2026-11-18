@@ -114,3 +114,37 @@ repeated the request in fresh sessions. Both reported the existing label
 correctly. Claude again made one title edit. Codex again reported the
 approval requirement and made no write. The similarly named proposal and
 the missing CSV row's proposal stayed unchanged in all four runs.
+
+## A named month, an ambiguous correction and a missing quotation
+
+Two fresh Claude Code MCP sessions received the same synthetic sketch
+request, one in Spanish and one in English. The person had set aside
+7 May 2030 to work, could begin earlier, hoped to finish by 18 June,
+and said the Madrid printer would accept delivery through 24 June.
+Neither gave a clock time. Both clients created one task with a plan,
+target and deadline on those respective days. Earliest start stayed empty.
+
+The next message copied `07/08/2030` from an external form that gave no
+date order. Both sessions asked whether this meant 8 July or 7 August.
+Neither changed the record. After the person confirmed 7 August in words,
+both changed only the deadline. At the three checkpoints, each workspace
+contained one task with versions 1, 1 and 2. Fresh read-only sessions
+recovered the three dates in the other language and reported no hour.
+
+The final readers were asked for the earlier deadline and the person's
+exact words. Version comparison recovered 24 June. The date fields held
+calendar dates and the Madrid zone, and no note held the original words.
+One reader nevertheless called the task title human-written, although the
+capture agent had supplied it. After the read-only instructions directed
+agents to version comparison and attributed sources, both fresh readers
+identified the previous date and declined to attribute the title. One
+still made several broad searches. These observations cover one model
+and this pair of prompts.
+
+To reproduce the storage check, add a task with
+`--tz Europe/Madrid` before `add`, then pass `--plan 2030-05-07`,
+`--target 2030-06-18` and `--due 2030-06-24`. Try
+`edit ID --due 07/08/2030` and check that version 1 remains current.
+After confirmation, use `edit ID --if-version 1 --due 2030-08-07` and
+`show ID --since-version 1`. For a direct quotation, consult the source
+or an attributed note that preserves it.

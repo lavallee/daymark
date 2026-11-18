@@ -452,12 +452,13 @@ def _review_projects(tasks, scope):
 
 
 def snapshot(
-    tasks, *, scope: str | None = None, context: str | None = None, reads=SNAPSHOT_READS
+    tasks, *, scope: str | None = None, context: str | None = None, reads=SNAPSHOT_READS, cards=False
 ) -> Snapshot:
     """Read ready picks and the additional views used by this profile."""
     filters = {"scope": scope, **({"context": context} if context is not None else {})}
-    ready = tasks.ready(limit=READY_LIMIT, **filters)
-    opened = tasks.find(status="open", limit=None, **filters) if "open" in reads else []
+    task_filters = {**filters, **({"projection": "card"} if cards else {})}
+    ready = tasks.ready(limit=READY_LIMIT, **task_filters)
+    opened = tasks.find(status="open", limit=None, **task_filters) if "open" in reads else []
     agenda = tasks.agenda(days=0, **filters) if "waiting" in reads or "proposed" in reads else {}
     exploration = tasks.explore(scope=scope) if "exploration" in reads else {}
     if exploration and context is not None:
@@ -496,13 +497,13 @@ def snapshot(
     )
 
 
-def selected_advice(tasks, name=None, *, settings=(), drops=(), scope=None, context=None):
+def selected_advice(tasks, name=None, *, settings=(), drops=(), scope=None, context=None, brief=False):
     """Resolve installed code outside the read transaction, then bind the choice to the facts."""
     from .preferences import select_profile
 
     for _ in range(3):
         chosen, source = select_profile(tasks, name, settings=settings, drops=drops)
-        result = _advise(tasks, chosen, scope, context, source)
+        result = _advise(tasks, chosen, scope, context, source, brief=brief)
         if result is not None:
             return result
     raise DomainError("conflict", "The chosen profile changed during the read. Try again.")
@@ -515,7 +516,8 @@ def advise(
     return _advise(tasks, profile, scope, context, None)
 
 
-def _advise(tasks, requested, scope, context, source):
+def _advise(tasks, requested, scope, context, source, *, brief=False):
+    from .builtin import BUILTINS
     from .preferences import selection_is_current
     from .profiles import PROFILES
 
@@ -524,11 +526,15 @@ def _advise(tasks, requested, scope, context, source):
     skipped = requested.get("skipped", [])
     stages = [(get(stage["use"]), stage["with"]) for stage in profile["strategies"]]
     reads = {name for strategy, _ in stages for name in strategy.reads}
+    # Extensions receive their documented full records, even if they reuse a built-in name.
+    cards = brief and all(
+        BUILTINS.get(strategy.name) is strategy for strategy, _ in stages
+    )
     session = getattr(tasks, "read_snapshot", None)
     with (session() if session else nullcontext(tasks)) as reader:
         if source and not selection_is_current(reader, source):
             return None
-        view = snapshot(reader, scope=scope, context=context, reads=reads)
+        view = snapshot(reader, scope=scope, context=context, reads=reads, cards=cards)
         total = (
             reader.summary(scope=scope, context=context)["ready"]
             if len(view.ready) == READY_LIMIT else len(view.ready)

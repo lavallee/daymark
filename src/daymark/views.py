@@ -19,6 +19,41 @@ LIVE = ("proposed", "open", "waiting")
 DONE = ("completed", "cancelled")
 
 
+LIST_FIELDS = (
+    "id",
+    "kind",
+    "title",
+    "status",
+    "version",
+    "priority",
+    "scope",
+    "next_move",
+    "planned",
+    "deadline",
+    "earliest_start",
+    "latest_target",
+    "waiting_on",
+    "focus",
+    "estimate_minutes",
+    "project_id",
+    "parent_id",
+    "milestone_id",
+    "milestone",
+    "type",
+    "stage",
+    "assignee_id",
+)
+# Scheduling and checklist facts for a task card. Detail bodies stay with show.
+CARD_FIELDS = LIST_FIELDS + (
+    "created_at", "updated_at", "checklist", "advances", "depends_on", "recurrence", "context_ids",
+    "claimed_by", "claim_until",
+)
+
+
+def task_card(item):
+    return {key: item.get(key) for key in CARD_FIELDS}
+
+
 def _is_past(temporal, now):
     value = Temporal.model_validate(temporal)
     return value.is_before(now)
@@ -125,7 +160,7 @@ def in_scope(item, scope) -> bool:
     return scope is None or (item["scope"] or "") == scope
 
 
-def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None, context=None, project=None, brief=False):
+def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None, context=None, project=None, brief=False, projection=None):
     """Open tasks that can be acted on now, most pressing first.
 
     A task is ready when it is open and unarchived, its earliest start has
@@ -136,9 +171,16 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, s
     ``scope`` narrows to one scope, or with ``""`` to items that have none.
     Tasks the person has put in focus come first, in their order.
     """
+    check_task_projection(projection, brief)
     _check_ready_query(limit, next_move, scope, project)
     now = normalize_now(now)
-    return _read_ready(store, workspace, now, owner, next_move, scope, context=context, project=project, limit=limit, brief=brief)
+    return _read_ready(store, workspace, now, owner, next_move, scope, context=context, project=project,
+                       limit=limit, brief=brief, projection=projection)
+
+
+def check_task_projection(projection, brief):
+    if projection not in (None, "entity", "card") or (brief and projection == "card"):
+        raise DomainError("invalid", "Choose full entities, task cards, or brief summaries")
 
 
 def _check_ready_query(limit, next_move, scope, project):
@@ -389,7 +431,7 @@ def _is_ready(item, now, owner, blocked, containers):
     )
 
 
-def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=False, context=None, project=None):
+def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=False, context=None, project=None, projection=None):
     """Rank projected fields and hydrate the selected page inside the same read snapshot."""
     with store._lock:
         if not _usable(store):
@@ -405,7 +447,8 @@ def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=
             top = heapq.nsmallest(limit, eligible, key=lambda item: urgency(item, now)[0])
             if brief:
                 return _ready_summaries(store, workspace, top, now, project)
-            full = _fetch(store, workspace, (item["id"] for item in top))
+            fields = {"fields": CARD_FIELDS} if projection == "card" else {}
+            full = _fetch(store, workspace, (item["id"] for item in top), **fields)
             return [full[item["id"]] for item in top]
 
 
@@ -815,16 +858,24 @@ def _status(item) -> str | None:
     return "cancelled" if item["archived"] else item["status"]
 
 
-def _fetch(store, workspace, ids) -> dict:
+def _fetch(store, workspace, ids, *, fields=()) -> dict:
     found, ids = {}, sorted(set(ids))
     for chunk in _id_pages(store, ids):
-        rows = store.db.execute(
-            "SELECT id,data FROM daymark_entities WHERE workspace=? AND id IN ({})".format(
-                ",".join("?" * len(chunk))
-            ),
-            (workspace, *chunk),
-        )
-        found.update((row[0], json.loads(row[1])) for row in rows)
+        marks = ",".join("?" * len(chunk))
+        table = f" FROM daymark_entities WHERE workspace=? AND id IN ({marks})"
+        args = (workspace, *chunk)
+        if fields:
+            paths = ",".join(f"'$.{key}'" for key in fields)
+            try:
+                rows = store.db.execute(f"SELECT id,json_extract(data,{paths})" + table, args)
+                found.update((id, dict(zip(fields, json.loads(raw), strict=True))) for id, raw in rows)
+                continue
+            except sqlite3.OperationalError as error:
+                if "no such function: json_extract" not in str(error):
+                    raise
+        for id, raw in store.db.execute("SELECT id,data" + table, args):
+            item = json.loads(raw)
+            found[id] = {key: item.get(key) for key in fields} if fields else item
     return found
 
 
@@ -1169,13 +1220,36 @@ _PORTFOLIO_FIELDS = (
 )
 
 
-def _portfolio_rows(store, workspace):
+def _portfolio_rows(store, workspace, scope):
     paths = ",".join(f"'$.{key}'" for key in _PORTFOLIO_FIELDS)
+    query = (
+        "SELECT id,kind,status,archived,CASE WHEN kind='project' THEN data "
+        f"ELSE json_extract(data,{paths}) END FROM daymark_entities WHERE workspace=:workspace"
+    )
+    if scope is not None:
+        # A project's members and their prerequisites may live in other scopes.
+        # Person-valued custom fields also need the workspace's live person IDs.
+        query = """
+            WITH selected(id) AS (
+                SELECT id FROM daymark_entities WHERE workspace=:workspace
+                  AND kind='project' AND archived=0 AND coalesce(json_extract(data,'$.scope'),'')=:scope
+            ), members(id) AS (
+                SELECT source_id FROM daymark_refs WHERE workspace=:workspace AND field='project_id'
+                  AND target_id IN (SELECT id FROM selected)
+            ), records(id) AS (
+                SELECT id FROM selected UNION ALL SELECT id FROM members
+            ), related(id) AS (
+                SELECT target_id FROM daymark_refs WHERE workspace=:workspace
+                  AND source_id IN (SELECT id FROM records)
+                  AND field IN ('depends_on','parent_id','assignee_id','goal_id')
+            )
+        """ + query + """
+            AND (id IN (SELECT id FROM records) OR id IN (SELECT id FROM related)
+                 OR (kind IN ('person','principal') AND archived=0))
+        """
     try:
         records = store.db.execute(
-            "SELECT id,kind,status,archived,CASE WHEN kind='project' THEN data "
-            f"ELSE json_extract(data,{paths}) END FROM daymark_entities WHERE workspace=? ORDER BY id",
-            (workspace,),
+            query + " ORDER BY id", {"workspace": workspace, "scope": scope}
         )
     except sqlite3.OperationalError as exc:
         if "no such function: json_extract" not in str(exc):
@@ -1192,8 +1266,8 @@ def _portfolio_rows(store, workspace):
     return rows
 
 
-def _everything(store, workspace, *, portfolio=False):
-    rows = _portfolio_rows(store, workspace) if portfolio else store._rows(workspace, include_archived=True)
+def _everything(store, workspace, *, portfolio=False, scope=None):
+    rows = _portfolio_rows(store, workspace, scope) if portfolio else store._rows(workspace, include_archived=True)
     by_id = {x["id"]: x for x in rows}
     tasks = {}
     for item in rows:
@@ -1203,14 +1277,13 @@ def _everything(store, workspace, *, portfolio=False):
 
 
 def projects(store, workspace, *, now=None, scope=None):
-    """Every unarchived project with its facts, stages, roll-up and health, read in
-    one pass over the workspace."""
+    """Unarchived projects with their facts, stages, roll-up and health in one snapshot."""
     now = normalize_now(now)
     if scope is not None and (not isinstance(scope, str) or len(scope) > 100):
         raise DomainError("invalid", "Scope must be text of at most 100 characters")
     with store._transaction(write=False):
         _read(store)
-        rows, by_id, tasks = _everything(store, workspace, portfolio=True)
+        rows, by_id, tasks = _everything(store, workspace, portfolio=True, scope=scope)
         people, labels, goals = _named(store, workspace, rows)
         out = []
         for project in (x for x in rows if x["kind"] == "project" and not x["archived"] and in_scope(x, scope)):

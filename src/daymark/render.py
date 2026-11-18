@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from .models import DomainError, Entity, Temporal, day_offset, normalize_now
 from .outbox import DETAIL_FIELDS
-from .views import claim_holder, why
+from .views import LIST_FIELDS, claim_holder, why
 
 _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
 _ALWAYS = ("id", "kind", "title", "status", "version")
@@ -24,41 +24,19 @@ def _single_line(text: str) -> str:
     return _ROW_CONTROLS.sub(lambda match: ascii(match[0])[1:-1], text)
 
 
-_LIST_FIELDS = (
-    "id",
-    "kind",
-    "title",
-    "status",
-    "version",
-    "priority",
-    "scope",
-    "next_move",
-    "planned",
-    "deadline",
-    "earliest_start",
-    "latest_target",
-    "waiting_on",
-    "focus",
-    "estimate_minutes",
-    "project_id",
-    "parent_id",
-    "milestone_id",
-    "milestone",
-    "type",
-    "stage",
-    "assignee_id",
-)
-
-def list_record(entity, now, *, line_fields=False):
+def list_record(entity, now, *, line_fields=False, context=None):
     """List fields as data. Keep detail bodies off queue reads and compact service transfers."""
-    keys = _LIST_FIELDS + (("advances", "depends_on", "recurrence") if line_fields else ())
+    keys = LIST_FIELDS + (("advances", "depends_on", "recurrence") if line_fields else ())
     row = {
         key: entity[key] for key in keys
         if key in entity and (key in _ALWAYS or entity[key] != _DEFAULTS.get(key))
     }
     contexts = entity.get("context_ids") or []
     if contexts:
-        row["context_ids"] = contexts[:3]
+        shown = contexts[:3]
+        if context is not None and context not in shown and context in contexts:
+            shown[-1] = context
+        row["context_ids"] = shown
         remaining = entity.get("more_contexts", len(contexts) - 3)
         if remaining > 0:
             row["more_contexts"] = remaining
@@ -631,6 +609,27 @@ def brief_text(view: dict, *, timezone="UTC", session=None, mcp=False, source=No
     return "\n".join(out)
 
 
+def recurrence_forecast_text(view: dict) -> str:
+    lines = [
+        f"Calendar forecast for {view['id']} v{view['version']} at {view['evaluated_at']}",
+        f"If {view['action']} took effect at that instant, this round would be {view['status']}.",
+    ]
+    successor = view["successor"]
+    if successor:
+        lines.append(f"Would create {successor['id']} (round {successor['occurrence_index'] + 1}).")
+        for field, label in (("planned", "Plan"), ("deadline", "Deadline")):
+            if successor[field]:
+                lines.append(f"{label} {when(successor[field])}")
+    else:
+        lines.append({
+            "recurrence_ended": "No new round under this rule at that instant.",
+            "next_round_previously_created": "No new round. This slot has already been recorded, even if later deleted.",
+            "successor_id_reserved": "No new round. The fallback ID is already reserved.",
+        }[view["outcome"]])
+    lines.append("Refresh before deciding. This snapshot covers recurrence only.")
+    return "\n".join(lines)
+
+
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
     out = [line(item, now, multiline=True)]
@@ -963,7 +962,8 @@ MCP_GUIDE = (
     '• Read agenda with deadlines=true for hard cutoffs, including waiting work. Use show with '
     'id or source for details, brief=true for recent notes and review_token. For a prior '
     'activity checkpoint, read activity after that checkpoint.\n'
-    '• Use advise with scope, profile or set for a one-time change. Read profiles for available '
+    '• For a short check-in, present the advice picks and count held back. '
+    'Use advise with scope, profile or set for a one-time change. Read profiles for available '
     'choices. Memories and settings are shared. A host can resend a personal preference through '
     'its agreed end date. Save it here only if the person wants to share it. Use daymark_remember for a fact the '
     'person wants to share across sessions.\n'
@@ -1003,6 +1003,8 @@ Commands (add --json to any for structured output)
     --deadlines                     hard deadlines only, including waiting and blocked tasks
   daymark show ID [--since-version N]   current detail or changes since a reviewed version
     A circular wait names the child and prerequisite links to review.
+  daymark show ID --forecast skip|done   calendar effect for one round (MCP show: forecast=skip|done)
+  Use an exact source in place of ID when given one. Refresh before a decision.
   daymark activity [--after CURSOR]  recent changes, or changes after a saved checkpoint
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
@@ -1011,7 +1013,7 @@ Commands (add --json to any for structured output)
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL] [--scope NAME]   what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
-  daymark advise [--context ID] [--set shortlist.size=3]   try advice for this request
+  daymark advise [--context ID] [--set shortlist.size=3]   show picks and the count held back
   daymark strategies [NAME]   discover methods and inspect a parameter range
   daymark profile --saved           inspect named choices locally or on a current service
       advise runs service built-ins for the authenticated workspace. Save preferences locally.

@@ -674,3 +674,30 @@ def test_online_backup_is_a_self_contained_read_only_file(tmp_path):
             assert list(destination.iterdir()) == [copy]
     with closing(Store(copy)) as restored:
         assert restored.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+def test_export_publishes_complete_json_and_preserves_a_competing_creator(tmp_path, monkeypatch):
+    from daymark.snapshot_files import write_export
+
+    destination = tmp_path / "export.json"
+    original = json.dump
+
+    def interrupt(snapshot, out, **kwargs):
+        out.write('{"partial":')
+        raise OSError("Synthetic interruption")
+
+    monkeypatch.setattr(json, "dump", interrupt)
+    with pytest.raises(OSError, match="interruption"):
+        write_export(destination, {"sample": 1})
+    assert list(tmp_path.iterdir()) == []
+
+    def competing(snapshot, out, **kwargs):
+        assert not destination.exists()
+        original(snapshot, out, **kwargs)
+        destination.write_text("Created separately")
+
+    monkeypatch.setattr(json, "dump", competing)
+    with pytest.raises(FileExistsError):
+        write_export(destination, {"sample": 2})
+    assert destination.read_text() == "Created separately"
+    assert list(tmp_path.iterdir()) == [destination]

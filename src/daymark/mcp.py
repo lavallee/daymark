@@ -60,8 +60,8 @@ TOOLS = [
     {
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
-        "description": 'json=true: data. scope ""=unscoped. show: id/source. ready: project,explain. agenda: deadlines. '
-        "find: task, source+scope. advise: set STRATEGY[.PARAM=VALUE]/drop. profiles: strategy.",
+        "description": 'json=true: data. scope "": unscoped. show id/source, forecast. ready project/explain. agenda deadlines. '
+        "find source+scope. advise set/drop. profiles strategy.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -85,6 +85,7 @@ TOOLS = [
                 "id": {"type": "string"},
                 "text": {"type": "string"},
                 "brief": {"type": "boolean"},
+                "forecast": {"type": "string", "enum": ["skip", "done"]},
                 "note": {"type": "string"},
                 "source": {"type": "string"},
                 "explain": {"type": "boolean"},
@@ -117,7 +118,7 @@ TOOLS = [
     },
     {
         "name": "daymark_add",
-        "description": "proposed=true: idea. assignee: exact name (person+principal) or ID. after=prerequisite IDs. source=system:kind:id. " + _DATES + _DATE_FORMS + " every:day/week/month/year/weekdays/mon,thu.",
+        "description": "proposed=true: idea. assignee=person/principal ID or exact name. after=prerequisites. source=system:kind:id. " + _DATES + _DATE_FORMS + " every:day/week/month/year/weekdays/mon,thu.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -156,7 +157,7 @@ TOOLS = [
         "name": "daymark_act",
         "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
         "take:omit id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
-        "remind: local when + recipient ID, default local recording. use_profile: id=name or set/drop. restore_profile: receipt id+expected_version.",
+        "remind:when,recipient ID; local recording. use_profile:id=name or set/drop. restore_profile:receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -216,7 +217,13 @@ _READ_GUIDE = (
     "Read-only Daymark session. Given a named scope, pass it to daymark_prime. " + _SCOPE_GUIDE
     + " For a known ID or source when full detail is requested, use daymark_view show. "
     "Use brief=true for attributed note previews. A claim identifies the holder. Look for progress in the notes. "
-    "Use ready for eligible tasks, find for records, and activity for workspace changes."
+    "Use ready for eligible tasks, find for records, and activity for workspace changes. "
+    "For a previous field value, use show with since_version. Quote original wording only from an attributed source."
+)
+_SHORT_CHECK_IN = (
+    " For a short check-in, read advise with the agreed settings. Show its picks and how many more there are. "
+    "Read or name the other tasks when the person asks to see them. "
+    "For requested hard deadlines, check agenda with deadlines=true. A date alone has no recorded hour."
 )
 _TYPES = {"string": str, "boolean": bool, "integer": int, "array": list, "object": dict}
 
@@ -229,7 +236,7 @@ _VIEW_ARGS = {
     "explore": {"id", "scope"},
     "agenda": {"days", "scope", "context", "deadlines"},
     "activity": {"after", "limit"},
-    "show": {"id", "source", "brief", "note", "before_note", "since_version"},
+    "show": {"id", "source", "brief", "note", "before_note", "since_version", "forecast"},
     "find": {"source", "text", "limit", "after", "kind", "status", "scope", "claimed", "archived"},
     "plan": {"id", "by"},
     "projects": {"scope"},
@@ -245,8 +252,8 @@ _ACT_ARGS = {
     "restore_profile": {"expected_version"},
     "take": {"scope", "context", "project", "minutes"},
     "note": {"text"},
-    "done": {"text"},
-    "release": {"text"},
+    "done": {"text", "expected_version"},
+    "release": {"text", "expected_version"},
     "wait": {"on", "until"},
     "defer": {"until"},
     "remind": {"when", "recipient"},
@@ -408,7 +415,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
                 op=op,
             )
         elif action in {"done", "release"}:
-            item = getattr(tasks, action)(id, note=args.get("text"), op=op)
+            item = getattr(tasks, action)(id, note=args.get("text"), op=op, expected_version=args.get("expected_version"))
         elif action == "wait":
             item = tasks.wait(id, args["on"], until=args.get("until"), op=op)
         elif action == "remind":
@@ -534,13 +541,14 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                 "protocolVersion": version if version in _PROTOCOLS else _PROTOCOLS[-1],
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "daymark", "version": __version__},
-                "instructions": _READ_GUIDE
-                if read_only
-                else "Start with daymark_prime for orientation. If the request names a scope, pass scope on the first read. "
-                + _SCOPE_GUIDE + " Settings and memories are shared across this workspace. "
-                "Apply personal or time-limited choices per call unless the person asks to share them. "
-                "For each write, choose a fresh op "
-                "and reuse it if that same write needs a retry. Never invent dates or completions.",
+                "instructions": (
+                    _READ_GUIDE if read_only else
+                    "Start with daymark_prime for orientation. If the request names a scope, pass scope on the first read. "
+                    + _SCOPE_GUIDE + " Settings and memories are shared across this workspace. "
+                    "Apply personal or time-limited choices per call unless the person asks to share them. "
+                    "For each write, choose a fresh op "
+                    "and reuse it if that same write needs a retry. Never invent dates or completions."
+                ) + _SHORT_CHECK_IN,
             }
         )
     if method == "ping":

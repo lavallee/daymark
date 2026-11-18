@@ -37,6 +37,130 @@ def test_a_competing_completion_cannot_split_ready_picks_and_project_review(tmp_
         assert later.picks == [] and "no open or waiting task" in later.notes[0].text
 
 
+@pytest.mark.parametrize(
+    ("reply", "filters"),
+    [
+        ({"picks": []}, {"scope": ""}),
+        ({"scope": "studio", "picks": [{"scope": "home"}]}, {"scope": "studio"}),
+        ({"scope": "", "picks": [{"scope": "studio"}]}, {"scope": ""}),
+        ({"context": "phone", "picks": [{"context_ids": ["desk"]}]}, {"context": "phone"}),
+    ],
+)
+def test_service_advice_verifies_requested_filters_before_returning_content(reply, filters):
+    def service(request):
+        assert request.url.path == "/v1/advice"
+        return httpx.Response(200, json={**reply, "notes": ["Synthetic unrelated detail"]})
+
+    with Client("http://sample.invalid", "token", transport=httpx.MockTransport(service)) as client:
+        with pytest.raises(DomainError) as exc:
+            Tasks(client).advise(brief=True, **filters)
+        assert exc.value.code == "invalid" and "Synthetic" not in str(exc.value)
+
+
+def test_advice_retains_the_requested_context_when_only_three_context_ids_are_shown():
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "trial")
+        contexts = ["desk", "office", "travel", "phone", "review"]
+        for context in contexts:
+            tasks.add(context, id=context, kind="context")
+        tasks.add("Review proof", id="proof", contexts=contexts)
+        with (TestClient(create_app(store, {"token": {"workspace": "trial", "principal": "reader"}})) as app,
+              Client("http://sample.invalid", "token", transport=app._transport) as client):
+            for reader in (tasks, Tasks(client)):
+                (row,) = reader.advise(context="phone", scope="", brief=True).picks
+                assert row["context_ids"] == ["desk", "office", "phone"] and row["more_contexts"] == 2
+                assert reader.advise(context="phone").picks[0]["context_ids"] == contexts
+
+
+def test_open_task_cards_keep_filter_order_across_pages_and_older_adapter_shapes(monkeypatch):
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "press")
+        tasks.add("Phone", kind="context", id="phone")
+        for i in range(7):
+            tasks.add(f"Proof {i}", id=f"p{i}", contexts=["phone"] if i < 6 else [],
+                      scope="studio" if i < 5 or i == 6 else "home", description="Editing record")
+        filters = {"kind": "task", "status": "open", "scope": "studio", "context": "phone"}
+        complete = tasks.find("editing", limit=None, **filters)
+        search = store.search
+        boundaries = []
+
+        def two_at_a_time(*args, **options):
+            if options.get("projection") == "card":
+                boundaries.append(options.get("after"))
+                options["limit"] = 2
+            return search(*args, **options)
+
+        monkeypatch.setattr(store, "search", two_at_a_time)
+        cards = tasks.find("editing", limit=None, projection="card", **filters)
+        assert boundaries == [None, "p1", "p3"]
+        assert [c["id"] for c in cards] == [e["id"] for e in complete] == ["p0", "p1", "p2", "p3", "p4"]
+        assert all(c["updated_at"] and "description" not in c for c in cards)
+        assert tasks.find("editing", limit=-1, projection="card", **filters) == cards[:-1]
+        with (TestClient(create_app(store, {"token": {"workspace": "press", "principal": "reader"}})) as app,
+              Client("http://sample.invalid", "token", transport=app._transport) as client):
+            assert Tasks(client).find("editing", limit=None, projection="card", **filters) == cards
+
+
+def test_brief_methods_keep_planning_facts_and_a_registered_extension_gets_full_records(monkeypatch):
+    from dataclasses import replace
+
+    from daymark.render import list_record
+    from daymark.strategies.builtin import BUILTINS
+    from daymark.strategies.profiles import PROFILES
+
+    class Connection(sqlite3.Connection):
+        no_json = False
+
+        def execute(self, sql, *args):
+            if self.no_json and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    now = datetime(2030, 5, 1, 10, tzinfo=UTC)
+    with closing(sqlite3.connect(":memory:", factory=Connection)) as conn:
+        store = Store(conn)
+        t = Tasks(store, "press", now=now)
+        t.add("Reader", kind="person", id="reader")
+        t.add("Phone", kind="context", id="phone")
+        t.project("Edition", id="press", preset="epics")
+        t.goal("Printed", id="goal")
+        t.condition("Proof approved", id="go", goal="goal", state="unmet")
+        t.add("Proof", id="proof", scope="studio", contexts=["phone"], minutes=15,
+              project="press", type="bug", assignee="reader", move="answer", advances=["go"],
+              plan="2030-05-01", due="2030-05-02", description="Complete proof history",
+              metadata={"source": "synthetic"}, note="Earlier decision",
+              checklist=[{"id": "read", "text": "Open the proof"}])
+        t.focus("proof")
+        t.claim("proof")
+        t.add("Keep reviewing", id="again", every="day", plan="2030-05-01", minutes=45)
+        t.add("Prepare cover", id="other")
+        t.add("Wait for plates", id="wait", waiting_on="press")
+        for conn.no_json in (False, True):
+            for profile in PROFILES:
+                full = t.advise(profile=profile)
+                assert full.picks[0]["description"] == "Complete proof history"
+                full.picks = [list_record(item, now, line_fields=True) for item in full.picks]
+                assert t.advise(profile=profile, brief=True).to_dict() == full.to_dict()
+            (card,) = t.ready(projection="card", scope="studio", context="phone")
+            assert card["checklist"][0]["text"] == "Open the proof"
+            assert not {"notes", "metadata", "description"}.intersection(card)
+        conn.no_json = False
+
+        def read_details(view, advice, params):
+            proof = next(item for item in view.ready if item["id"] == "proof")
+            assert proof["notes"][0]["text"] == "Earlier decision"
+            assert proof["description"] == "Complete proof history"
+            assert proof["metadata"] == {"source": "synthetic"}
+            assert next(item for item in view.open if item["id"] == "proof") == proof
+            advice.notes.append(strategies.Note("shortlist", "Read full details."))
+
+        monkeypatch.setitem(strategies._REGISTRY, "shortlist",
+                            replace(BUILTINS["shortlist"], apply=read_details, reads=("open",)))
+        result = t.advise(profile="plain", settings=["shortlist.size=2"], brief=True)
+        assert result.notes[0].text == "Read full details."
+        assert all("notes" not in item for item in result.picks)
+
+
 def test_advice_reselects_an_active_profile_changed_before_the_snapshot(tmp_path, monkeypatch):
     from daymark.strategies import preferences
 

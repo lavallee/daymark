@@ -12,6 +12,7 @@ import json
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
@@ -49,6 +50,7 @@ def invalid(message):
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
 SCHEMA = "6"
+_OPEN_TIMEOUT = 30
 # The first release that writes this schema. A file at this schema needs it or newer.
 RELEASE = "0.5.0"
 STALE = (
@@ -114,7 +116,7 @@ class Store:
             path = Path(path).resolve().as_uri() + ("?mode=ro" if read_only else "?mode=rw")
         self._upgrade = upgrade
         self.db = (
-            sqlite3.connect(path, check_same_thread=False, timeout=30, uri=existing_file) if self._owned else path
+            sqlite3.connect(path, check_same_thread=False, timeout=_OPEN_TIMEOUT, uri=existing_file) if self._owned else path
         )
         self._lock = threading.RLock()
         self._actor = None  # Who is acting in the current execute; recorded on its events.
@@ -130,7 +132,7 @@ class Store:
             if self._owned:
                 # One durable sync per commit instead of a journal's several, and readers
                 # that do not wait on a writer. A caller-owned connection keeps its own mode.
-                self.db.execute("PRAGMA journal_mode=WAL")
+                self._enable_wal()
             # Individual DDL statements do not implicitly commit an existing transaction.
             # Use a root transaction even for schema so caller rollback includes schema.
             try:
@@ -153,6 +155,27 @@ class Store:
                 ) from None
             raise
 
+    def _enable_wal(self):
+        # Concurrent first opens can both hold read locks while changing the
+        # journal mode. SQLite may report BUSY without waiting in that case.
+        deadline = time.monotonic() + _OPEN_TIMEOUT
+        delay = 0.005
+        while True:
+            try:
+                self.db.execute("PRAGMA journal_mode=WAL").fetchone()
+                return
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", 0) & 255 != sqlite3.SQLITE_BUSY:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DomainError(
+                        "conflict", "The database is busy while selecting its journal mode",
+                        ["Retry opening the same database after the other writer finishes."],
+                    ) from None
+                time.sleep(min(remaining, delay))
+                delay = min(delay * 2, 0.1)
+
     def stored_schema(self):
         """The schema marker in the database: None when it has no Daymark tables (or
         predates the marker), else a string such as "5". ``SCHEMA`` is this code's."""
@@ -168,12 +191,20 @@ class Store:
         """Refuse a schema this code must not touch: newer always, older or missing
         unless upgrading."""
         stored = self.stored_schema()
-        if stored is not None and stored.isdigit() and int(stored) > int(SCHEMA):
-            raise DomainError(
-                "conflict",
-                f"This database was written by a newer Daymark (schema {stored}); this is "
-                f"daymark-core {__version__} (schema {SCHEMA}). Use a newer Daymark.",
-            )
+        if stored is not None:
+            if not isinstance(stored, str) or not re.fullmatch(r"[1-9][0-9]*", stored):
+                raise DomainError(
+                    "conflict", "This database has an unrecognized Daymark schema marker",
+                    ["Keep the original file and inspect a native backup before choosing a compatible version."],
+                )
+            # Compare canonical decimal strings without parsing an unbounded integer.
+            if (len(stored), stored) > (len(SCHEMA), SCHEMA):
+                detail = f" (schema {stored})" if len(stored) < 12 else ""
+                raise DomainError(
+                    "conflict",
+                    f"This database was written by a newer Daymark{detail}; this is "
+                    f"daymark-core {__version__} (schema {SCHEMA}). Use a newer Daymark.",
+                )
         if upgrading or self._current():
             return
         if not self._has_schema():
@@ -1705,8 +1736,7 @@ class Store:
             state = "other"
         return state
 
-    def _successor(self, data, operation_id):
-        now = normalize_now().isoformat()
+    def _next_round(self, data, at):
         recurrence = Recurrence.model_validate(data["recurrence"])
         index = recurrence.occurrence_index + 1
         series = data["series_id"] or data["id"]
@@ -1719,8 +1749,11 @@ class Store:
         # ever materialized, even if since deleted, is never materialized again.
         readable = f"{series}.{index}"
         state = self._occurrence_slot(workspace, readable, key) if len(readable) <= 128 else "other"
-        if state == "ours" or self._occurrence_slot(workspace, hashed, key) is not None:
-            return
+        if state == "ours":
+            return "next_round_previously_created", None
+        hashed_state = self._occurrence_slot(workspace, hashed, key)
+        if hashed_state is not None:
+            return ("next_round_previously_created" if hashed_state == "ours" else "successor_id_reserved"), None
         id = readable if state is None else hashed
         original_row = self._entity_history(
             workspace, data["id"], "e.after_data", 1, creations=True
@@ -1733,12 +1766,57 @@ class Store:
             # anchor survives rescheduling of the first individual occurrence.
             nominal = data["recurrence"]["anchor"]
         current = Temporal.model_validate(nominal)
-        # Skip advances the series at its transition time without recording activity.
-        following = next_occurrence(
-            recurrence, current, normalize_now(data["completed_at"] or data["updated_at"])
-        )
+        following = next_occurrence(recurrence, current, at)
         if following is None:
+            return "recurrence_ended", None
+        field = recurrence_date_field(data)
+        dates = {"planned": data["planned"], "deadline": data["deadline"]}
+        dates[field] = following.model_dump(mode="json")
+        return "would_create_next_round", {
+            "id": id,
+            "series_id": series,
+            "occurrence_key": key,
+            "occurrence_index": index,
+            **dates,
+        }
+
+    def recurrence_forecast(self, workspace, id=None, *, action, now=None, source=None):
+        """Describe the calendar effect of one fresh transition in a read snapshot."""
+        if action not in {"skip", "done"}:
+            invalid("Choose skip or done")
+        with self.read_snapshot():
+            return self._read_entity(Store._forecast_round, workspace, id, source, action, now)
+
+    def _forecast_round(self, workspace, id, action, now):
+        data = self.get(workspace, id)
+        if not data["recurrence"]:
+            invalid("Forecast requires a recurring task")
+        if data["status"] == "proposed":
+            invalid("Accept or dismiss a proposal first")
+        require_active_round(data, "complete" if action == "done" else action)
+        at = normalize_now(now)
+        timestamp = at.isoformat().removesuffix("+00:00") + "Z"
+        outcome, successor = self._next_round(data, at)
+        return {
+            "id": id,
+            "version": data["version"],
+            "evaluated_at": timestamp,
+            "action": action,
+            "status": "completed" if action == "done" else "cancelled",
+            "completed_at": timestamp if action == "done" else None,
+            "outcome": outcome,
+            "successor": {
+                field: successor[field] for field in ("id", "occurrence_index", "planned", "deadline")
+            } if successor is not None else None,
+        }
+
+    def _successor(self, data, operation_id):
+        now = normalize_now().isoformat()
+        at = normalize_now(data["completed_at"] or data["updated_at"])
+        _, successor = self._next_round(data, at)
+        if successor is None:
             return
+        id = successor["id"]
         raw = {
             **data,
             "id": id,
@@ -1747,9 +1825,11 @@ class Store:
             "completed_at": None,
             "created_at": normalize_now().isoformat(),
             "updated_at": normalize_now().isoformat(),
-            "series_id": series,
-            "occurrence_key": f"{series}:{index}",
-            "recurrence": {**data["recurrence"], "occurrence_index": index},
+            "series_id": successor["series_id"],
+            "occurrence_key": successor["occurrence_key"],
+            "recurrence": {**data["recurrence"], "occurrence_index": successor["occurrence_index"]},
+            "planned": successor["planned"],
+            "deadline": successor["deadline"],
             "source_refs": [],
             "checklist": [{**x, "completed": False} for x in data["checklist"]],
             # Progress notes and waiting state describe one occurrence, not the series.
@@ -1768,8 +1848,6 @@ class Store:
                 else None
             ),
         }
-        field = recurrence_date_field(data)
-        raw[field] = following.model_dump(mode="json")
         child = self._validated(raw)
         self._put(child)
         self._validate_entity(child)
@@ -2185,12 +2263,12 @@ class Store:
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]
 
-    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, project=None, brief=False):
+    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, project=None, brief=False, projection=None):
         """Open tasks that can be acted on now, most pressing first. See views.ready."""
         from . import views
 
         return views.ready(
-            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, project=project, brief=brief
+            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, project=project, brief=brief, projection=projection
         )
 
     def explain_ready(self, workspace, *, now=None, limit=20, owner=None, next_move=None, context=None, scope=None, project=None):

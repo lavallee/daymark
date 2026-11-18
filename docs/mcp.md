@@ -11,7 +11,8 @@ the tools this client can call. Pass a named scope on the first read. For an exa
 The walkthrough uses the development CLI (`0.6.0.dev0`). The tagged
 `0.5.0` serves six tools and prints its onboarding snippet. The read-only
 MCP switch, `where`, and `onboard --check` require the development version.
-If using a source checkout, start there:
+Start in the checkout or unpacked source archive containing this guide.
+The steps below expect `daymark --version` to report `0.6.0.dev0`.
 
 ```sh
 uv sync
@@ -400,3 +401,9 @@ To revisit an archived task, proposal or remembered fact, read its exact
 record with a brief show, then call `daymark_act` with action `unarchive`,
 `id`, `review_token` and a stable `op`. Restoration retains its recorded
 status. An archived proposal requires restoration before a fresh acceptance.
+
+For a read-only preview of one recurring transition, pass `forecast:"skip"`
+or `forecast:"done"` to the show view with the exact ID or source. Its result
+names the successor and its dates or explains why a new round would not be
+created. Read it again before acting if time or related records have changed.
+[Recurring-work trials](research/recurring-work.md)

@@ -9,8 +9,13 @@ remains `0.5.0`.
 
 ### Upgrade and compatibility
 
-- Ordinary workspace display commands return `no_database` for missing paths or SQLite files with no Daymark tables. Use `where` to check the selection and `init` to create a database.
+- Running `daymark` with no arguments now prints a one-screen starting guide
+  and exits successfully. `daymark --help` lists every command and global option.
+- Local health, policy, export, and ordinary workspace reads return `no_database` for missing paths or SQLite files with no Daymark tables. Use `where` to check the selection and `init` to create a database.
 
+- Concurrent first opens retry SQLite journal-mode contention before starting the task write.
+- Existing database permissions survive repeated initialization. JSON exports publish after serialization and preserve an existing destination. An empty decision-maker argument now directs administrators to the explicit `policy --clear` command.
+- A database with an unrecognized schema marker returns `conflict` before migration. Literal percent escapes in imported IDs round-trip on the oldest supported HTTP client.
 - Make a native SQLite backup before upgrading. The schema marker stays at
   6. A writable open installs setting-revision tracking, including for later
   writes by a v0.5.0 process. A caller-owned connection must commit this
@@ -42,6 +47,7 @@ remains `0.5.0`.
 - `agenda --deadlines --days N` shows agreed hard cutoffs, including work
   that is waiting or blocked. The ordinary text agenda separates earlier
   plans from work due or planned today.
+- Before skipping or completing a recurring round, `show ID --forecast skip|done` previews the current outcome and the next recorded dates. CLI, MCP and authenticated HTTP can read the same forecast.
 - `ready --brief --json` returns the same compact queue rows as the structured MCP ready view. UIs can show the reason for each suggestion without loading its note history.
 - `ready --explain` counts eligible and held tasks and gives examples for
   each reason. A brief shows the reviewed task's blockers, claim, attributed

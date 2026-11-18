@@ -17,6 +17,11 @@ uv build
 uv run python scripts/check_sdist.py dist/*.tar.gz
 ```
 
+The standalone site serves the contents of `docs/`. The archive check
+checks local inline links in the Markdown guides and `llms.txt`. When
+citing a test or script from the matching checkout, give its repository
+path in code.
+
 The test matrix covers Python 3.11–3.14 on Linux and 3.14 on macOS.
 To reproduce the macOS file-descriptor budget locally, use
 `(ulimit -n 256 && uv run pytest -q)` in a POSIX shell. Tests that open
@@ -45,8 +50,9 @@ See [RELEASING.md](RELEASING.md) for maintainer release checks.
 The [agent journeys](docs/research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
 include a local driver for seven synthetic requests. Use it to compare what the
 person asked for with what an agent actually stored. It works with the real
-CLI and your choice of client.
-
+CLI and your choice of client. To test what helps a person return to a project,
+compare their usual routine with two real returns and keep the notes private.
+[Field trial worksheet](docs/research/trying-daymark.md)
 
 ## Check a real MCP client
 

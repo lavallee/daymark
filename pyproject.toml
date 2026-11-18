@@ -15,6 +15,7 @@ dependencies = [
     "tzdata>=2025.2",
 ]
 [project.urls]
+Documentation = "https://lavallee.github.io/daymark/"
 Repository = "https://github.com/lavallee/daymark"
 Issues = "https://github.com/lavallee/daymark/issues"
 Changelog = "https://github.com/lavallee/daymark/blob/main/CHANGELOG.md"

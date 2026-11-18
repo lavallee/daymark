@@ -101,6 +101,11 @@ def read_view(tasks, args, *, read_only=False):
         if ("id" in args) == ("source" in args):
             raise DomainError("invalid", "show takes exactly one of id or source")
         id, source = args.get("id"), args.get("source")
+        if "forecast" in args:
+            if args.get("brief") or {"before_note", "note", "since_version"} & args.keys():
+                raise DomainError("invalid", "Choose a recurrence forecast or another show detail")
+            data = tasks.recurrence_forecast(id, action=args["forecast"], source=source)
+            return StructuredView(data) if structured else render.recurrence_forecast_text(data)
         if "since_version" in args:
             if args.get("brief") or "note" in args or "before_note" in args:
                 raise DomainError("invalid", "Choose a version comparison or a note/brief")

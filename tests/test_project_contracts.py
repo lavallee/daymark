@@ -216,6 +216,24 @@ def test_a_newer_schema_is_never_downgraded(tmp_path):
     assert "newer Daymark" in str(error)
 
 
+@pytest.mark.parametrize("marker", ["7-preview", "²", b"schema/next", "0006", "9" * 4500])
+def test_unrecognized_schema_is_preserved_for_recovery(tmp_path, marker):
+    from contextlib import closing
+
+    path = tmp_path / "sample.db"
+    with closing(Store(path)) as store:
+        Tasks(store, "sample").add("Keep the sample", id="sample")
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("UPDATE daymark_scheduler SET value=? WHERE key='schema'", (marker,))
+        db.commit()
+        original = db.execute("SELECT data FROM daymark_entities").fetchall()
+        for source, options in ((path, {}), (path, {"read_only": True}), (db, {})):
+            error = code("conflict", Store, source, **options)
+            assert len(str(error)) < 250
+        assert db.execute("SELECT value FROM daymark_scheduler WHERE key='schema'").fetchone() == (marker,)
+        assert db.execute("SELECT data FROM daymark_entities").fetchall() == original
+
+
 def test_release_0_3_0_cannot_read_an_upgraded_file(tmp_path):
     """The upgrade is one-way. 0.3.0's entity model forbids unknown fields; rebuild
     that model from this one minus the fields 0.4.0 added and show it refuses."""

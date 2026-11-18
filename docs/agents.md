@@ -3,6 +3,9 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
+Check `daymark --version`. This guide accompanies `0.6.0.dev0`.
+For the tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
+
 For a first integration, start with the session and reading sections below.
 For common follow-up requests, use these entry points.
 
@@ -15,6 +18,10 @@ For common follow-up requests, use these entry points.
 | “Did that write go through?” | [Retrying safely](#retrying-safely) |
 
 ## Start of a session
+
+Running `daymark` alone prints a short guide without opening a database.
+Use `daymark COMMAND --help` for one command or `daymark --help` for the
+complete CLI reference.
 
 In an unfamiliar directory, `daymark where --json` reports the selected
 database, selection rule and whether the file exists. It opens no database
@@ -134,7 +141,17 @@ intended schedule before adding the series. [Recurring work examples](research/r
 
 After several missed fixed slots, confirm which rounds actually happened.
 A skip advances one round. A completion-based series schedules from the
-actual completion. Reminders belong to one occurrence. Schedule a new
+instant the skip or completion takes effect. Use `show ID --forecast skip`
+or `show ID --forecast done` locally or with `--url`. In MCP, call
+`daymark_view` with `view=show` and `forecast=skip` or `forecast=done`.
+Both accept an exact source in place of the ID. The forecast covers one fresh
+transition at the displayed UTC instant and task version. It reports the
+projected plan and deadline, end of the rule, or a reserved slot. A working
+claim is advisory. Confirm the holder's progress before acting. Refresh before
+deciding because time and slot occupancy can change independently of the task
+version. On a service without forecast support, explain the recorded rule from
+ordinary show when available, and confirm what happened in activity or events
+after an authorized change. Reminders belong to one occurrence. Schedule a new
 notice on the successor when requested. To correct a completed or skipped
 round, inspect its record and the following occurrence. Reopening the earlier
 record keeps the later occurrence and its evidence.
@@ -187,8 +204,12 @@ notes. Set the timezone for relative dates with `--tz` or `DAYMARK_TZ`.
 
 **Dates** accept `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM` (local, or with an offset),
 `today`, `tomorrow`, a weekday name (the next one), `+3d`, `+2w`, `+1m`, `+1y`,
-and any relative form followed by `HH:MM`. A relative phrase is stored beside
-the date it resolved to, so `show` can report what was actually said. A clock time skipped by a timezone change is refused. When a
+and any relative form followed by `HH:MM`. When a person names a day and
+month unambiguously, pass the ISO date. If an external notice says
+`07/08/2030` without a date order, ask which day it means before editing.
+A stored relative expression is the text the caller passed to Daymark.
+An ISO date alone cannot recover the person’s original wording.
+A clock time skipped by a timezone change is refused. When a
 clock reading occurs twice, ask which occurrence the person intends and use
 the matching numeric offset. For example, `2030-04-07T01:45+11:00` and
 `2030-04-07T01:45+10:30` identify different instants on Lord Howe Island.
@@ -324,6 +345,11 @@ preview, use `advise --drop STRATEGY`. Through MCP, pass `view="advise"` with
 optional `profile`, `set` and `drop` on `daymark_view`. The last two take
 lists of strings. [Working with a person's preferences](working-preferences.md)
 gives examples of turning feedback into one reversible change.
+
+For a short check-in, present the picks and the count held back. If the person
+asks whether anything omitted is due today, check `agenda --deadlines --days 0`
+in the same scope. Name the verified exception separately. A date-only deadline
+has no recorded hour.
 
 When someone asks to reuse a configuration occasionally, `daymark profile
 --save-as NAME` saves a named copy in the local workspace. Inspect it with
@@ -506,7 +532,9 @@ refuses the read if the service lacks support.
 
 For a local database import `Store` and `Tasks` from `daymark`. For an
 existing HTTP service install `daymark-core[client]` and import `Client`.
-The credential chooses the workspace and actor. [Python examples](../README.md#embed-in-your-transaction)
+The credential chooses the workspace and actor. The source archive includes
+the Python examples under “Embed in your transaction” in `README.md`.
+[Embedding example in the tagged release](https://github.com/lavallee/daymark/blob/v0.5.0/README.md#embed-in-your-transaction)
 
 `Tasks` wraps these connections with the same verbs:
 `add`, `propose`, `ready`, `agenda`, `show`, `claim`, `release`, `note`,
@@ -527,7 +555,7 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
   named actors; others get `forbidden` (exit 7). Over HTTP this is enforced
   against the authenticated principal. Locally it stops a well-behaved agent
   from deciding on a person's behalf by accident; it cannot stop a process that
-  lies about its name or edits the file. `daymark policy --clear` lifts it.
+  lies about its name or edits the file. Only `daymark policy --clear` lifts the restriction on the CLI.
 - Claims and `next_move` are coordination, not access control. An agent can
   still create an open task directly; proposing is a discipline the policy
   supports but does not force. General lifecycle changes and snapshot restore use

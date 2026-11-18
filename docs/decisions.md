@@ -4,7 +4,9 @@ Decision date: 2026-11-09. The implementation owner chose these defaults under t
 commissioner's delegated routine-decision authority. This records design choices;
 it does not assert that an unfinished implementation has passed acceptance. The
 [comparison ADRs](adr-comparison.md) retain the evidence and alternatives. Release
-readiness remains governed by [RELEASING.md](../RELEASING.md).
+readiness follows `RELEASING.md` in the matching source checkout.
+The [tagged release checklist](https://github.com/lavallee/daymark/blob/v0.5.0/RELEASING.md)
+records the procedure shipped with 0.5.0.
 
 | Research decision | Disposition for v1 | Contract and limit |
 |---|---|---|
@@ -314,3 +316,24 @@ preserved and counts as the first occurrence even if it falls off-pattern.
 For Tuesday January 1, 2030 followed by Fridays with COUNT=2, the final
 round is Friday January 4. Existing materialized records and receipts
 keep their dates. [Calendar trial](research/recurring-work.md)
+
+## Starting from a terminal
+
+Running `daymark` with no arguments prints a compact starting guide and
+exits successfully before database selection. It introduces folder-local
+setup, pending proposals, session pickup and command-specific help. Full
+`--help` keeps the parser-generated command and option index. Commands
+missing their own required arguments retain their usage errors.
+
+The guide occupies 17 lines at 80 columns and also appears at the end of
+full help, where an ordinary terminal leaves its cursor. In a synthetic
+80×24 terminal, fresh Claude Code sessions saved one pending proposal in
+the intended folder on v0.5.0, the development baseline and the revised CLI.
+They used 21, 21 and 15 command or scroll calls respectively. With scrollback
+unavailable, separate baseline and revised sessions used 20 and 10 commands.
+Both found the proposal again. The counts describe these individual agent
+sessions.
+
+Local health, policy and export commands also require an existing database. A
+misspelled path previously produced a zero-item export or a decision policy naming
+no restrictions. Explicit initialization preserves the mode of an existing file.

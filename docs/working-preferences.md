@@ -9,7 +9,7 @@ The examples use the development checkout. Check `daymark advise --help`
 for `--set` before trying them. On the tagged v0.5.0 CLI,
 `daymark advise --profile gentle` previews the built-in short list.
 To try the adjustable examples, install the checkout containing this guide.
-[Install from source](../README.md#install-from-source)
+[Set up the matching development CLI](mcp.md#connect-two-agents-in-five-minutes)
 
 | What the person says | What to try |
 | --- | --- |
@@ -201,6 +201,32 @@ to the workspace default. That action copies the selected configuration, so
 a subsequent edit to the named copy leaves the active version intact.
 `remember` also writes to shared workspace state. A person's private preference
 belongs in a host setting with the intended audience.
+
+### When someone changes their mind
+
+Two shift notes saying “one decision today” explain those check-ins. They
+give a returning assistant no standing instruction, even when both notes
+carry the same Daymark actor. For “show me everything this morning,” use
+the full ready list once and resume the signed-in person's saved view on
+their next visit.
+
+For “give me two choices from now on, just for me,” check which personal
+setting the host can read and whether it can update that setting. Confirm a
+save from the host's receipt or a fresh read. With read access alone, preview
+the new choice for this conversation and tell the person which preference
+will still be in effect next time. If the new request covers work of any
+kind, use `shortlist.size=2` on the ordinary queue. Adding a decisions filter
+would carry part of the previous instruction forward.
+
+For a two-choice check-in, name two tasks and give the count still ready.
+If the person also asks about a hard deadline on omitted work, check the
+deadline agenda in the same scope and name the verified exception. Give
+a clock time only when the record includes one.
+
+An agreed team default applies to calls that use the workspace profile. A
+colleague with their own full-list preference can keep seeing every ready
+task. A shared Daymark actor by itself tells you nothing about which host
+account the colleague will use.
 
 ### Let a personal choice expire
 

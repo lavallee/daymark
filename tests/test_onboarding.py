@@ -1,11 +1,48 @@
 """Folder selection and preservation of a project's existing instructions."""
 
 import subprocess
+from contextlib import closing
+from shlex import split
 
 import pytest
 
+from daymark import Store
 from daymark.cli import main
 from daymark.render import ONBOARD
+
+
+def test_short_starting_guide_fits_one_terminal_and_completes_its_workflow(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user"))
+    monkeypatch.delenv("DAYMARK_DB", raising=False)
+    monkeypatch.setenv("DAYMARK_WORKSPACE", "default")
+    monkeypatch.setenv("COLUMNS", "80")
+    assert main([]) == 0
+    guide = capsys.readouterr().out
+    assert len(guide.splitlines()) <= 23 and max(map(len, guide.splitlines())) <= 80
+    assert not list(tmp_path.iterdir())
+
+    commands = {tuple(split(line.strip().split("  ", 1)[0])[1:]) for line in guide.splitlines()
+                if line.startswith("  daymark ")}
+    assert ("propose", "--help") in commands
+    for args, expected in [
+        (("where",), "No database selected"),
+        (("init", "--here"), ".daymark"),
+        (("propose", "Review cover"), "Review cover"),
+        (("prime", "--brief"), "workspace"),
+        (("find", "--status", "proposed"), "Review cover"),
+    ]:
+        assert args in commands
+        assert main(list(args)) == 0
+        assert expected in capsys.readouterr().out
+    with closing(Store(tmp_path / ".daymark/daymark.sqlite3", read_only=True)) as store:
+        (item,) = store.list("default")
+        assert item["title"] == "Review cover" and item["status"] == "proposed"
+    with pytest.raises(SystemExit) as exit:
+        main(["--help"])
+    assert exit.value.code == 0
+    full = capsys.readouterr().out
+    assert guide.rstrip() in full and "worker" in full and "--token-env" in full
 
 
 def test_folder_setup_keeps_its_database_out_of_git_and_refuses_conflicting_location(
@@ -178,5 +215,7 @@ def test_cli_creates_private_database_and_wal_from_first_open(tmp_path):
         db.chmod(0o640)
         with closing(_open_store(str(db))):
             assert S_IMODE(db.stat().st_mode) == 0o640
+        assert main(["--db", str(db), "init"]) == 0
+        assert S_IMODE(db.stat().st_mode) == 0o640
     finally:
         os.umask(mask)

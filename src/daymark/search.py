@@ -6,7 +6,7 @@ import unicodedata
 from typing import get_args
 
 from .models import DomainError, Entity, SourceRef, normalize_now
-from .views import _id_pages, _usable, claim_holder
+from .views import CARD_FIELDS, _fetch, _usable, claim_holder
 
 
 def fold_text(text):
@@ -164,23 +164,10 @@ def line_record(item):
 
 def _records(store, workspace, hits, projection):
     """Hydrate selected IDs in their original order within the search snapshot."""
-    out = []
-    paths = ",".join(f"'$.{key}'" for key in _LINE_FIELDS)
-    for ids in _id_pages(store, [hit["id"] for hit in hits]):
-        marks = ",".join("?" * len(ids))
-        table = f" FROM daymark_entities WHERE workspace=? AND id IN ({marks}) ORDER BY id"
-        if projection == "line":
-            try:
-                rows = store.db.execute(f"SELECT json_extract(data,{paths})" + table, (workspace, *ids))
-                out.extend(line_record(dict(zip(_LINE_FIELDS, json.loads(row), strict=True))) for (row,) in rows)
-                continue
-            except sqlite3.OperationalError as exc:
-                if "no such function: json_extract" not in str(exc):
-                    raise
-        rows = store.db.execute("SELECT data" + table, (workspace, *ids))
-        items = (json.loads(row) for (row,) in rows)
-        out.extend(map(line_record, items) if projection == "line" else items)
-    return out
+    ids = [hit["id"] for hit in hits]
+    fields = {"line": _LINE_FIELDS, "card": CARD_FIELDS}.get(projection, ())
+    rows = _fetch(store, workspace, ids, fields=fields)
+    return [line_record(rows[id]) if projection == "line" else rows[id] for id in ids]
 
 
 def entity_filters(kind, status, *, scope=None, context=None):
@@ -249,8 +236,10 @@ def page(
     validate_claim_filters(kind, archived, claimed_by is not None)
     if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
         raise DomainError("invalid", "Context must be a nonempty entity ID of at most 128 characters")
-    if projection not in (None, "line", "entity"):
-        raise DomainError("invalid", "Search projection must be line or entity")
+    if projection not in (None, "line", "entity", "card"):
+        raise DomainError("invalid", "Search projection must be line, card or entity")
+    if projection == "card" and kind != "task":
+        raise DomainError("invalid", "A task card requires kind=task")
     ref = SourceRef.parse_ref(source) if source is not None else None
     instant = normalize_now(now) if claimed_by else None
     needle = fold_text(text or "")

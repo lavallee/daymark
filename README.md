@@ -5,6 +5,10 @@ deadlines, intentions, dependencies and suggestions distinct, so a new session
 can pick up a project without asking the person to reconstruct it. It runs on
 one SQLite file and needs no account or model.
 
+Already using an issue tracker? Keep the code fix there. Daymark can hold
+the person's follow-up, such as booking a proof once the fix is verified.
+[Working alongside an existing tracker](docs/work-and-life.md#what-daymark-learned-from-beads)
+
 A venue deposit has a deadline. Drafting the invitation is a plan. Approving it
 must wait until someone has drafted it. An idea for a poster is still a suggestion.
 Here is how that looks in Daymark.
@@ -51,6 +55,8 @@ shows what is ready, what is waiting, and which facts earlier sessions kept.
 To verify two agents share the intended workspace before creating a task,
 see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-minutes).
 Its enforced read-only sessions use the development checkout.
+For commands supported by the tagged install above, see the
+[0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 | You want | Command |
 | --- | --- |
@@ -217,14 +223,15 @@ The Python import is `daymark`; the distribution is `daymark-core`. The tagged r
 Use `daymark --version` to tell which CLI your agent will run. Both require
 Python 3.11 or newer.
 
-The quickstart above installs the tagged release. To install from a checkout:
+The quickstart above installs the tagged release. To run these development
+examples, start in the checkout or unpacked source archive containing this
+README. Install that copy and check the resulting version:
 
 ```sh
-git clone https://github.com/lavallee/daymark.git
-cd daymark
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install .
+daymark --version
 ```
 
 The core needs no HTTP framework, credentials, notification provider, or network service. Install optional HTTP dependencies with `python -m pip install '.[service]'`.

@@ -208,3 +208,7 @@ future session needs the host or the person to supply the preference again.
 Both versions honored the explicit collective request, installing a guarded
 standing rule that yielded two picks for a fresh caller. Each prompt ran
 once per variant. No individual's preferences were inferred from real work.
+
+For an individual trying the tool, compare their existing routine with a fresh
+session and a later return. The worksheet asks the person which commitments
+they had to reconstruct and whether the next step helped. [Field trial worksheet](trying-daymark.md)

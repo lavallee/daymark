@@ -434,6 +434,7 @@ def create_router(store: Any) -> APIRouter:
         mine: bool = False, before_note: str | None = Query(None, min_length=1, max_length=128),
         note_id: str | None = Query(None, min_length=1, max_length=128),
         since_version: int | None = Query(None, ge=1),
+        forecast: Literal["skip", "done"] | None = None,
     ) -> Any:
         actor = identity(request)
         ref = {"system": system, "kind": kind, "id": ref_id}
@@ -441,6 +442,10 @@ def create_router(store: Any) -> APIRouter:
             raise HTTPException(422, "Invalid source detail options")
         if (detail == "changes") != (since_version is not None):
             raise HTTPException(422, "Invalid comparison version")
+        if forecast is not None:
+            if detail != "show":
+                raise HTTPException(422, "Forecast is available only with show")
+            return _invoke(store.recurrence_forecast, actor.workspace, source=ref, action=forecast, now=now)
         if detail == "changes":
             return _invoke(store.changes_since, actor.workspace, version=since_version, source=ref)
         if detail == "note":
@@ -479,9 +484,11 @@ def create_router(store: Any) -> APIRouter:
     def context(
         entity_id: str, request: Request, history: int = Query(10, ge=0, le=100),
         now: str | None = Query(None, max_length=40), owner: str | None = Query(None, max_length=200),
-        mine: bool = False,
+        mine: bool = False, forecast: Literal["skip", "done"] | None = None,
     ) -> Any:
         actor = identity(request)
+        if forecast is not None:
+            return _invoke(store.recurrence_forecast, actor.workspace, entity_id, action=forecast, now=now)
         return _invoke(store.context, actor.workspace, entity_id, history=history,
                        now=now, actor=actor.principal, owner=actor.principal if mine else owner)
 

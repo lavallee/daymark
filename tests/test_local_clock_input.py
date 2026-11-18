@@ -90,3 +90,22 @@ def test_misspelled_daymark_timezone_refuses_capture_instead_of_using_host_zone(
         assert store.head("default") == 0
     assert main(["--db", db, "--tz", "UTC", "add", "Call the printer", "--id", "call"]) == 0
     assert main(["--db", db, "--tz", "Unrecognized/Zone", "prime"]) == 5
+
+
+def test_ambiguous_numeric_correction_preserves_distinct_civil_dates():
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "studio", timezone="Europe/Madrid")
+        original = tasks.add("Prepare the sketch", id="proof", source="print:proof:S-41",
+                             plan="2030-05-07", target="2030-06-18", due="2030-06-24")
+        with pytest.raises(DomainError, match="Unrecognized date"):
+            tasks.edit("proof", due="07/08/2030", expected_version=original["version"])
+        assert tasks.get("proof") == original and store.head("studio") == 1
+
+        tasks.edit("proof", due="2030-08-07", expected_version=original["version"])
+        item = tasks.get("proof")
+        for field, day in (("planned", "2030-05-07"), ("latest_target", "2030-06-18"),
+                           ("deadline", "2030-08-07")):
+            assert item[field] == {"date": day, "timezone": "Europe/Madrid", "at": None, "expression": None}
+        assert item["earliest_start"] is None and item["notes"] == []
+        comparison = tasks.changes_since(source="print:proof:S-41", version=1)
+        assert [change["field"] for change in comparison["fields"]] == ["deadline"]

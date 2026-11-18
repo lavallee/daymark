@@ -5,13 +5,16 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
+This guide accompanies Daymark `0.6.0.dev0`. Check `daymark --version` when
+an editor uses a different executable. The tagged 0.5.0 release has its
+own [agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
+
 If the person names a scope, start with `daymark prime --scope NAME` or MCP
 `daymark_prime {"scope":"NAME"}`. This limits both task counts and remembered
 facts. Preserve the scope on any follow-up queue or search. For an exact external
 reference inside a scope, use `find --source SYSTEM:KIND:ID --scope NAME`
 or MCP `view=find` with both fields. The full MCP primer gives native tool arguments.
 A pending task proposal uses `find --status proposed`. For a decision the person can act on, use `ready --move answer`.
-For an exact source inside a named scope, use `find --source REF --scope NAME`.
 A direct `show` reads the full record when that is what the person requested.
 Memories and settings are shared within the workspace. Keep a personal
 or time-limited display choice with the current request or its authorized
@@ -112,6 +115,11 @@ with `cancel ID`. If correcting an earlier completion, inspect the next
 round too. It keeps its own notes and claims. Each reminder names a single
 occurrence.
 
+For a short check-in, give the advice picks and the count held back. If the
+person asks about omitted deadlines today, verify them with
+`agenda --deadlines --days 0` in the same scope. A date alone has no
+recorded hour.
+
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
 the active profile are shared within the workspace. A current HTTP service
@@ -164,6 +172,15 @@ new selection and reuse it only to retry that selection. After restart, run
 including a task that has since become blocked or waiting. For a
 repeating task, `show ID --brief` records which date advances. A series with
 both a plan and a deadline advances the plan, copying the existing deadline.
+`show ID --forecast skip` or `show ID --forecast done` shows the calendar
+effect of one fresh transition at the displayed UTC instant and task version.
+In MCP, pass `forecast=skip` or `forecast=done` to `daymark_view` with
+`view=show`. Use the exact source in place of the ID when given a source.
+A working claim is advisory. Check with the holder before acting. Refresh
+before a decision because time or slot occupancy can change at the same
+version. If the service lacks the forecast, explain the recorded rule from
+ordinary show when available. Confirm the outcome in activity or events after
+an authorized change.
 
 For an edit based on an earlier `show`, pass `--if-version N` (MCP
 `expected_version`). Re-read on conflict before deciding whether to edit.

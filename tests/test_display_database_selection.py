@@ -94,3 +94,28 @@ def test_missing_remote_credential_identifies_configuration_before_any_network_c
     assert main([*args, "prime", "--brief", "--json"]) == 1
     error = json.loads(capsys.readouterr().err)["error"]
     assert error["code"] == "unauthenticated" and "--token-env" in error["details"][0]
+
+
+@pytest.mark.parametrize("command", [
+    ["health"], ["policy"], ["get", "item"], ["events", "--head"],
+    ["query", "--file", "criteria.json"], ["export", "--output", "snapshot.json"],
+])
+def test_operational_read_does_not_report_on_a_new_file(tmp_path, monkeypatch, capsys, command):
+    monkeypatch.chdir(tmp_path)
+    assert main(["--db", "missing.db", *command]) == 6
+    assert "no_database" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_decision_makers_cannot_be_cleared_by_blank_input(tmp_path, capsys):
+    cmd = ["--db", str(tmp_path / "review.db"), "policy"]
+    assert main([*cmd, "--deciders", "reviewer"]) == 0
+    assert main([*cmd, "--deciders", " , "]) == 5
+    with pytest.raises(SystemExit) as failure:
+        main([*cmd, "--clear", "--deciders", "reviewer"])
+    assert failure.value.code == 2
+    capsys.readouterr()
+    assert main(cmd) == 0
+    assert json.loads(capsys.readouterr().out) == {"deciders": ["reviewer"]}
+    assert main([*cmd, "--clear"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"deciders": []}
