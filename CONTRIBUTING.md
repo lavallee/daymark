@@ -1,6 +1,6 @@
 # Contributing
 
-Daymark welcomes focused bug reports, documentation improvements, and small pull requests. Discuss changes to public behavior before implementing a large feature.
+Daymark welcomes documentation improvements and small pull requests. To report a bug, describe the expected and observed behavior using synthetic data in the [issue tracker](https://github.com/lavallee/daymark/issues). Discuss changes to public behavior before implementing a large feature.
 
 ## Development
 

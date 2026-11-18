@@ -119,8 +119,9 @@ epics, milestones that work counts toward, a goal it serves, and fields of your
 own (points, cost, risk). None of it is required, and nothing about a project
 forces a method on it.
 
-The following transcripts use the development checkout. Each starts with a
-fresh `daymark init` and `DAYMARK_TZ=Europe/London`. Moving house has several
+The following transcripts use the development checkout. Start each transcript in its own empty
+directory, run `daymark init --here`, and set `DAYMARK_TZ=Europe/London`.
+Moving house has several
 phases and one date that matters.
 
 ```console

@@ -688,6 +688,16 @@ The complete compact JSON envelopes measured 243 bytes for text output and
 449 bytes for structured output. Extra verification reads were the hosts'
 choices. Each configuration ran once per host.
 
+A later cold Claude Code session answered correctly in 13 reads and also
+named two records the person had asked to leave out. We changed the MCP
+startup instructions to request structured agenda rows immediately for a
+deadline-only question. Two fresh sessions each returned the correct IDs,
+cutoffs and printer wait in one read, naming only the matching records.
+When asked more broadly what changed and why the proposal was excluded,
+another session started with the primer and consulted activity. It used
+19 reads, three of them rejected, and also mentioned the soft target and
+the later deadline. These runs used the same 201 synthetic records.
+
 ## Returning to archived work after a transfer
 
 Eight seeded workloads each ran 80 transitions on seven same-titled,

@@ -558,7 +558,11 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                     "Apply personal or time-limited choices per call unless the person asks to share them. "
                     "For each write, choose a fresh op. An identical retry with that op returns its original result. "
                     "Use show for current state. Never invent dates or completions."
-                ) + _SHORT_CHECK_IN,
+                ) + _SHORT_CHECK_IN + (
+                    " For agreed hard deadlines alone, start with daymark_view agenda with deadlines=true, json=true, the requested horizon "
+                    "and scope, and local_day=true for calendar-day cutoffs. When that answers the question, report the matching "
+                    "IDs, cutoffs and recorded waits and discuss exclusions only if asked."
+                ),
             }
         )
     if method == "ping":

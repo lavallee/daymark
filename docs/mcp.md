@@ -6,7 +6,9 @@ the client already knows the commands. The full startup guide uses
 the tools this client can call. Pass a named scope on the first read. For an exact source inside that scope, use `find` with both `source` and
 `scope`. A direct `show` reads the full record.
 
-For timed deadlines on the person's own calendar day, use
+When the person asks only for agreed hard deadlines, start with structured
+agenda rows. Report the matching IDs, cutoffs and outstanding waits. For
+deadlines on the person's own calendar day, use
 `{"view":"agenda","local_day":true,"days":0,"scope":"press","json":true}`.
 The session timezone determines day boundaries. Each timed row has its
 original `deadline_exact` and a `viewer_deadline`. Overlapping date-only

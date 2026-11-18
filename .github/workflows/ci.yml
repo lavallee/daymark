@@ -46,7 +46,8 @@ jobs:
           uv venv "$floor_env" --python 3.11
           uv pip compile pyproject.toml --extra service --python-version 3.11 --resolution lowest-direct -o "$RUNNER_TEMP/daymark-minimum.txt"
           uv pip install --python "$floor_env/bin/python" -r "$RUNNER_TEMP/daymark-minimum.txt" dist/*.whl 'pytest>=8'
-          "$floor_env/bin/python" -m pytest -q
+          # The floor suite exercises the installed wheel from every entry point.
+          "$floor_env/bin/python" -I -m pytest -q -o pythonpath=
       - name: Verify clean core wheel and source installs
         shell: bash
         run: |

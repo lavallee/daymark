@@ -40,7 +40,7 @@ Then work in this loop:
 1. `daymark ready` shows what can be done now. For a compact queue use `ready --brief --json` or the MCP ready view with `json=true`. `daymark agenda` shows the days
    ahead, earlier plans, waits and proposals. A past intended work day alone is never overdue. For hard deadlines, use
    `daymark agenda --deadlines --days 2` or MCP
-   `daymark_view` with `{"view":"agenda","deadlines":true,"days":2}`. It includes
+   `daymark_view` with `{"view":"agenda","deadlines":true,"days":2,"json":true}`. It includes
    accepted live work that is overdue, due today or due through the next two
    local days, including waiting and blocked tasks. Use `ready --explain` with
    the same filters to understand a short or empty ready queue. For the next
