@@ -565,7 +565,9 @@ def test_mcp_tools_cover_the_flow():
     assert "Pay the rent" in tool("daymark_view", view="agenda", days=60)[1]
     assert tool("daymark_act", action="done", id=id, text="Paid")[0] is False
     assert tool("daymark_view", view="ready")[1] == "Nothing is ready."
-    assert "Commands" in tool("daymark_prime")[1]
+    primer = tool("daymark_prime")[1]
+    assert "daymark_add" in primer and "daymark_view" in primer
+    assert "deadlines=true" in primer and "--plan" not in primer
     assert rpc("nope")["error"]["code"] == -32601
     stream = io.StringIO()
     serve(tasks, io.StringIO('not json\n\n{"jsonrpc":"2.0","id":7,"method":"ping"}\n'), stream)
@@ -715,7 +717,7 @@ def test_mcp_survives_malformed_requests(tasks):
         assert reply["error"]["code"] == -32602
     reply = handle(tasks, {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
         "name": "daymark_view", "arguments": "ready"}})  # fmt: skip
-    assert reply["result"]["isError"]
+    assert reply["error"]["code"] == -32602
 
 
 def test_views_refuse_a_schema_they_cannot_read(tmp_path):
@@ -903,3 +905,102 @@ def test_cli_scope_focus_and_workspaces(cli):
     ]
     out = cli("--workspace", "studio", "prime")[1]
     assert "workspace studio" in out and "Fix the gate" not in out
+
+
+def test_deadline_agenda_reads_only_matching_bodies(tasks, monkeypatch):
+    from daymark import views
+
+    store = tasks.engine
+    store.execute("w", "context-tag", "create", {"id": "tag", "kind": "context", "title": "Tag"}, 0)
+    filters = {"scope": "studio", "context_ids": ["tag"]}
+
+    create(store, "plan-only", planned=day(-9), **filters)
+    create(store, "target-only", latest_target=day(0), **filters)
+    create(store, "undated-wait", status="waiting", waiting_on="a quote", **filters)
+    create(store, "proposal", deadline=day(-1), status="proposed", **filters)
+    create(store, "completed", deadline=day(-1), **filters)
+    tasks.done("completed")
+    create(store, "cancelled", deadline=day(-1), **filters)
+    tasks.cancel("cancelled")
+    create(store, "archived", deadline=day(-1), **filters)
+    tasks.archive("archived")
+    create(store, "other-scope", deadline=day(-1), context_ids=["tag"])
+    create(store, "other-context", deadline=day(-1), scope="studio")
+    create(store, "far", deadline=day(3), planned=day(-1), **filters)
+
+    create(store, "late", deadline={"at": "2030-04-03T14:59:00Z", "timezone": ZONE}, **filters)
+    create(store, "equal", deadline={"at": NOW.isoformat(), "timezone": ZONE}, **filters)
+    create(store, "blocked", deadline=day(0), depends_on=["plan-only"], **filters)
+    # At NOW it is already April 4 in Tokyo. April 6 is its inclusive day two.
+    create(store, "waiting", deadline={"at": "2030-04-05T15:10:00Z", "timezone": "Asia/Tokyo"},
+           planned=day(-8), status="waiting", waiting_on="a sample", **filters)
+    create(store, "tokyo-late", deadline={"date": "2030-04-03", "timezone": "Asia/Tokyo"}, **filters)
+    create(store, "pacific", deadline={"at": "2030-04-06T03:00:00Z", "timezone": "America/Los_Angeles"},
+           **filters)
+
+    fetch = views._fetch
+    fetched = []
+
+    def track_fetch(store, workspace, ids):
+        ids = list(ids)
+        fetched.extend(ids)
+        return fetch(store, workspace, ids)
+
+    monkeypatch.setattr(views, "_fetch", track_fetch)
+    agenda = tasks.agenda(2, deadlines=True, scope="studio", context="tag")
+    assert set(agenda) == {"overdue", "today", "upcoming"}
+    assert {x["id"] for x in agenda["overdue"]} == {"late", "tokyo-late"}
+    assert {x["id"] for x in agenda["today"]} == {"equal", "blocked"}
+    (waiting,) = agenda["upcoming"]["2030-04-06"]
+    assert (waiting["id"], waiting["status"], waiting["waiting_on"]) == ("waiting", "waiting", "a sample")
+    assert [x["id"] for x in agenda["upcoming"]["2030-04-05"]] == ["pacific"]
+    assert sorted(fetched) == ["blocked", "equal", "late", "pacific", "tokyo-late", "waiting"]
+    assert tasks.agenda(0, deadlines=True, scope="studio", context="tag")["upcoming"] == {}
+    assert {x["id"] for x in tasks.agenda(0, deadlines=True, scope="")["overdue"]} == {"other-scope"}
+
+
+def test_deadline_agenda_cli(cli):
+    cli("init")
+    assert "No hard deadlines" in cli("agenda", "--deadlines")[1]
+    assert cli("add", "Sample due", "--id", "due", "--due", "tomorrow")[0] == 0
+    assert cli("wait", "due", "--on", "a sample")[0] == 0
+    assert cli("add", "Sample planned", "--plan", "today")[0] == 0
+    status, output, _ = cli("agenda", "--deadlines", "--days", "2")
+    assert status == 0 and "Sample due" in output and "waiting on a sample" in output
+    assert "Sample planned" not in output and "undated" not in output
+    status, output, _ = cli("agenda", "--deadlines", "--days", "0", "--json")
+    assert status == 0 and json.loads(output) == {"overdue": [], "today": [], "upcoming": {}}
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_deadline_agenda_http(tasks, supported):
+    tasks.add("Sample due", id="due", due="tomorrow")
+    tasks.add("Sample planned", id="plan", plan="today")
+    reads = []
+    app = create_app(tasks.engine, {"token": {"workspace": "w", "principal": "reviewer"}})
+    with TestClient(app) as http:
+
+        def forward(request):
+            reads.append(request.url.path)
+            reply = http.get(request.url.raw_path.decode(), headers=dict(request.headers))
+            if request.url.path == "/v1/schema" and not supported:
+                schema = reply.json()
+                agenda = schema["paths"]["/v1/agenda"]["get"]
+                agenda["parameters"] = [p for p in agenda["parameters"] if p["name"] != "deadlines"]
+                return httpx.Response(reply.status_code, json=schema)
+            return httpx.Response(reply.status_code, content=reply.content)
+
+        with Client("http://daymark.invalid", "token", transport=httpx.MockTransport(forward)) as client:
+            remote = Tasks(client, actor="reviewer", timezone=ZONE, now=NOW)
+            if supported:
+                result = remote.agenda(2, deadlines=True)
+                assert [x["id"] for x in result["upcoming"][day(1)["date"]]] == ["due"]
+                assert result["today"] == []
+                assert reads == ["/v1/schema", "/v1/agenda"]
+                remote.agenda(2, deadlines=True)
+                assert reads == ["/v1/schema", "/v1/agenda", "/v1/agenda"]
+            else:
+                error = code("invalid", remote.agenda, 2, deadlines=True)
+                assert "does not support deadlines" in str(error)
+                assert reads == ["/v1/schema"]
+                assert remote.agenda()["today"][0]["id"] == "plan"

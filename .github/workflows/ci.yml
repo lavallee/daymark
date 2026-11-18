@@ -10,10 +10,16 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          - os: macos-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.15"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -24,8 +30,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --frozen --dev
       - run: uv run ruff check src tests --output-format=github
-      - run: uv run pytest -q
+      - name: Run the test suite
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then ulimit -n 256; fi
+          uv run pytest -q
+      - run: uv run python scripts/build_walkthrough.py --check
       - run: uv build
+      - run: uv run python scripts/check_sdist.py dist/*.tar.gz
+      - name: Test the oldest supported direct runtime dependencies
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        shell: bash
+        run: |
+          floor_env="$RUNNER_TEMP/daymark-minimum"
+          uv venv "$floor_env" --python 3.11
+          uv pip compile pyproject.toml --extra service --python-version 3.11 --resolution lowest-direct -o "$RUNNER_TEMP/daymark-minimum.txt"
+          uv pip install --python "$floor_env/bin/python" -r "$RUNNER_TEMP/daymark-minimum.txt" dist/*.whl 'pytest>=8'
+          # The floor suite exercises the installed wheel from every entry point.
+          "$floor_env/bin/python" -I -m pytest -q -o pythonpath=
       - name: Verify clean core wheel and source installs
         shell: bash
         run: |
@@ -39,15 +61,24 @@ jobs:
               "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_install.py"
             )
           done
-      - name: Verify installed HTTP service
+      - name: Exercise the installed wheel with the official MCP client
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          uv run --script "$GITHUB_WORKSPACE/scripts/smoke_mcp.py" --daymark "$RUNNER_TEMP/daymark-smoke-whl/bin/daymark"
+      - name: Verify installed HTTP client and service
         shell: bash
         run: |
           wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
           service_env="$RUNNER_TEMP/daymark-service-smoke"
+          client_env="$RUNNER_TEMP/daymark-client-smoke"
+          uv venv "$client_env"
+          uv pip install --python "$client_env/bin/python" "${wheels[0]}[client]"
           uv venv "$service_env"
           uv pip install --python "$service_env/bin/python" "${wheels[0]}[service]"
           cd "$RUNNER_TEMP"
-          env -u PYTHONPATH -u PYTHONHOME "$service_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_http.py"
+          env -u PYTHONPATH -u PYTHONHOME "$service_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_http.py" --client-python "$client_env/bin/python"
 
   security:
     runs-on: ubuntu-latest

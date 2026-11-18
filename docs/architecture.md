@@ -55,8 +55,8 @@ layer is organised around them:
 | Kind | Examples in practice | Built in today |
 |---|---|---|
 | rank | urgency scores, "eat the frog", an assistant's batching of decisions | `decisions-first`, `frontier-first` |
-| limit | work-in-progress limits, six tasks a day, capacity checks | `shortlist`, `overbooked` |
-| hygiene | weekly review, staleness warnings, a missing next action | `stale`, `first-step` |
+| limit | work-in-progress limits, six tasks a day, capacity checks | `shortlist`, `overbooked`, `time-fit` |
+| hygiene | weekly review, staleness warnings, a missing next action | `stale`, `first-step`, `project-review` |
 | follow-through | waiting-for lists, nudges | `waiting-check` |
 | anticipate | preparation worked backward from a date | `lookahead` |
 | tone | neutral ageing in place of red overdue badges | `neutral-aging` |
@@ -74,28 +74,54 @@ layer is organised around them:
 4. It declares what it needs beyond stored tasks (`needs`: a calendar, a
    clock, a language model, a question to the person). The host decides
    whether to provide it. The kernel never calls a model or a network.
-5. It states how well its idea is supported: clinical, practitioner, folk or
-   convention. `daymark strategies` shows this, so nobody mistakes a folk
-   remedy for a finding.
+5. It states the basis for the underlying practice (clinical, practitioner,
+   folk or convention). For example, breaking a task into steps is part of a
+   clinical skills-training program. The default number of days before showing
+   a first-step prompt is a Daymark design choice. `daymark strategies NAME`
+   describes a strategy and its adjustable parameters.
 
 **Profiles** bundle strategies so a way of working is adopted in one step
 (`daymark profile gentle`) and then adjusted
 (`daymark profile --set shortlist.size=5`). A profile belongs to a workspace.
 A saved profile that names a strategy no longer installed keeps working
-without it and says so. `plain`, the default, changes nothing. `assistant` behaves as a good assistant
-would unasked. `gentle` offers few choices, one small step each, and no red
-ink. `dense` shows everything and adds the checks that keep a large system
-honest. A profile is a starting point, not a diagnosis.
+without it and says so. `plain` preserves the ready order. `assistant`
+promotes decisions and work advancing a goal, and flags quiet waiting items.
+`gentle` offers up to three choices with first steps when recorded. `dense`
+adds review prompts across the ready list. Advice inspects up to the first
+1,000 ready candidates and reports when the view exceeds that boundary.
+Each profile starts from explicit settings that the person can adjust.
 
 `daymark advise` runs the workspace's profile. `daymark ready` stays the plain
 kernel fact, so the two can always be compared.
+
+A preview can adjust the current or named profile for one invocation. A
+named copy is saved separately from the active workspace setting. Adopting it
+copies the configuration. An actor changing a named copy supplies the version
+it read. Active choices also have revisions. Preference writes commit the
+configuration and a local replay receipt together. An active change retains
+its prior settings for a version-guarded undo. Entity exports omit configuration
+receipts. Existing plugins receive a full strategy snapshot by
+default. A plugin can declare only the additional snapshot fields it reads
+in `Strategy.reads` to avoid unrelated workspace queries. Project roll-ups
+are fetched only when a strategy includes the additional `projects` read.
+Local advice resolves installed code before the SQLite read transaction and
+runs the stages after releasing it. The applicable configuration revision,
+candidate rows, counts and project facts agree on one database snapshot and
+one evaluation instant.
+
+The authenticated HTTP advice read evaluates shipped strategies in the
+credential's workspace. A service-supplied profile is never evaluated by the
+client. A host can explicitly select a local extension on a built-in base
+for one preview. Older services support client-side previews over individual
+reads and cannot report active or named workspace settings.
 
 ## Plugins
 
 A plugin is a Python package that offers strategies under the
 `daymark.strategies` entry-point group. One is imported only when a profile
 names it: installing a package never runs its code by itself. A plugin obeys
-the same contract as a built-in.
+the same contract as a built-in. The contributor example builds a wheel and
+shows how to try its method on one review. [Add a strategy](strategy-plugins.md)
 
 Not yet built, in order of need:
 
@@ -157,7 +183,25 @@ Stated plainly, so it is paid down on purpose:
 4. **Limits clients exceed.** A title is at most 2,000 characters. One client
    accepts more. The limit should be the kernel's to state and the client's to
    meet.
-5. **Size.** The engine is one 2,100-line module.
+5. **Engine size.** Storage and transition rules still share a large module. Read projections, project rules and reminder scheduling already live in smaller modules. New boundaries should make an invariant easier to review and exercise.
+
+## Next product question
+
+Can a person return to an interrupted project and choose their next move
+without reconstructing the work for a new agent? The test starts with that
+person's usual routine and a project they already care about. At two later
+returns, record what they had to repeat, which commitments the assistant
+missed, and whether the offered next step helped. The person can prefer a
+short list on one day and a full review on the next.
+
+Daymark's synthetic trials can verify that the agent preserved a deadline,
+reported who owes a reply and kept a temporary preference out of shared
+settings. Only the person can say whether the return was easier. If the
+trial exposes a gap, first locate it in the task facts, the selected
+strategy, or the host's handling of the person's instructions. A meeting
+overrunning is a change of context. One request for a shorter answer gives
+the assistant enough evidence to change this answer.
+[Field trial worksheet](research/trying-daymark.md) · [Reproducible agent journeys](research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
 
 ## Roadmap
 

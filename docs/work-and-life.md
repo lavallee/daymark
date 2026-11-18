@@ -1,10 +1,39 @@
-# Work and life on one substrate
+# How Daymark helps a person and their agents work together
 
-Daymark's aim is a task system that simplifies the complexities of real life.
-This page explains what that asks of the design, how Daymark relates to Beads,
-the best-known task tracker built for coding agents, and what is deliberately
-left to the layers above. It records design reasoning; the
-[decisions](decisions.md) table is the contract.
+A coordinator leaves for a week. When they return, the printer still owes a
+proof, a deposit has a cutoff, and an invitation they hoped to draft on
+Monday is still unwritten. A new agent should be able to tell them which
+deadline passed, whose reply would unblock the proof, and which plan they
+can move. The coordinator gets to decide what still matters.
+
+A second question changes the answer. “I have ten minutes” calls for a few
+tasks that might fit. “What can you take off my hands?” calls for work the
+person has delegated. A five-minute approval could fit the first request
+and still require the person's own decision. Daymark keeps those facts
+across both conversations.
+
+## What the agent can learn
+
+| What a person tells the agent | What the next session can rely on |
+| --- | --- |
+| “The printer said the proof will come Friday.” | A waiting task can name the outstanding reply. A note can preserve who said Friday and when. A promise from the printer supplies evidence for a follow-up. |
+| “Only show me two choices before this meeting.” | A one-call shortlist changes this answer. The next session begins with its usual settings. |
+| “Please use that shortlist for this workspace from now on.” | The agent can save the preference, show the configured limit, and reverse a reviewed change. Other callers of the shared workspace can see it. |
+| “That was just for me.” | The host can select a personal recipe for that person on each request. An agent name alone cannot identify which person it represents. |
+
+A method supplies another way to ask about the same records. Someone can
+use GTD's contexts to pick phone tasks today and review stalled projects on
+Friday. A Things-style plan and deadline can coexist on one task. Someone
+else can ask for the ordinary ready list throughout. The examples below
+connect those choices to actual Daymark reads.
+[Working preferences](working-preferences.md) · [Working methods](research/working-methods.md)
+
+“I'd like to keep that idea around” can also mean the person wants no prompt
+to decide. If they already keep reference material elsewhere, use that
+destination. If they choose a separate Daymark workspace for ideas, a memory
+there stays out of their usual agenda and session startup. They can search
+for a phrase later and explicitly ask to turn it into a proposal in their
+working workspace. [Worked example](research/capture-clarification.md#keeping-an-idea-out-of-the-working-queue)
 
 ## Why life is harder than a backlog
 
@@ -37,8 +66,7 @@ underneath is not lossy.
 
 [Beads](https://github.com/steveyegge/beads) is a dependency-aware issue graph
 for coding agents. Its README and command reference were read on 2026-11-09;
-it was not installed or run for this comparison, so the statements below are
-about its documentation.
+the tables below summarize that documentation. A later [hands-on comparison](research/agent-journeys.md#running-the-same-dependency-handoff-in-beads) exercised dependency, claim, explanation and close on Beads v1.3.4.
 
 Beads showed what makes a tracker usable by an agent, and Daymark adopts those
 ideas directly:
@@ -72,6 +100,27 @@ for that and Daymark is not. If the work is a person's commitments, where the
 hard part is time, recurrence, waiting and consent, that is what Daymark
 models. The two can sit side by side: a Daymark task can carry a source
 reference to an issue elsewhere without copying it.
+
+For example, Beads can own the issue “Verify the booklet export.” In Daymark,
+the separate commitment “Book the print slot” can depend on a condition
+that cites the issue as its source. In a run with Beads v1.3.4 we closed
+the issue and read its status. Recording that observation with
+`assess --evidence` made booking ready. Retrying the assessment added
+nothing. When the issue reopened, recording the new observation held the
+booking again. At both transitions the agent had to check the issue and
+record the change. Booking the slot remained its own action.
+
+“Keep the cover review as a possibility” poses a different problem. A
+Todoist project export can contain two identically named tasks with
+different schedules. Ask which original task the person means. With its
+ID and their confirmation, Daymark can hold a proposal with Wednesday as
+the intended workday and Friday as the deadline. If the person later
+renames it, the same source finds the proposal again. The other cover
+review and its reminders can stay in Todoist.
+[Review a Todoist export](todoist-csv.md) · [Worked CSV and Things example](research/capture-clarification.md#reconcile-one-external-task)
+
+For a recent test of startup, handoff and task selection, see the
+[agent journeys](research/agent-journeys.md).
 
 ## One substrate, many owners of truth
 
@@ -141,8 +190,9 @@ None is promised.
 3. **Limits a host system may exceed.** A title is at most 2,000 characters
    and a description 100,000. An application that accepts more must narrow
    its own limits before Daymark can be its only store.
-4. **Conditions checked against other systems.** "Ready when the pull request
-   merges" or "done when the form is acknowledged", observed from the owning
-   system with a freshness state, as an alternative to dependency edges.
+4. **Conditions checked against other systems.** An agent can already
+   record that a pull request merged, cite its source and reassess the
+   condition if the issue reopens. Automatic source checks and an explicit
+   rule for how long an observation stays fresh are open design questions.
 5. **Sync between machines.** One file is simple and safe; it is also one
    machine.

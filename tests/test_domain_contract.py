@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from daymark import DomainError, Store
+from daymark import DomainError
 
 
 def create(store, entity_id, kind="task", **fields):
@@ -17,8 +17,8 @@ def create(store, entity_id, kind="task", **fields):
     )
 
 
-def test_assignee_and_beneficiary_remain_different_after_export_import(tmp_path):
-    source = Store(tmp_path / "source.db")
+def test_assignee_and_beneficiary_remain_different_after_export_import(open_store, tmp_path):
+    source = open_store(tmp_path / "source.db")
     create(source, "owner", "person")
     create(source, "beneficiary", "person")
     task = create(
@@ -30,7 +30,7 @@ def test_assignee_and_beneficiary_remain_different_after_export_import(tmp_path)
         latest_target={"date": "2030-04-05", "timezone": "Europe/London"},
         source_refs=[{"system": "example", "kind": "intention", "id": "intent-12"}],
     )
-    target = Store(tmp_path / "target.db")
+    target = open_store(tmp_path / "target.db")
     target.import_snapshot(
         "work", source.export("work"), operation_id="transfer", expected_version=0
     )
@@ -40,8 +40,8 @@ def test_assignee_and_beneficiary_remain_different_after_export_import(tmp_path)
     assert task["assignee_id"] != task["beneficiary_ids"][0]
 
 
-def test_waiting_cancelled_and_archived_are_distinct_lifecycle_states(tmp_path):
-    store = Store(tmp_path / "life.db")
+def test_waiting_cancelled_and_archived_are_distinct_lifecycle_states(open_store, tmp_path):
+    store = open_store(tmp_path / "life.db")
     task = create(store, "a", status="waiting")
     cancelled = store.execute(
         "work", "cancel-a", "cancel", {"id": "a"}, expected_version=task["version"]
@@ -58,8 +58,8 @@ def test_waiting_cancelled_and_archived_are_distinct_lifecycle_states(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["parent_id", "depends_on"])
-def test_long_cycle_rejected_without_mutation(tmp_path, field):
-    store = Store(tmp_path / "cycles.db")
+def test_long_cycle_rejected_without_mutation(open_store, tmp_path, field):
+    store = open_store(tmp_path / "cycles.db")
     first = create(store, "a")
     create(store, "b", **{field: ["a"] if field == "depends_on" else "a"})
     create(store, "c", **{field: ["b"] if field == "depends_on" else "b"})
@@ -78,8 +78,8 @@ def test_long_cycle_rejected_without_mutation(tmp_path, field):
     assert len(store.events("work")) == 3
 
 
-def test_omitted_expected_version_does_not_allow_lost_update(tmp_path):
-    store = Store(tmp_path / "versions.db")
+def test_omitted_expected_version_does_not_allow_lost_update(open_store, tmp_path):
+    store = open_store(tmp_path / "versions.db")
     first = create(store, "a", title="Original")
     with pytest.raises(DomainError):
         store.execute("work", "unversioned", "update", {"id": "a", "title": "Lost"})
@@ -96,16 +96,16 @@ def test_omitted_expected_version_does_not_allow_lost_update(tmp_path):
         {"checklist": [{"id": "a", "text": "One"}, {"id": "a", "text": "Two"}]},
     ],
 )
-def test_invalid_captures_do_not_leave_entities_or_events(tmp_path, payload):
-    store = Store(tmp_path / "invalid.db")
+def test_invalid_captures_do_not_leave_entities_or_events(open_store, tmp_path, payload):
+    store = open_store(tmp_path / "invalid.db")
     with pytest.raises((DomainError, ValueError)):
         create(store, "invalid", **payload)
     assert store.list("work") == []
     assert store.events("work") == []
 
 
-def test_update_completion_suppresses_claimed_reminder(tmp_path):
-    store = Store(tmp_path / "stale.db")
+def test_update_completion_suppresses_claimed_reminder(open_store, tmp_path):
+    store = open_store(tmp_path / "stale.db")
     create(store, "person", "person")
     task = create(store, "task")
     create(
@@ -130,12 +130,12 @@ def test_update_completion_suppresses_claimed_reminder(tmp_path):
     assert store.claim_reminders("other", now=now) == []
 
 
-def test_snooze_is_new_firing_with_retry_stable_delivery_identity(tmp_path):
+def test_snooze_is_new_firing_with_retry_stable_delivery_identity(open_store, tmp_path):
     from datetime import timedelta
 
     from daymark.worker import RecordingSink, Worker
 
-    store = Store(tmp_path / "snooze.db")
+    store = open_store(tmp_path / "snooze.db")
     create(store, "person", "person")
     create(store, "task")
     create(

@@ -2,19 +2,63 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+from shlex import join
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from .models import DomainError, Entity, Temporal, normalize_now
-from .views import claim_holder, why
+from .models import DomainError, Entity, Temporal, day_offset, normalize_now
+from .outbox import DETAIL_FIELDS
+from .views import LIST_FIELDS, claim_holder, why
 
 _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
 _ALWAYS = ("id", "kind", "title", "status", "version")
+EMPTY_TAKE = "No unclaimed agent task is ready for this selection."
 _BOOKKEEPING = {"workspace", "created_at", "updated_at"}
+_ROW_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _single_line(text: str) -> str:
+    """Show control characters as escapes while preserving printable text."""
+    return _ROW_CONTROLS.sub(lambda match: ascii(match[0])[1:-1], text)
+
+
+def list_record(entity, now, *, line_fields=False, context=None):
+    """List fields as data. Keep detail bodies off queue reads and compact service transfers."""
+    keys = LIST_FIELDS + (("advances", "depends_on", "recurrence") if line_fields else ())
+    row = {
+        key: entity[key] for key in keys
+        if key in entity and (key in _ALWAYS or entity[key] != _DEFAULTS.get(key))
+    }
+    contexts = entity.get("context_ids") or []
+    if contexts:
+        shown = contexts[:3]
+        if context is not None and context not in shown and context in contexts:
+            shown[-1] = context
+        row["context_ids"] = shown
+        remaining = entity.get("more_contexts", len(contexts) - 3)
+        if remaining > 0:
+            row["more_contexts"] = remaining
+    if entity.get("claimed_by") and (holder := claim_holder(entity, now)):
+        row.update(claimed_by=holder, claim_until=entity["claim_until"])
+    return row
+
+
+def reminder_fields(item):
+    """The reminder lifecycle is independent of its task's open or completed state."""
+    return {
+        key: item[key]
+        for key in DETAIL_FIELDS
+        if key in item
+    }
 
 
 def compact(item: dict) -> dict:
     """An entity without defaults, nulls or bookkeeping. Roughly a fifth of the full size."""
     out = {key: item[key] for key in _ALWAYS if key in item}
+    if item.get("kind") == "reminder":
+        out.update(reminder_fields(item))
     for key, value in item.items():
         if key in out or key in _BOOKKEEPING or value == _DEFAULTS.get(key):
             continue
@@ -30,22 +74,48 @@ def compact(item: dict) -> dict:
     return out
 
 
+def detail_data(context, *, attributed_notes=False):
+    """Keep display strings and expose exact date evidence on a full detail read."""
+    item = context["entity"]
+    entity = compact(item)
+    if attributed_notes and item.get("notes"):
+        entity["notes"] = item["notes"]
+    exact = {
+        field: {k: v for k, v in item[field].items() if v is not None}
+        for field in ("deadline", "planned", "earliest_start", "latest_target") if item.get(field)
+    }
+    return {**context, "entity": entity, **({"temporal": exact} if exact else {})}
+
+
 def when(temporal) -> str:
     """A civil date as YYYY-MM-DD; an instant as local wall time with its zone."""
     value = Temporal.model_validate(temporal)
     if value.date:
         return value.date.isoformat()
-    return value.local().strftime("%Y-%m-%d %H:%M ") + value.timezone
+    local = value.local()
+    precision = "microseconds" if local.microsecond else "seconds" if local.second else "minutes"
+    # During a repeated hour the zone name alone identifies two instants.
+    if local.utcoffset() == local.replace(fold=1 - local.fold).utcoffset():
+        local = local.replace(tzinfo=None)
+    return local.isoformat(sep=" ", timespec=precision) + " " + value.timezone
 
 
-def line(item: dict, now=None, reason=True) -> str:
+def line(item: dict, now=None, reason=True, *, timezone="UTC", multiline=False) -> str:
     """One task on one line: id, priority, title, then only what is set."""
+    # Historical write receipts keep the entity shape of the release that made
+    # them. Apply today's display defaults without rewriting their evidence.
+    item = _DEFAULTS | item
     now = normalize_now(now)
     parts = [item["id"]]
     if item["priority"]:
         parts.append(f"P{item['priority']}")
     parts.append(item["title"] or f"({item['kind']})")
-    tags = []
+    tags = ["archived"] if item["archived"] else []
+    if item["kind"] == "reminder":
+        scheduled = when({"at": item["scheduled_at"], "timezone": timezone})
+        tags.extend([item["reminder_state"], scheduled, f"to {item['recipient_id']}", f"channel {item['channel']}"])
+        if item["task_id"]:
+            tags.append("task " + item["task_id"])
     if item["kind"] == "task" and item["status"] in {"open", "waiting"} and reason:
         pressing = why(item, now)
         # The dates below already say when; add words only when it presses now.
@@ -57,6 +127,8 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.append("due " + when(item["deadline"]))
     if item["planned"]:
         tags.append("plan " + when(item["planned"]))
+    if item["latest_target"]:
+        tags.append("target " + when(item["latest_target"]))
     if item["earliest_start"]:
         tags.append("from " + when(item["earliest_start"]))
     if item["waiting_on"]:
@@ -84,7 +156,55 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.append("claimed by " + holder)
     if item["depends_on"]:
         tags.append("after " + ",".join(item["depends_on"]))
-    return "  ".join(parts) + ("  [" + "; ".join(dict.fromkeys(tags)) + "]" if tags else "")
+    row = "  ".join(parts) + ("  [" + "; ".join(dict.fromkeys(tags)) + "]" if tags else "")
+    return row if multiline else _single_line(row)
+
+
+def ready_previews(rows):
+    return "\n".join(_single_line(f"{item['id']}  {item['title']}  [{item['why']}]") for item in rows)
+
+
+def ready_explanation(view):
+    ready, held = view["ready_count"], view["held_count"]
+    if not ready and not held:
+        return "No live tasks match this view."
+    out = [f"{ready} ready, {held} held"]
+    out.extend("  " + row for row in ready_previews(view["ready"]).splitlines())
+    if len(view["ready"]) < ready:
+        out.append(f"  Showing {len(view['ready'])} of {ready}. Use --limit for more.")
+    labels = {
+        "active_children": "Have unfinished child tasks", "future_start": "Start later",
+        "future_round": "Waiting for the next round's planned day",
+        "claimed_elsewhere": "Claimed by another worker", "dependencies": "Waiting for prerequisites",
+        "proposed": "Awaiting a decision", "waiting": "Waiting on someone or something",
+    }
+    for code, group in sorted(view["reasons"].items()):
+        out.append(_single_line(f"{labels[code]} ({group['count']}): " + ", ".join(group["examples"])))
+    if held:
+        out.append("Read a task with daymark show ID for its details.")
+    return "\n".join(out)
+
+
+def search_text(page, *, mcp=False):
+    lines = []
+    for item in page["items"]:
+        row = f"{item['id']}  {item['title']}  [{item['status']}]"
+        if item.get("archived"):
+            row += "  [archived]"
+        if mcp and item.get("claimed_by"):
+            row += f"  claimed by {item['claimed_by']} until {item['claim_until']}"
+        elif not mcp and "claim_until" in item:
+            row += f" until {item['claim_until']}"
+        lines.append(_single_line(row))
+    if (cursor := page["next"]) is not None:
+        if _single_line(cursor) != cursor:
+            structured = "json: true" if mcp else "--json"
+            lines.append(f"More matches. Read the exact next cursor with {structured}.")
+        elif mcp:
+            lines.append("next: " + cursor)
+        else:
+            lines.append("More matches. Repeat this search with " + join([f"--after={cursor}"]))
+    return "\n".join(lines) or "No matches."
 
 
 def listing(items, now=None, empty="Nothing here.") -> str:
@@ -102,21 +222,30 @@ def explore_text(view: dict) -> str:
         if item["frontier"]:
             tags.append(
                 "next"
-                if item["advancing"] and item["id"] not in view["gaps"]
+                if item["id"] not in view["gaps"]
                 else "next; nothing moving it"
             )
         if item["waiting_on"]:
             tags.append("needs " + ",".join(item["waiting_on"]))
+        outside = item.get("outside_scope", {})
+        if outside.get("waiting_on"):
+            tags.append(f"waiting on {outside['waiting_on']} outside this scope")
+        if outside.get("advancing"):
+            counts = ", ".join(f"{n} {status}" for status, n in sorted(outside["advancing"].items()))
+            tags.append(f"linked work outside this scope: {counts}")
         out.append(
             f"  [{marks[item['state']]}] {item['id']}  {item['title']}"
             + (f"  [{'; '.join(tags)}]" if tags else "")
         )
         for task in item["advancing"]:
-            out.append(f"        {task['id']}  {task['title']}  [{task['status']}]")
+            out.append(_single_line(f"        {task['id']}  {task['title']}  [{task['status']}]"))
         for evidence in item["evidence"][-1:]:
             out.append(f"        evidence: {evidence}")
     if not view["conditions"]:
-        out.append('No conditions recorded. Add one with `daymark condition "..." --goal ID`.')
+        if "scope" in view:
+            out.append("No conditions recorded in this scope.")
+        else:
+            out.append('No conditions recorded. Add one with `daymark condition "..." --goal ID`.')
     if view["unassessed"]:
         out.append(
             f"{len(view['unassessed'])} not yet assessed: {', '.join(view['unassessed'][:8])}"
@@ -124,19 +253,72 @@ def explore_text(view: dict) -> str:
     return "\n".join(out)
 
 
-def advice_text(advice, now=None) -> str:
+def _read_hint(view, options, session, mcp):
+    if mcp:
+        import json
+
+        return "daymark_view " + json.dumps({"view": view, **options}, separators=(",", ":"))
+    # A service URL can contain a private mount path or credentials. A show
+    # suffix can be reused with the caller's original global service options.
+    remote_show = view == "show" and session and "endpoint" in session
+    command = [] if remote_show else ["daymark"]
+    if session and "database" in session and session["database"] != ":memory:":
+        command += [f"--db={session['database']}", f"--workspace={session['workspace']}",
+                    f"--as={session['actor']}", f"--tz={session['timezone']}"]
+    command.append(view)
+    for key, value in options.items():
+        if view == "show" and key == "id":
+            continue
+        flag = "--" + key.replace("_", "-")
+        if key == "scope" and value == "":
+            command.append("--unscoped")
+        elif str(value).startswith("-"):
+            command.append(f"{flag}={value}")
+        else:
+            command.extend([flag, str(value)])
+    if view == "show" and "id" in options:
+        if options["id"].startswith("-"):
+            command.append("--")
+        command.append(options["id"])
+    return join(command)
+
+
+def advice_text(advice, now=None, *, session=None, mcp=False) -> str:
     """Picks, then what the profile's strategies noticed."""
+    now = advice.as_of or now
     plain = advice.tone != "neutral"
     out = []
+    source = advice.profile_source
+    if source:
+        label = f"{source['kind']} profile {source['name']}"
+        if "version" in source:
+            label += f" v{source['version']}"
+        changes = " with temporary adjustments" if source["adjusted"] else ""
+        execution = source.get("execution")
+        if execution == "service":
+            out.append(f"Service workspace {source['workspace']} uses {label}{changes} for this call.")
+        elif execution == "legacy-client" and source["kind"] == "default":
+            out.append(f"This service cannot report its workspace profile. Using plain{changes} on this client.")
+        elif execution == "client-preview":
+            out.append(f"This client is previewing {label}{changes}, including the requested extension.")
+        elif source["kind"] in {"built-in", "saved"} or source["adjusted"]:
+            out.append(f"Using {label}{changes} for this call.")
     for item in advice.picks:
         # In the neutral tone the dates still show; the words "overdue" and "ago" do not.
         out.append(line(item, now, reason=plain))
         if item["id"] in advice.steps:
             out.append(f"    next: {advice.steps[item['id']]}")
     if not advice.picks:
-        out.append("Nothing is ready.")
+        if advice.held_back:
+            out.append("No picks for this view.")
+        elif advice.context is not None:
+            out.append(f"No ready tasks tagged with context {advice.context}.")
+        else:
+            out.append("Nothing is ready." if advice.scope is None else "Nothing is ready in this scope.")
     if advice.held_back:
-        out.append(f"({advice.held_back} more ready; `daymark ready` shows all.)")
+        hint = _read_hint("ready", advice.ready_query(), session, mcp)
+        qualifier = " with the same service and credential" if session and "endpoint" in session else ""
+        out.append(f"({advice.held_back} more ready; see `{hint}`{qualifier}.)")
     for note in advice.notes:
         ids = (
             f"  [{', '.join(note.ids[:8])}{', …' if len(note.ids) > 8 else ''}]" if note.ids else ""
@@ -145,25 +327,67 @@ def advice_text(advice, now=None) -> str:
     return "\n".join(out)
 
 
-def profile_text(profile: dict) -> str:
+def parameter_text(value):
+    """Use the same boolean spellings that a copied --set argument accepts."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def profile_text(profile: dict, *, database=None) -> str:
     out = [f"profile: {profile['name']}"]
+    if profile.get("execution") == "legacy-client":
+        out.append("This service cannot report its workspace profile. The client falls back to plain.")
     for stage in profile["strategies"]:
-        settings = ", ".join(f"{k}={v}" for k, v in stage["with"].items())
+        settings = ", ".join(f"{k}={parameter_text(v)}" for k, v in stage["with"].items())
         out.append(f"  {stage['use']}" + (f"  ({settings})" if settings else ""))
+        for key, value in stage.get("unavailable_parameters", {}).items():
+            field = f"{stage['use']}.{key}"
+            out.append(f"    ! {field}={value!r} is saved but unavailable here. To remove it, use --drop {field}.")
     if not profile["strategies"]:
         out.append("  no strategies: `daymark ready` order, nothing held back, no notes")
     for name in profile.get("skipped") or []:
-        out.append(f"  ! {name}: not available or misconfigured; left out. "
-                   f"Choose a profile again or `--drop {name}`.")  # fmt: skip
+        cause = ("unavailable in service built-in advice"
+                 if profile.get("execution") == "service" else "unavailable in this installation")
+        out.append(f"  ! {name}: {cause}. The saved entry is retained.")
+    if "workspace" in profile:
+        out.append(f"Workspace {profile['workspace']}, active version {profile['version']}")
+    if undo := profile.get("undo"):
+        command = ["daymark"]
+        if database and database != ":memory:":
+            command.append(f"--db={Path(database).absolute()}")
+        command.extend([f"--workspace={profile['workspace']}", "profile",
+                        f"--undo={undo['operation_id']}", "--if-version", str(undo["expected_version"])])
+        if database == ":memory:":
+            out.append("This profile lasts for the current in-memory database session.")
+        else:
+            out.append(f"Restore the previous settings in this database with {join(command)}")
     return "\n".join(out)
 
 
-def strategies_text(listed, profiles: dict) -> str:
-    out = ["Strategies (kind, how well supported):"]
+def strategy_detail(data):
+    if data.get("installed_plugin"):
+        return f"{data['name']}  {data['summary']} Use `advise --set {data['name']}` to preview it."
+    lines = [f"{data['name']} [{data['kind']}]  {data['summary']}", f"Practice evidence: {data['evidence']}"]
+    if data.get("evidence_note"):
+        lines.append(data["evidence_note"])
+    for key, param in data["parameters"].items():
+        bounds = []
+        if "minimum" in param:
+            bounds.append(f"minimum {param['minimum']}")
+        if "maximum" in param:
+            bounds.append(f"maximum {param['maximum']}")
+        extra = f" ({', '.join(bounds)})" if bounds else ""
+        lines.append(f"  {data['name']}.{key}={parameter_text(param['default'])}  {param['help']}{extra}")
+    return "\n".join(lines)
+
+
+def strategies_text(listed, profiles: dict, *, plugins=()) -> str:
+    out = ["Strategies (kind, evidence for the underlying practice):"]
     for s in listed:
-        settings = ", ".join(f"{k}={p.default}" for k, p in s.params.items())
+        settings = ", ".join(f"{k}={parameter_text(p.default)}" for k, p in s.params.items())
         out.append(f"  {s.name}  [{s.kind}; {s.evidence}]  {s.summary}"
                    + (f"  ({settings})" if settings else ""))  # fmt: skip
+    if plugins:
+        out.append("Installed plugin names: " + ", ".join(plugins))
     out.append("Profiles (adopt with `daymark profile NAME`):")
     for name, profile in profiles.items():
         uses = ", ".join(x["use"] for x in profile["strategies"]) or "none"
@@ -171,27 +395,325 @@ def strategies_text(listed, profiles: dict) -> str:
     return "\n".join(out)
 
 
+def saved_profiles_text(entries) -> str:
+    if isinstance(entries, dict):
+        return profile_text(entries["profile"]) + f"\nsaved version {entries['version']}"
+    return "\n".join(
+        f"{entry['name']}  version {entry['version']}" for entry in entries
+    ) or "No saved profiles. Create one with `daymark profile --save-as NAME`."
+
+
+def agenda_data(view, now=None, *, brief=False):
+    window = view.get("window")
+
+    def row(item):
+        data = compact(list_record(item, now) if brief or window else item)
+        if window:
+            deadline = item["deadline"]
+            data["deadline_exact"] = {key: deadline[key] for key in ("date", "at", "timezone") if deadline.get(key)}
+            if deadline.get("at"):
+                data["viewer_deadline"] = when({"at": deadline["at"], "timezone": window["timezone"]})
+        return data
+
+    result = {}
+    for key, value in view.items():
+        if key in {"upcoming", "civil_dates"}:
+            result[key] = {day: [row(item) for item in items] for day, items in value.items()}
+        elif isinstance(value, list):
+            result[key] = [row(item) for item in value]
+        else:
+            result[key] = value
+    return result
+
+
+def _local_agenda_text(view, now):
+    data = agenda_data(view, now)
+    window = data["window"]
+    out = [f"Hard deadlines in {window['timezone']}, {window['from']} through {window['through']}."]
+    sections = [
+        ("OVERDUE", data["overdue"]), ("TODAY", data["today"]), *data["upcoming"].items(),
+        *[(f"DATE ONLY · {day}", items) for day, items in data["civil_dates"].items()],
+    ]
+    for heading, items in sections:
+        if items:
+            out.append(f"{heading} ({len(items)})")
+        for item in items:
+            zone = item["deadline_exact"]["timezone"]
+            if "viewer_deadline" in item:
+                timing = item["viewer_deadline"]
+                if zone != window["timezone"]:
+                    timing += " (recorded " + item["deadline"] + ")"
+            else:
+                timing = item["deadline"] + " " + zone + " (date only)"
+            status = f" [{item['status']}]" if item["status"] != "open" else ""
+            title = item["title"] or f"({item['kind']})"
+            out.append(_single_line(f"  {item['id']}  {title}  {timing}{status}"))
+    if len(out) == 1:
+        out.append("No hard deadlines in this window.")
+    return "\n".join(out)
+
+
 def agenda_text(view: dict, now=None) -> str:
+    if "window" in view:
+        return _local_agenda_text(view, now)
+    now = normalize_now(now)
+    today, earlier = [], []
+    for item in view["today"]:
+        due_today = item["deadline"] and day_offset(item["deadline"], now) == 0
+        planned_before = item["planned"] and day_offset(item["planned"], now) < 0
+        group = earlier if planned_before and not due_today else today
+        group.append(item)
     out = []
-    for key, label in (("overdue", "OVERDUE"), ("today", "TODAY")):
-        if view[key]:
-            out.append(f"{label} ({len(view[key])})")
-            out.extend("  " + line(item, now) for item in view[key])
+    for items, label in ((view["overdue"], "OVERDUE"), (today, "TODAY"), (earlier, "PLANNED EARLIER")):
+        if items:
+            out.append(f"{label} ({len(items)})")
+            out.extend("  " + line(item, now) for item in items)
     for day, items in view["upcoming"].items():
         out.append(day)
         out.extend("  " + line(item, now, reason=False) for item in items)
     for key, label in (("waiting", "WAITING"), ("proposed", "PROPOSED, awaiting a decision")):
-        if view[key]:
-            out.append(f"{label} ({len(view[key])})")
-            out.extend("  " + line(item, now, reason=False) for item in view[key])
+        if items := view.get(key):
+            out.append(f"{label} ({len(items)})")
+            out.extend("  " + line(item, now, reason=False) for item in items)
     if view.get("later_or_undated"):
         out.append(f"{view['later_or_undated']} more later or undated; see `daymark ready`.")
-    return "\n".join(out) if out else "Nothing scheduled, waiting or proposed."
+    empty = "No hard deadlines in this window." if "waiting" not in view else "Nothing scheduled, waiting or proposed."
+    return "\n".join(out) if out else empty
+
+
+def activity_text(view: dict, *, session=None, mcp=False, limit=20) -> str:
+    """One line per change; full note text remains available in JSON and show."""
+    out = []
+    for event in view["events"]:
+        who = f" by {event['actor']}" if event["actor"] else ""
+        title = " ".join(event["title"].split())
+        row = f"{event['seq']}  {event['at'][:16]}  {event['action']}{who}  {event['id']}  {title}"
+        if note := event.get("note"):
+            text = " ".join(note["text"].split())
+            row += " — " + (text if len(text) <= 240 else text[:239] + "…")
+        elif event["action"] == "update" and event.get("changed"):
+            row += "  [" + ", ".join(event["changed"]) + "]"
+        out.append(_single_line(row))
+    if not out:
+        out.append("No activity.")
+    out.append(f"cursor {view['cursor']}")
+    if "checkpoint" in view:
+        out.append(f"checkpoint {view['checkpoint']}")
+    if view["cursor"] < view["head"]:
+        options = {"after": view.get("checkpoint", view["cursor"])}
+        if limit != 20:
+            options["limit"] = limit
+        hint = _read_hint("activity", options, session, mcp)
+        out.append(f"More changes: {hint}")
+        if not mcp and session and "endpoint" in session:
+            out.append("Use the same service URL and credential for this read.")
+    return "\n".join(out)
+
+
+def note_text(note: dict) -> str:
+    who = f" by {note['author']}" if note.get("author") else ""
+    end = "…" if note.get("truncated") else ""
+    return f"note {note['id']}  {note['at']}{who}  {note['text']}{end}"
+
+
+def comparison_text(view: dict) -> str:
+    import json
+
+    out = [f"{view['id']}  version {view['from_version']} → {view['to_version']}"]
+    if not view["available"]:
+        reason = "The recorded snapshots disagree." if view["reason"] == "ambiguous_history" else "The reviewed version is missing from this history."
+        return "\n".join([*out, reason, "Review the current record with the person before deciding."])
+    for change in view["fields"]:
+        if change.get("values_hidden"):
+            out.append(f"  {change['field']} changed (opaque value)")
+            continue
+        sides = []
+        for key in ("before", "after"):
+            side = json.dumps(change[key], ensure_ascii=False, separators=(",", ":"))
+            if info := change.get("previews", {}).get(key):
+                side = f"{side} [excerpt at {info['offset']} of {info['length']} characters]"
+            sides.append(side)
+        out.append(f"  {change['field']}  {sides[0]} → {sides[1]}")
+    if notes := view.get("notes"):
+        out.append(f"  notes: {notes['added']} added, {notes['removed']} removed, {notes['edited']} edited"
+                   + (", order changed" if notes["reordered"] else ""))
+        for kind in ("added", "removed", "edited"):
+            for note in notes.get(kind + "_notes", []):
+                out.append(f"    {kind} {note_text(note)}")
+    if not view["fields"] and not view.get("notes"):
+        out.append("No net field changes between these versions.")
+    return "\n".join(out)
+
+
+def source_text(ref: dict) -> str:
+    return f"source {ref['system']}:{ref['kind']}:{ref['id']}"
+
+
+def _blocker_labels(view):
+    named = {row["id"]: row for row in view.get("blockers", [])}
+    labels = []
+    for id in view["blocked_by"]:
+        row = named.get(id)
+        if row and "title" in row:
+            title = row["title"] + ("…" if row.get("truncated") else "")
+            labels.append(f"{id}  {title} [{row['status']}]")
+        else:
+            labels.append(id)
+    return ", ".join(labels)
+
+
+def _decision_line(data):
+    access = data.get("decision_access") or {}
+    allowed = access.get("policy_allows")
+    if allowed is None:
+        line = "Workspace policy permission for this actor is unknown."
+    elif allowed:
+        if access.get("rule") == "named_deciders":
+            line = f"Workspace policy names {access['actor']} as a proposal decider."
+        elif access.get("rule") == "any_writer":
+            line = f"Workspace policy permits any writer, including {access['actor']}, to accept or dismiss."
+        else:
+            line = f"Workspace policy permits {access['actor']} to accept or dismiss."
+        line += " The person's decision is still required."
+    else:
+        line = f"Workspace policy does not permit {access['actor']} to accept or dismiss."
+    return line + (" This MCP session is read-only." if access.get("session_read_only") else "")
+
+
+def _cycle_line(id, cycle):
+    chain = id + "".join(f" → {step['relation']} {step['id']}" for step in cycle)
+    return f"Circular wait. {chain}. Review the prerequisite or parent link."
+
+
+def _resume_line(view):
+    if view["if_resumed_now"]["earliest_start"] == "clear":
+        return "Resuming now clears the future start and cancels all active reminders. The deadline stays in place."
+    return "Resuming now keeps the existing schedule, including any active reminders and deadline."
+
+
+def brief_text(view: dict, *, timezone="UTC", session=None, mcp=False, source=None) -> str:
+    clipped = view.get("truncated", [])
+    title = view["title"] + ("…" if "title" in clipped else "")
+    archived = "archived, " if view.get("archived") else ""
+    out = [f"{view['id']}  {title}  [{archived}{view['status']}, version {view['version']}]"]
+    if view.get("status") == "proposed":
+        out.append(_decision_line(view))
+    if view.get("review_token"):
+        out.append(f"Review token: {view['review_token']}")
+    if view.get("scheduled_at") and view["kind"] == "reminder":
+        schedule = when({"at": view["scheduled_at"], "timezone": timezone})
+        out.append(f"{view['reminder_state']} at {schedule} for {view['recipient_id']} via {view['channel']}")
+        if view.get("task_id"):
+            out.append(f"Task: {view['task_id']}")
+        if view.get("held_for_decision"):
+            out.append("Delivery waits for the linked proposal to be accepted.")
+        if view.get("retry_at"):
+            out.append("Retry from " + when({"at": view["retry_at"], "timezone": timezone}))
+        if view["reminder_state"] == "delivered" and view["channel"] == "recording":
+            out.append("Recorded locally.")
+    if "readiness" in view:
+        state = view["readiness"]
+        out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
+        if state.get("cycle"):
+            out.append(_cycle_line(view["id"], state["cycle"]))
+    if "if_resumed_now" in view:
+        out.append(_resume_line(view))
+    if "next_move" in view:
+        out.append("Next move: " + view["next_move"])
+    if rule := view.get("recurrence"):
+        pace = "from completion" if rule["mode"] == "after_completion" else "on a fixed schedule"
+        date = "deadline" if rule["advances"] == "deadline" else "planned day"
+        series = f" in series {view['series_id']}" if view.get("series_id") else ""
+        out.append(f"Round {rule['occurrence_index'] + 1}{series}. {rule['rule']} {pace} "
+                   f"({rule['timezone']}). Generated rounds advance the {date}.")
+    if "claim" in view:
+        out.append(f"Claim: {view['claim']['owner']} until {view['claim']['until']}")
+    if "waiting_on" in view:
+        out.append("Waiting on: " + view["waiting_on"] + ("…" if "waiting_on" in clipped else ""))
+    out.extend(source_text(ref) for ref in view.get("source_refs", []))
+    if extra := view["omitted"].get("source_refs"):
+        out.append(f"{extra} more sources in full detail")
+    if "description" in view:
+        out.append(view["description"] + ("…" if "description" in clipped else ""))
+    for key, label in (("deadline", "Due"), ("planned", "Plan"), ("earliest_start", "Start"),
+                       ("latest_target", "Target")):
+        if key in view:
+            out.append(f"{label}: {when(view[key])}")
+    for key in ("blocked_by", "active_children"):
+        if view[key]:
+            extra = view["omitted"][key]
+            out.append(key.replace("_", " ") + ": " + (_blocker_labels(view) if key == "blocked_by" else ", ".join(view[key]))
+                       + (f" (+{extra} more)" if extra else ""))
+    omitted_notes = view["omitted"]["notes"]
+    selector = {"source": source} if source is not None else {"id": view["id"]}
+    more_tags = False
+    for key, label in (("label_ids", "Labels"), ("context_ids", "Contexts")):
+        if values := view.get(key):
+            remaining = view["omitted"].get(key, 0)
+            more_tags = more_tags or bool(remaining)
+            out.append(_single_line(f"{label}: " + ", ".join(values) + (f" (+{remaining} more)" if remaining else "")))
+    if not mcp and session and "endpoint" in session and (more_tags or omitted_notes or any(n.get("truncated") for n in view["notes"])):
+        out.append("For the following reads, append the show arguments to your original daymark --url and --token-env options.")
+    if more_tags:
+        out.append("Read all labels and contexts: " + _read_hint("show", selector, session, mcp))
+    if omitted_notes:
+        hint = _read_hint("show", {**selector, "before_note": view["next_before_note"]}, session, mcp)
+        out.append(f"{omitted_notes} earlier notes. Read older notes: {hint}")
+    if view["omitted"]["newer_notes"]:
+        out.append(f"{view['omitted']['newer_notes']} newer notes outside this page")
+    for note in view["notes"]:
+        out.append(note_text(note))
+        if note.get("truncated"):
+            hint = _read_hint("show", {**selector, "note": note["id"]}, session, mcp)
+            out.append(f"Read full note: {hint}")
+    return "\n".join(out)
+
+
+def recurrence_forecast_text(view: dict) -> str:
+    lines = [
+        f"Calendar forecast for {view['id']} v{view['version']} at {view['evaluated_at']}",
+        f"If {view['action']} took effect at that instant, this round would be {view['status']}.",
+    ]
+    successor = view["successor"]
+    if successor:
+        lines.append(f"Would create {successor['id']} (round {successor['occurrence_index'] + 1}).")
+        for field, label in (("planned", "Plan"), ("deadline", "Deadline")):
+            if successor[field]:
+                lines.append(f"{label} {when(successor[field])}")
+    else:
+        lines.append({
+            "recurrence_ended": "No new round under this rule at that instant.",
+            "next_round_previously_created": "No new round. This slot has already been recorded, even if later deleted.",
+            "successor_id_reserved": "No new round. The fallback ID is already reserved.",
+        }[view["outcome"]])
+    lines.append("Refresh before deciding. This snapshot covers recurrence only.")
+    return "\n".join(lines)
 
 
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
-    out = [line(item, now)]
+    out = [line(item, now, multiline=True)]
+    if item.get("status") == "proposed":
+        out.append(_decision_line(ctx))
+    if ctx.get("review_token"):
+        out.append(f"Review token: {ctx['review_token']}")
+    if claim_holder(item, normalize_now(now)):
+        out.append(f"claim expires: {item['claim_until']}")
+    if "readiness" in ctx:
+        state = ctx["readiness"]
+        reasons = {
+            "active_children": "finish child work " + ", ".join(state["active_children"]),
+            "future_start": "start has not arrived",
+            "future_round": "this round starts on its planned day",
+            "claimed_elsewhere": "claimed by another actor",
+            "dependencies": "waiting for " + ", ".join(ctx["blocked_by"]),
+            "proposed": "awaiting a decision",
+        }
+        why = ", ".join(reasons.get(code, code) for code in state["reasons"])
+        out.append("Ready now" if state["ready"] else "Not ready: " + why)
+        if state.get("cycle"):
+            out.append(_cycle_line(item["id"], state["cycle"]))
+    out.extend(source_text(ref) for ref in item["source_refs"])
     if item["description"]:
         out.append(item["description"])
     for key, label in (
@@ -209,14 +731,19 @@ def show_text(ctx: dict, now=None) -> str:
     for key in ("project_id", "parent_id", "goal_id", "assignee_id"):
         if item[key]:
             out.append(f"{key.removesuffix('_id')}: {item[key]}")
+    for key, label in (("label_ids", "labels"), ("context_ids", "contexts")):
+        if item.get(key):
+            out.append(_single_line(label + ": " + ", ".join(item[key])))
     for check in item["checklist"]:
         out.append(f"  [{'x' if check['completed'] else ' '}] {check['text']}")
     if ctx["blocked_by"]:
-        out.append("blocked by: " + ", ".join(ctx["blocked_by"]))
+        out.append("blocked by: " + _blocker_labels(ctx))
     if ctx["dependents"]:
         out.append("unblocks: " + ", ".join(ctx["dependents"]))
     for child in ctx["children"]:
         out.append(f"  child {child['id']}  {child['title']}  [{child['status']}]")
+    if "if_resumed_now" in ctx:
+        out.append(_resume_line(ctx))
     for reminder in ctx["reminders"]:
         out.append(
             f"  reminder {reminder['id']} at {reminder['scheduled_at']} [{reminder['state']}]"
@@ -281,10 +808,10 @@ def _card(card: dict, view: dict, now, *, skip=()) -> str:
             shown = ",".join(value) if isinstance(value, list) else value
             tags.append(f"{key}={shown}")
     base = line({**card, "stage": None}, now)
-    return base + ("  " + "  ".join(tags) if tags else "")
+    return base + ("  " + _single_line("  ".join(tags)) if tags else "")
 
 
-def _groups(view: dict, by: str) -> list[tuple[str, list]]:
+def plan_groups(view: dict, by: str) -> list[tuple[str, list]]:
     cards = view["tasks"]
     if by == "stage":
         return [
@@ -373,19 +900,20 @@ def plan_text(view: dict, now=None, by: str = "stage") -> str:
         "parent": ("parent",),
         "assignee": ("assignee",),
     }.get(by, (by,))
-    for title, cards in _groups(view, by):
+    for title, cards in plan_groups(view, by):
         if not cards and by not in {"stage", "milestone"}:
             continue
-        out.append(title.replace("{n}", str(len(cards))))
+        out.append(_single_line(title.replace("{n}", str(len(cards)))))
         out.extend("  " + _card(card, view, now, skip=skip) for card in cards)
     if view["proposed"]:
         out.append(f"PROPOSED, awaiting a decision ({len(view['proposed'])})")
         out.extend("  " + line(item, now, reason=False) for item in view["proposed"])
     for ref in view["external_dependencies"]:
-        out.append(
+        row = (
             f"outside this project: {ref['id']} {ref['title']} [{ref['status']}] "
             f"blocks {', '.join(ref['dependents'])}"
         )
+        out.append(_single_line(row))
     for fact in view["dependency_conflicts"]:
         out.append(
             f"date conflict: {fact['item']} starts {fact['start']} before "
@@ -400,10 +928,16 @@ def plan_text(view: dict, now=None, by: str = "stage") -> str:
 def projects_text(view: dict) -> str:
     out = [
         f"{p['id']}  {p['title'] or '(project)'}  [{_rollup_text(p['rollup'], p['health'])}"
+        + (f"; {p['status']}" if p["status"] != "open" else "")
         + (f"; managed by {p['managed_by']}" if p["managed_by"] else "")
         + "]"
         for p in view["projects"]
     ]
+    if "scope" in view:
+        label = view["scope"] or "(unscoped)"
+        if not out:
+            return f"No projects in {label}."
+        out.insert(0, f"Projects in {label}. Counts include all members of each project.")
     return "\n".join(out) if out else "No projects. Create one with `daymark project add TITLE`."
 
 
@@ -413,7 +947,7 @@ def tree_text(node: dict, depth: int = 0) -> str:
         "  " * depth
         + f"{node['id']}  {node['title'] or '(' + node['kind'] + ')'}  [{node['status']}{tag}]"
     )
-    lines = [text + (f"  (+{node['more']} below)" if node.get("more") else "")]
+    lines = [_single_line(text) + (f"  (+{node['more']} below)" if node.get("more") else "")]
     lines.extend(tree_text(child, depth + 1) for child in node.get("children", []))
     return "\n".join(lines)
 
@@ -481,49 +1015,114 @@ def presets_text(presets: dict) -> str:
     return "\n".join(out)
 
 
-GUIDE = """\
-Daymark keeps tasks, plans and time for a person's work and life. Use it instead
-of ad-hoc TODO lists so nothing is lost between sessions.
+MCP_GUIDE = (
+    "Use Daymark for the person's request\n"
+    '• Keep a named scope on the first read. Use find with source and scope for an exact match. '
+    'daymark_prime takes scope. For studio '
+    'decisions, daymark_view with view=ready, scope=studio and move=answer lists the relevant '
+    'items. Keep the answer within the requested scope.\n'
+    '• Read agenda with deadlines=true for hard cutoffs, including waiting work. For the person’s '
+    'day use local_day=true and days=0. Use show with '
+    'id or source for details, brief=true for recent notes and review_token. For a prior '
+    'activity checkpoint, read activity after that checkpoint.\n'
+    '• For a short check-in, present the advice picks and count held back. '
+    'Use advise with scope, profile or set for a one-time change. Read profiles for available '
+    'choices. Memories and settings are shared. A host can resend a personal preference through '
+    'its agreed end date. Save it here only if the person wants to share it. Use daymark_remember for a fact the '
+    'person wants to share across sessions.\n'
+    '• Use daymark_add for agreed work or proposed=true for a suggestion awaiting a decision. '
+    'Proposals are tasks with status=proposed. Set move=agent for expressly delegated work. Use '
+    'daymark_edit on the existing ID for changes. Pass an assignee name as supplied so both '
+    'people and principals are checked.\n'
+    '• plan is an intended work day, due is a hard cutoff, start is the earliest start, target '
+    'is a hoped-for finish. Leave unstated dates and priority unset. Ask when the distinction '
+    'matters.\n'
+    '• daymark_act supports wait with on, remind with when and recipient (default local '
+    'recording), take or claim for shared work, release with a handoff note, and done after '
+    'completion. Give each intent a fresh op. An identical retry returns the original result. '
+    'Use show for the current holder or status. Guard reviewed edits and '
+    'decisions with the review_token returned by show. For done or release from an earlier '
+    'claim, pass its reviewed version as expected_version.\n'
+).rstrip()
 
-Rules
-- Never invent a date, priority or completion. Record only what is known.
-- A deadline is a hard cutoff (--due). A plan is an intention that may move
-  (--plan). "Not before" hides work until it can start (--start). Do not put an
-  intention in --due.
-- If the person did not ask for a task, propose it; they accept or dismiss.
-- Claim before working when others may be working too. Leave a note when you stop.
+GUIDE = """\
+Use Daymark to pick up a person's commitments across sessions.
+
+Choose fields from the person's words
+  intended day ("I intend to", "I'd like to")    --plan
+  hard cutoff ("must be submitted by")          --due
+  first possible day ("cannot start until")     --start
+  hoped-for finish ("aim to finish by")         --target
+  idea awaiting a decision                      propose
+  existing task waiting on a reply              wait ID --on WHO_OR_WHAT
+  maximum items to show this time               ready --limit N
+Leave dates and priority unset unless supplied. Record completion only when it happened.
+Use distinct actors for concurrent workers and claim before starting shared work.
 
 Commands (add --json to any for structured output)
-  daymark ready [--scope NAME]      what can be done now, most pressing first
+  daymark where                     explain database selection without opening it
+  daymark prime --brief             current session without the command guide
+  daymark onboard --skill           full agent skill for the installed CLI
+  daymark onboard --mcp-config claude|codex  print a read-only editor configuration
+  daymark ready [--project ID] [--scope NAME] [--context ID] [--brief | --explain]   actionable work and holding reasons
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
-  daymark show ID                   one task with blockers, notes and history
+      --local-day --days 0          timed hard cutoffs in the session timezone and overlapping civil dates
+    --deadlines                     hard deadlines only, including waiting and blocked tasks
+  daymark show ID [--since-version N]   current detail or changes since a reviewed version
+    A circular wait names the child and prerequisite links to review.
+  daymark show ID --forecast skip|done   calendar effect for one round (MCP show: forecast=skip|done)
+  Use an exact source in place of ID when given one. Refresh before a decision.
+  daymark activity [--after CURSOR]  recent changes, or changes after a saved checkpoint
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
-  daymark propose "Title" [...]     suggest; a person runs accept/dismiss
+  daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-review TOKEN]
+  daymark policy --versioned       review local proposal deciders and their version
+    policy --deciders NAME,NAME --if-version N --operation-id ID replaces the list.
+    Use --clear in place of --deciders NAME,NAME to allow any writer.
+    Repeat the same write to recover a lost result. Read again to see the current list.
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
-  daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
+  daymark explore [GOAL] [--scope NAME]   what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
-  daymark advise                    what to offer and mention, by this workspace's profile
-  daymark claim ID / release ID     take or give back a task
+  daymark advise [--context ID] [--set shortlist.size=3]   show picks and the count held back
+      On a truncated review, ready_coverage reports how many ready tasks were reviewed and available.
+  daymark strategies [NAME]   discover methods and inspect a parameter range
+  daymark profile --saved           inspect named choices locally or on a current service
+      advise runs service built-ins for the authenticated workspace. Save preferences locally.
+      MCP use_profile receipts include restore_call for a version-checked reversal.
+  daymark --as WORKER take [--project ID] [--scope NAME] [--context ID]   claim a delegated ready task
+  daymark claim ID / release ID [--note TEXT] [--if-version N]   take work or hand it back
   daymark note ID "text"            progress or context for the next session
-  daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
-  daymark skip ID                   pass over one occurrence without completing it
-  daymark wait ID --on WHO [--until D] / resume ID
+  If a remote write is uncertain, repeat the same command and flags with the returned --op.
+  daymark done ID [--note TEXT] [--if-version N]   complete (a repeating task spawns its next)
+  daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)
+  daymark wait ID --on WHO [--until D] / resume ID   review reminders with show; pass --if-review TOKEN for a delayed reply
+  daymark edit ID --assignee NAME   MCP edit: assignee. Pass the name as given to check
+      both people and principals for a match. Use an ID the person supplied or confirmed.
+  daymark remind ID WHEN --to PERSON   schedule a reminder; show REMINDER --brief checks the local recording
   daymark defer ID D                hide until a date; the deadline does not move
-  daymark edit ID [--title T] [--due D] ...   (--due "" clears)
+  daymark edit ID [--if-version N] [--due D] ...   (--due "" clears)
+  daymark edit ID --waiting-on WHO  park open work; resume ID when the wait ends
   daymark block ID --on OTHER / unblock ID --on OTHER
-  daymark find TEXT                 search titles and descriptions
-  daymark remember "fact"           durable context shown by `daymark prime`
-  daymark undo ID                   restore the previous state
+  daymark find TEXT [--kind memory] [--page]   match titles and descriptions; --page gives compact hits
+  daymark find --source SYSTEM:KIND:ID --scope NAME   check a source inside a scope
+  daymark import accepts native Daymark workspace JSON. Verify original IDs before CSV capture.
+  daymark find --status proposed    list tasks awaiting acceptance
+  daymark find TEXT --archived [--kind memory]   search archived records only
+  daymark --as WORKER find --claimed   recover this worker’s active claims, including held work
+  daymark remember "fact" [--scope NAME] [--source SYSTEM:KIND:ID]   keep an explicit workspace fact
+  daymark unarchive ID [--if-review TOKEN]   restore visibility and keep the recorded status
+  daymark forget MEMORY_ID [--if-review TOKEN]   retire a remembered fact from pickup
+  daymark undo ID --if-version N --if-review TOKEN   reverse the reviewed latest change
 Projects (as plain or as structured as the work needs)
-  daymark projects / plan P [--by milestone|type|parent|FIELD]   see a project
+  daymark projects [--scope NAME] / plan P [--by milestone|type|parent|FIELD]
   daymark add "T" --project P [--stage S] [--assignee NAME] [--milestone M]
   daymark move ID [--stage S] [--after X|--before X|--first|--last]
       a stage sets the status; done, cancel and reopen move the card too
   daymark project add|set|stages|types|fields|config|presets   shape a project
   Add stages, types, fields or milestones only when the person asks for them.
 Dates D: 2030-04-03, 2030-04-03T09:00, today, tomorrow, fri, +3d, +2w, +1m ("fri 09:00").
+  Repeated local time: ask which UTC offset. Skipped local time: ask for another time.
 Repeats R: day, week, month, year, "2 weeks", weekdays, "mon,thu"; --after-completion
   counts from when it was actually done.
 Priority: 1 is most important, 4 least."""
@@ -533,7 +1132,7 @@ ONBOARD = """\
 <!-- daymark:begin -->
 ## Tasks: Daymark
 
-This project tracks tasks, plans and deadlines in Daymark.
+Use Daymark for commitments assigned to it by this project.
 
 - Run `daymark prime` at the start of a session for the workflow and current state.
 - Use `daymark ready`, `daymark show ID`, `daymark claim ID`, `daymark note ID "..."`
@@ -541,34 +1140,94 @@ This project tracks tasks, plans and deadlines in Daymark.
 - Capture new work with `daymark add "Title" --due DATE` (hard deadline) or
   `--plan DATE` (intention). Never invent dates.
 - Suggest work the person did not ask for with `daymark propose`; they decide.
-- Do not keep task lists in markdown files.
+- Keep each commitment in its owning tracker. Use a Daymark source reference for related work elsewhere.
 <!-- daymark:end -->
 """
 
 
-def prime_text(tasks, where: str | None = None) -> str:
-    """Orientation for a new session: the guide, then the live state."""
-    now = tasks.now()
-    counts = tasks.summary()
-    out = [
-        GUIDE,
-        "",
-        *([f"Database: {where}. Other workspaces are separate and not shown."] if where else []),
-        "Now ("
-        + now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a")
-        + ", "
-        + tasks.timezone
-        + ")",
-    ]
-    out.append(
-        "  " + ", ".join(f"{value} {key.replace('_', ' ')}" for key, value in counts.items())
-    )
-    memories = tasks.memories()
-    if memories:
-        out.append("Remembered")
-        out.extend(f"  - {memory['title']}  ({memory['id']})" for memory in memories[:50])
-    top = tasks.ready(limit=5)
-    if top:
+def endpoint_origin(url):
+    """An HTTP origin suitable for display, without user info, path or query."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc.rsplit('@', 1)[-1]}"
+
+
+def session_context(tasks, *, database=None, url=None) -> dict:
+    """Describe the active session without exposing credentials or guessing HTTP identity."""
+    context = {"timezone": tasks.timezone}
+    if url:
+        context["endpoint"] = endpoint_origin(url)
+        context["identity_source"] = "server credential"
+    else:
+        context.update(workspace=tasks.workspace, actor=tasks.actor)
+        if database:
+            context["database"] = str(Path(database).absolute()) if database != ":memory:" else database
+    return context
+
+
+def brief_session(tasks, context, *, scope=None):
+    """Bound the amount of task history and remembered text sent at session pickup."""
+    state = tasks.orientation(scope=scope) if scope is not None else tasks.orientation()
+    identity = state.get("identity", {})
+    result = {key: value for key, value in state.items() if key != "identity"}
+    result.update(context={**context, **identity}, ready=[compact(item) for item in state["ready"]])
+    if getattr(tasks.engine, "legacy_search", False):
+        result["summary_note"] = "The service reports its own ready count. Older servers exclude claimed work and count up to 1,000."
+    return result
+
+
+def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mcp=False, scope=None) -> str:
+    """Show the live session first. The brief form omits the command reference."""
+    context = context or session_context(tasks)
+    state = brief_session(tasks, context, scope=scope)
+    now = normalize_now(state["as_of"]) if state.get("as_of") else tasks.now()
+    context = state["context"]
+    out = []
+    if where:
+        out.append(f"Database: {where}")
+    elif "endpoint" in context:
+        if "workspace" in context and "actor" in context:
+            out.append(f"Endpoint: {context['endpoint']}, workspace {context['workspace']}, actor {context['actor']} (server credential)")
+        else:
+            out.append(f"Endpoint: {context['endpoint']} (workspace and actor set by server credential)")
+    else:
+        location = f"{context['database']}, " if "database" in context else ""
+        out.append(f"Daymark: {location}workspace {context['workspace']}, actor {context['actor']}")
+    out.append(now.astimezone(ZoneInfo(tasks.timezone)).strftime("%Y-%m-%d %a") + ", " + tasks.timezone)
+    if scope is not None:
+        out.append("Scope: " + (scope or "(unscoped)"))
+    counts = state["summary"]
+    labels = {"today": "today or planned earlier"}
+    out.append("  " + ", ".join(f"{v} {labels.get(k, k.replace('_', ' '))}" for k, v in counts.items()))
+    if state.get("summary_note"):
+        out.append("  " + state["summary_note"])
+    if state["ready"]:
         out.append("Most pressing")
-        out.extend("  " + line(item, now) for item in top)
+        for item in state["ready"]:
+            facts = [
+                f"{label} {item[key]}" for key, label in (
+                    ("deadline", "due"), ("planned", "plan"), ("next_move", "move"),
+                    ("claimed_by", "claimed by"),
+                ) if item.get(key)
+            ]
+            details = "  [" + "; ".join(facts) + "]" if facts else ""
+            out.append(_single_line(f"  {item['id']}  {item['title']}{details}"))
+    if state["memories"]:
+        out.append("Remembered")
+        for fact in state["memories"]:
+            fact_scope = f"  [scope:{fact['scope']}]" if fact.get("scope") else ""
+            out.append(_single_line(f"  - {fact['title']}{fact_scope}  ({fact['id']})"))
+        if state["next_memory"]:
+            options = {"kind": "memory", "after": state["next_memory"]}
+            if scope is not None:
+                options["scope"] = scope
+            hint = _read_hint("find", options, context, mcp)
+            out.append(f"  More facts: {hint}")
+    if scope is None and "activity_cursor" in state:
+        cursor = state.get("activity_checkpoint", state["activity_cursor"])
+        hint = _read_hint("activity", {"after": cursor}, context, mcp)
+        out.append(f"Changes after this snapshot: {hint}")
+    if not mcp and "endpoint" in context and (state["next_memory"] or "activity_cursor" in state):
+        out.append("Use the same service URL and credential for these reads.")
+    if not brief and scope is None:
+        out.extend(["", MCP_GUIDE if mcp else GUIDE])
     return "\n".join(out)

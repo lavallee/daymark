@@ -31,6 +31,13 @@ This checklist covers a source release of `daymark-core` (import: `daymark`). Pa
    tar -tzf "dist/daymark_core-$version.tar.gz"
    ```
 
+   Run `python scripts/check_sdist.py dist/*.tar.gz` against the expected source
+   tree. Build from a clean checkout and record its commit, build interpreter
+   version, backend version and artifact hashes. When comparing builds,
+   `gzip -dc dist/*.tar.gz | sha256sum` also compares the actual tar stream.
+   Python 3.15 changed the default gzip compression level, so identical tar
+   streams can produce different compressed hashes across interpreters.
+
    Verify the MIT license is included. Verify no private deployment report, database, export, local path, or credential appears in either archive. Inspect archive contents as well as filenames.
 5. Install the wheel into an empty environment outside this checkout and run the README quickstart. Check that importing `daymark` works without FastAPI, HTTPX, or Uvicorn. Repeat with the `service` extra for CLI and service smoke checks. Build a wheel from the sdist too: a checkout can hide missing source files.
 6. Run `artoo build .` and `artoo verify .`. Inspect the rendered landing page at phone and desktop widths. Use `artoo deploy . --dry-run` to inspect the public file set. Only the manifest's `docs` site root may be served.

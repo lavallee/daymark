@@ -1,36 +1,65 @@
 # Daymark
 
-**A task system that simplifies the complexities of real life.**
+**Daymark helps a person and their agents decide what can be done now.**
+It keeps deadlines, plans, dependencies and suggestions distinct so a new
+session can pick up the work. It needs one SQLite file and no account or model.
 
-Real commitments are not a flat list. A passport has a hard deadline; the trip
-you mean to book on Friday is only a plan. The filter is changed three months
-after it was last changed, not on a calendar date. The leak cannot be fixed
-until the plumber calls back. Daymark keeps those differences in the record, so
-an agent or a person can ask one question, "what can be done now?", and trust
-the answer.
+Keep code fixes in your existing tracker. Daymark can hold your follow-up,
+such as booking a proof after the fix is verified.
+[Tracker example](docs/work-and-life.md#what-daymark-learned-from-beads)
 
-It is built for AI agents working on a person's projects and life, and for the
-applications around them: one SQLite file, no cloud, no model, no account.
+You choose shared [settings](docs/working-preferences.md). Everyone using
+that workspace can see them. For two options once, just ask. For the whole
+afternoon, that choice belongs in your assistant’s private settings for you.
 
-```console
-$ daymark init
-$ daymark add "Renew passport" --due 2030-05-03 -p 1
-$ daymark add "Book flights" --plan fri --id flights
-$ daymark add "Book hotel" --after flights
-$ daymark add "Water the plants" --every "3 days" --after-completion
-$ daymark ready
-dm-k3f9  Water the plants  [planned today; plan 2030-04-03; repeats]
-flights  Book flights  [plan 2030-04-05]
-dm-y2yj  P1  Renew passport  [due 2030-05-03]
-$ daymark done flights --note "Booked, confirmation in the travel folder"
-$ daymark ready            # the hotel is no longer blocked
+A venue deposit has a deadline. Drafting an invitation is a plan. Approval
+waits for the draft. An idea for a poster stays a suggestion.
+
+## Try it in an empty folder
+
+Install the CLI with Python 3.11 or newer and uv:
+
+```sh
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.6.0"
 ```
+
+Run these commands in a new directory with the default database settings.
+`init --here` gives this example its own database.
+
+```sh
+daymark init --here
+daymark add "Pay venue deposit" --id deposit --due +7d --move person
+daymark add "Draft invitation" --id draft --plan tomorrow --move agent
+daymark add "Approve invitation" --id approve --after draft --move person
+daymark propose "Design a poster" --id poster
+daymark ready --move agent
+```
+
+The agent sees `draft`. A plan for tomorrow leaves it actionable today. The
+deposit belongs to the person, the approval waits for the draft, and the poster
+stays in `agenda` for a decision. When the draft is actually ready for review:
+
+```sh
+daymark done draft --note "Draft is in the event folder."
+daymark ready --move person
+```
+
+The person now sees both the deposit and the approval. In a later session,
+`daymark show draft` explains what happened. For recurring work, a team project,
+or an embedded application, see the examples below.
 
 ## For agents
 
-Run `daymark prime` at the start of a session. It prints the working rules, the
-command list and the current state in about 3,000 characters. `daymark onboard
---write AGENTS.md` adds a short section that tells future sessions to do so.
+Run `daymark prime` when a session starts. It identifies the workspace and
+shows what is ready, what is waiting, and which facts earlier sessions kept.
+`daymark onboard` previews the startup instructions. Use
+`daymark onboard --write AGENTS.md` to install them when they fit the project.
+To verify two agents share the intended workspace before creating a task,
+see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-minutes).
+For an enforced read-only session, `daymark onboard --mcp-config claude` or `daymark onboard --mcp-config codex`
+prints the launcher for the installation and workspace you selected.
+For commands supported by the tagged install above, see the
+[0.6.0 agent guide](https://github.com/lavallee/daymark/blob/v0.6.0/docs/agents.md).
 
 | You want | Command |
 | --- | --- |
@@ -62,13 +91,22 @@ stdio, with no extra dependency. From Python, `daymark.Tasks` is the same
 surface:
 
 ```python
+from contextlib import closing
 from daymark import Store, Tasks
 
-tasks = Tasks(Store("daymark.sqlite3"), actor="planner")
-tasks.add("Renew passport", due="2030-05-03", priority=1)
-for task in tasks.ready():
-    print(task["id"], task["title"])
+with closing(Store("daymark.sqlite3")) as store:
+    tasks = Tasks(store, actor="planner")
+    tasks.add("Renew passport", due="2030-05-03", priority=1, op="passport-2030")
+    for task in tasks.ready():
+        print(task["id"], task["title"])
 ```
+
+Daymark ships its agent skill inside the CLI package.
+Run `daymark onboard --skill` to read the guide that matches the installed version.
+
+For a short list during a busy afternoon or a standing preference, including
+one-call adjustments, see
+[working with a person’s preferences](docs/working-preferences.md).
 
 Read the [agent guide](docs/agents.md) for the full surface, and
 [work and life](docs/work-and-life.md) for how Daymark relates to code-centred
@@ -82,12 +120,14 @@ epics, milestones that work counts toward, a goal it serves, and fields of your
 own (points, cost, risk). None of it is required, and nothing about a project
 forces a method on it.
 
-Moving house is a few phases and one date that matters (each example starts from
-a fresh `daymark init` with `DAYMARK_TZ=Europe/London`, and runs as shown):
+Start each transcript in its own empty
+directory, run `daymark init --here`, and set `DAYMARK_TZ=Europe/London`.
+Moving house has several
+phases and one date that matters.
 
 ```console
 $ daymark project add "Move house" --id move --preset event --target 2030-06-28
-move  Move house
+move  Move house  [target 2030-06-28]
 $ daymark add "Moving day" --project move --id day --is-milestone --due 2030-06-28
 day  Moving day  [due 2030-06-28; milestone]
 $ daymark add "Book the van" --project move --id van --milestone day --stage book --set cost=180 --due 2030-06-01
@@ -178,37 +218,30 @@ each strategy.
   filter inside a workspace.
 - **Memory.** Append-only notes on each task, durable remembered facts, and a
   full event history with undo.
-- **Safety.** Every write has an operation ID and an expected version, so
+- **Safety.** Entity writes carry an operation ID and an expected version, so
   retries are harmless and stale writes are refused rather than merged.
 
 ## Install from source
 
-The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.5.0. Package registry publication is not yet promised. Requires
+The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.6.0.
+Use `daymark --version` to tell which CLI your agent will run. Both require
 Python 3.11 or newer.
 
-To install the command line tool from the tagged release:
+The quickstart above installs the tagged release. To run these development
+examples, start in the checkout or unpacked source archive containing this
+README. Install that copy and check the resulting version:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
-```
-
-Or from a checkout:
-
-```sh
-git clone https://github.com/lavallee/daymark.git
-cd daymark
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install .
+daymark --version
 ```
 
 The core needs no HTTP framework, credentials, notification provider, or network service. Install optional HTTP dependencies with `python -m pip install '.[service]'`.
 
 `daymark init` creates a per-user database; `daymark init --here` creates
-`.daymark/daymark.sqlite3` for one project. Commands use `--db`, then
-`DAYMARK_DB`, then the nearest `.daymark/` above the working directory, then
-the per-user database.
+`.daymark/daymark.sqlite3` for one project. `daymark where` explains how the CLI chose its database. The order is `--db`, `DAYMARK_DB`, the nearest project database, a legacy `./daymark.sqlite3`, then the per-user database.
 
 ## The engine
 
@@ -272,6 +305,34 @@ connection.close()
 ```
 
 Store initialization and writes participate in the supplied connection's transaction. The library uses savepoints and does not commit that connection, even when there was no active transaction. Persist schema initialization before starting a separate unit of work; rolling back initial setup also rolls back the new tables. Keep the connection's threading rules under your application's control. Only `daymark_` tables belong to the library.
+
+A read through an application-owned connection can pin a snapshot. If another
+connection commits before you write, catch `daymark.DomainError` with
+`code == "conflict"`. End the application's transaction, read the current
+record, and decide whether the original operation still applies.
+
+## Use Python with an existing Daymark service
+
+Install `daymark-core[client]` in the client environment. Use
+`daymark-core[service]` on the host that runs the HTTP server. The service
+credential selects the workspace and actor. This example reads one compact
+session through the same plain verbs as the local store.
+
+```python
+import os
+from daymark import Client, Tasks
+
+with Client(os.environ["DAYMARK_URL"], os.environ["DAYMARK_TOKEN"]) as client:
+    session = Tasks(client).orientation()
+    print(session.get("identity", {}), session["summary"])
+```
+
+The client raises `daymark.ClientError` on HTTP failures.
+`error.code == "conflict"` corresponds to HTTP 409. Read the current record
+before revising a guarded request. If a write's response was lost, retry the
+identical call with the same explicit `op` to recover its committed result.
+Local argument validation can still raise `daymark.DomainError`.
+[HTTP service setup and credentials](docs/operations.md)
 
 ## Timing and structured work
 

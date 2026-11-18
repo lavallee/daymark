@@ -7,25 +7,32 @@ or closes it. Path-backed stores serialize writes and commit each operation.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import plans, ranks
+from . import __version__, cursors, outbox, plans, project_feed, ranks
 from .models import (
     DomainError,
     Entity,
     Recurrence,
+    SourceRef,
     Temporal,
     next_occurrence,
     normalize_now,
     plain_number,
+    recurrence_date_field,
+    require_active_round,
+    require_visible_proposal,
     retry_delay,
 )
 
@@ -40,15 +47,46 @@ def invalid(message):
     raise DomainError("invalid", message)
 
 
+def validate_snapshot_envelope(snapshot, workspace=None):
+    """Check the native format before a CLI import opens its destination."""
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schema_version") != 1
+        or (workspace is not None and snapshot.get("workspace", workspace) != workspace)
+        or set(snapshot)
+        - {"schema_version", "workspace", "entities", "events", "operations"}
+    ):
+        invalid("Invalid snapshot envelope; use native Daymark JSON from daymark export")
+    for field in ("entities", "events", "operations"):
+        if (
+            not isinstance(snapshot.get(field, []), list)
+            or len(snapshot.get(field, [])) > 100_000
+        ):
+            invalid("Invalid snapshot collection")
+
+
 # These are workspace-local entity references, not arbitrary metadata links.
 # Bumped whenever stored entities or derived tables need an in-place upgrade.
 SCHEMA = "6"
+_OPEN_TIMEOUT = 30
 # The first release that writes this schema. A file at this schema needs it or newer.
 RELEASE = "0.5.0"
 STALE = (
     f"This database needs an upgrade to schema {SCHEMA}: open it once with daymark-core "
-    f"{RELEASE} or newer (any `daymark` command does), and commit the upgrade if you own "
+    f"{RELEASE} or newer (for example, `daymark --db FILE init`), and commit the upgrade if you own "
     "the connection"
+)
+TRACKING_STALE = (
+    "This database needs {kind} revision tracking: open it with this Daymark build "
+    "in writable mode, and commit the upgrade if you own the connection"
+)
+
+# v0.5.0 also writes schema 6. Both versions write the same scheduler rows,
+# so the database must own the counter once revision tracking is installed.
+REVISION_TRIGGERS = (
+    ("insert", "INSERT", "NEW", "1", ""),
+    ("update", "UPDATE OF value", "NEW", "2", " AND OLD.value <> NEW.value"),
+    ("delete", "DELETE", "OLD", "2", ""),
 )
 
 REFS = {
@@ -69,35 +107,56 @@ REFS = {
 
 
 class Store:
-    def __init__(self, path, *, upgrade=True):
+    def __init__(self, path, *, upgrade=True, read_only=False, require_existing=False):
         """Open a database path (Store owns its commits) or a caller's connection.
 
         A database written by an older Daymark is upgraded in place on open, inside
-        one transaction; an upgraded file cannot be opened by the older release. With
+        one transaction. Older releases may refuse the resulting schema. With
         ``upgrade=False`` an older or missing schema is refused with ``conflict``
         instead, and nothing is written. A schema newer than this code is always
-        refused: Daymark never downgrades a file.
+        refused: Daymark never downgrades a file. With `read_only=True`, a path
+        opens via SQLite mode=ro and local reads see committed updates. With
+        require_existing=True, open an existing Daymark database and allow recognized
+        older schemas to upgrade according to the upgrade option.
         """
         self._owned = not isinstance(path, sqlite3.Connection)
+        existing_file = self._owned and (read_only or require_existing)
+        if read_only:
+            if not self._owned:
+                raise DomainError("invalid", "Open a caller-owned connection with SQLite mode=ro and upgrade=False")
+            upgrade = False
+        if existing_file:
+            if not Path(path).is_file():
+                raise DomainError(
+                    "no_database", "The selected path does not name an existing database file",
+                    ["Inspect the selection with daymark where. For a new file, use daymark --db PATH init."],
+                )
+            path = Path(path).resolve().as_uri() + ("?mode=ro" if read_only else "?mode=rw")
         self._upgrade = upgrade
         self.db = (
-            sqlite3.connect(path, check_same_thread=False, timeout=30) if self._owned else path
+            sqlite3.connect(path, check_same_thread=False, timeout=_OPEN_TIMEOUT, uri=existing_file) if self._owned else path
         )
         self._lock = threading.RLock()
         self._actor = None  # Who is acting in the current execute; recorded on its events.
         try:
+            if require_existing and not self._has_schema():
+                raise DomainError(
+                    "no_database", "This file contains no Daymark database",
+                    ["Inspect the selection with daymark where. To initialize a new Daymark file, use daymark --db PATH init."],
+                )
             self._check_schema(upgrading=upgrade)
             if not upgrade:
                 return
             if self._owned:
                 # One durable sync per commit instead of a journal's several, and readers
                 # that do not wait on a writer. A caller-owned connection keeps its own mode.
-                self.db.execute("PRAGMA journal_mode=WAL")
+                self._enable_wal()
             # Individual DDL statements do not implicitly commit an existing transaction.
             # Use a root transaction even for schema so caller rollback includes schema.
             try:
                 with self._transaction():
-                    pass
+                    self._require_revision_tracking("setting", install=True)
+                    self._require_revision_tracking("policy", install=True)
             except sqlite3.OperationalError as exc:
                 if "readonly" not in str(exc).replace(" ", "").replace("-", ""):
                     raise
@@ -106,9 +165,35 @@ class Store:
                     "Stored schema is older than this Daymark and the connection is "
                     "read-only; open it writable once to upgrade it",
                 ) from None
-        except BaseException:
+        except BaseException as exc:
             self.close()
+            if existing_file and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_NOTADB:
+                raise DomainError(
+                    "invalid", "SQLite could not recognize the selected database file",
+                    ["Check the selected path with daymark where."],
+                ) from None
             raise
+
+    def _enable_wal(self):
+        # Concurrent first opens can both hold read locks while changing the
+        # journal mode. SQLite may report BUSY without waiting in that case.
+        deadline = time.monotonic() + _OPEN_TIMEOUT
+        delay = 0.005
+        while True:
+            try:
+                self.db.execute("PRAGMA journal_mode=WAL").fetchone()
+                return
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", 0) & 255 != sqlite3.SQLITE_BUSY:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DomainError(
+                        "conflict", "The database is busy while selecting its journal mode",
+                        ["Retry opening the same database after the other writer finishes."],
+                    ) from None
+                time.sleep(min(remaining, delay))
+                delay = min(delay * 2, 0.1)
 
     def stored_schema(self):
         """The schema marker in the database: None when it has no Daymark tables (or
@@ -125,12 +210,20 @@ class Store:
         """Refuse a schema this code must not touch: newer always, older or missing
         unless upgrading."""
         stored = self.stored_schema()
-        if stored is not None and stored.isdigit() and int(stored) > int(SCHEMA):
-            raise DomainError(
-                "conflict",
-                f"This database was written by a newer Daymark (schema {stored}); this is "
-                f"daymark-core {RELEASE} (schema {SCHEMA}). Use a newer Daymark.",
-            )
+        if stored is not None:
+            if not isinstance(stored, str) or not re.fullmatch(r"[1-9][0-9]*", stored):
+                raise DomainError(
+                    "conflict", "This database has an unrecognized Daymark schema marker",
+                    ["Keep the original file and inspect a native backup before choosing a compatible version."],
+                )
+            # Compare canonical decimal strings without parsing an unbounded integer.
+            if (len(stored), stored) > (len(SCHEMA), SCHEMA):
+                detail = f" (schema {stored})" if len(stored) < 12 else ""
+                raise DomainError(
+                    "conflict",
+                    f"This database was written by a newer Daymark{detail}; this is "
+                    f"daymark-core {__version__} (schema {SCHEMA}). Use a newer Daymark.",
+                )
         if upgrading or self._current():
             return
         if not self._has_schema():
@@ -146,7 +239,7 @@ class Store:
             and not self._current()
             and self.db.execute("SELECT 1 FROM daymark_entities LIMIT 1").fetchone()
         ):
-            raise DomainError("conflict", STALE)
+            self._check_schema(upgrading=False)
 
     def _ensure_schema(self):
         """Create or upgrade Daymark's tables inside the current transaction."""
@@ -197,6 +290,28 @@ class Store:
             (SCHEMA,),
         )
 
+    def _require_revision_tracking(self, kind, *, install=False):
+        # Entity-only reads can open a v0.5 file without changing its schema.
+        prefix = kind + ":"
+        names = [f"daymark_{kind}_{suffix}" for suffix, *_ in REVISION_TRIGGERS]
+        tracked = self.db.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (?, ?, ?)",
+            names,
+        ).fetchone()[0]
+        if tracked == len(names):
+            return
+        if not install or not self._upgrade:
+            raise DomainError("conflict", TRACKING_STALE.format(kind=kind))
+        for name, (_, action, row, initial, condition) in zip(names, REVISION_TRIGGERS, strict=True):
+            # A pre-tracking row without a revision already reads as version one.
+            # Keep deletion revisions so an absent value cannot return to version zero.
+            self.db.execute(
+                f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {action} ON daymark_scheduler "
+                f"WHEN substr({row}.key, 1, {len(prefix)}) = '{prefix}'{condition} BEGIN "
+                f"INSERT INTO daymark_scheduler VALUES('revision:' || {row}.key, {initial}) "
+                "ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER) + 1; END"
+            )
+
     def _current(self):
         if not self._has_schema("daymark_refs"):
             return False
@@ -212,7 +327,8 @@ class Store:
     @contextmanager
     def _transaction(self, *, write=True):
         with self._lock:
-            if not self.db.in_transaction:
+            started = not self.db.in_transaction
+            if started:
                 self.db.execute("BEGIN IMMEDIATE" if self._owned and write else "BEGIN")
             name = "daymark_" + uuid.uuid4().hex
             self.db.execute("SAVEPOINT " + name)
@@ -227,15 +343,31 @@ class Store:
                 yield
                 self.db.execute("RELEASE " + name)
                 released = True
-                if self._owned:
+                if self._owned and started:
                     self.db.commit()
-            except BaseException:
+            except BaseException as exc:
                 if not released:
                     self.db.execute("ROLLBACK TO " + name)
                     self.db.execute("RELEASE " + name)
-                if self._owned:
+                if self._owned and started:
                     self.db.rollback()
+                if isinstance(exc, sqlite3.OperationalError) and getattr(exc, "sqlite_errorname", "") == "SQLITE_BUSY_SNAPSHOT":
+                    raise DomainError(
+                        "conflict", "Another writer committed after this SQLite snapshot began",
+                        ["End the outer transaction, read current state, then retry the original operation."],
+                    ) from None
                 raise
+
+    @contextmanager
+    def read_snapshot(self):
+        """Group public reads without committing a caller's transaction or upgrading a database."""
+        with self._lock:
+            # A caller may roll back its initial schema. Its empty reads remain nonwriting.
+            if not self._has_schema():
+                yield
+            else:
+                with self._transaction(write=False):
+                    yield
 
     def close(self):
         if self._owned:
@@ -427,10 +559,13 @@ class Store:
         actor=...,
     ):
         if seq is None:
-            seq = self.db.execute(
-                "SELECT COALESCE(MAX(seq),0)+1 FROM daymark_event_cursors WHERE workspace=?",
+            head = self.db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM daymark_event_cursors WHERE workspace=?",
                 (workspace,),
             ).fetchone()[0]
+            if type(head) is not int or head >= cursors.MAX_CURSOR:
+                raise DomainError("conflict", "Workspace event cursor range is exhausted")
+            seq = head + 1
         cursor = self.db.execute(
             "INSERT INTO daymark_events(workspace,operation_id,entity_id,action,before_data,after_data,created_at,actor) VALUES(?,?,?,?,?,?,?,?)",
             (
@@ -448,6 +583,26 @@ class Store:
             "INSERT INTO daymark_event_cursors VALUES(?,?,?)", (workspace, seq, cursor.lastrowid)
         )
 
+    def _text_encoding(self):
+        """SQLite uses the database text encoding when casting TEXT to BLOB."""
+        return self.db.execute("PRAGMA encoding").fetchone()[0].lower()
+
+    def _entity_history(self, workspace, id, columns, limit, *, creations=False):
+        """Select entity events by native cursor, including out-of-order restores.
+
+        Sort only event keys before fetching potentially large snapshots. The
+        columns and optional creation filter are supplied by internal callers.
+        """
+        predicate = " AND e.action IN ('create','recurrence.create') AND e.after_data IS NOT NULL" if creations else ""
+        return self.db.execute(
+            "SELECT " + columns + " FROM ("
+            "SELECT e.seq AS physical,c.seq AS cursor FROM daymark_events e "
+            "JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE e.workspace=? AND e.entity_id=?"
+            + predicate + " ORDER BY c.seq DESC LIMIT ?) h "
+            "JOIN daymark_events e ON e.seq=h.physical ORDER BY h.cursor DESC",
+            (workspace, id, limit),
+        )
+
     def head(self, workspace):
         """The workspace's latest event cursor; 0 when nothing has happened."""
         with self._lock:
@@ -457,67 +612,6 @@ class Store:
                 "SELECT COALESCE(MAX(seq),0) FROM daymark_event_cursors WHERE workspace=?",
                 (workspace,),
             ).fetchone()[0]
-
-    # Kinds a plan can name anywhere in its workspace: as owners, labels or goals.
-    _NAMED = ("person", "principal", "label", "goal")
-
-    def _related(self, workspace, project_id):
-        """Entities outside a project whose changes alter its plan: what its tasks
-        depend on, and its goal."""
-        rows = self.db.execute(
-            "SELECT DISTINCT r.target_id FROM daymark_refs r JOIN daymark_refs p ON "
-            "p.workspace=r.workspace AND p.source_id=r.source_id AND p.field='project_id' "
-            "AND p.target_id=? WHERE r.workspace=? AND r.field='depends_on'",
-            (project_id, workspace),
-        ).fetchall()
-        related = {row[0] for row in rows}
-        project = self._project(workspace, project_id)
-        if project and project["goal_id"]:
-            related.add(project["goal_id"])
-        return related
-
-    def _touches(self, project_id, related, entity_id, before, after):
-        """Whether an event changes what a project's plan shows: the project itself,
-        a task entering, leaving or inside it, something its tasks depend on, or a
-        person, label or goal it can name."""
-        if entity_id == project_id or entity_id in related:
-            return True
-        for state in (before, after):
-            if state and (
-                state.get("project_id") == project_id or state.get("kind") in self._NAMED
-            ):
-                return True
-        return False
-
-    def _project_events(self, workspace, project_id, after, limit):
-        """Event rows after a cursor that touch a project, prefiltered in SQL."""
-        related = sorted(self._related(workspace, project_id))
-        needles = [
-            '"project_id":' + json.dumps(project_id, ensure_ascii=False),
-            *(f'"kind":"{kind}"' for kind in self._NAMED),
-        ]
-        clause = " OR ".join(
-            f"instr(COALESCE(e.{column},''),?)>0"
-            for column in ("before_data", "after_data")
-            for _ in needles
-        )
-        ids = ",".join("?" * (len(related) + 1))
-        rows = self.db.execute(
-            "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,"
-            "e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c "
-            f"ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? AND (e.entity_id IN ({ids}) "
-            f"OR {clause}) ORDER BY c.seq",
-            (workspace, after, project_id, *related, *needles, *needles),
-        )
-        found, related = [], set(related)
-        for row in rows:
-            before = json.loads(row[5]) if row[5] else None
-            after_data = json.loads(row[6]) if row[6] else None
-            if self._touches(project_id, related, row[3], before, after_data):
-                found.append(row)
-                if len(found) >= limit:
-                    break
-        return found
 
     def changes(self, workspace, project_id, after):
         """Whether anything in a project's plan changed after an event cursor.
@@ -530,20 +624,19 @@ class Store:
         if not isinstance(project_id, str) or not project_id:
             invalid("Project ID required")
         with self._lock:
-            head = self.head(workspace)
-            if after > head:
-                return {"cursor": head, "changed": True}
             if not self._has_schema():
-                return {"cursor": head, "changed": False}
-            from . import views
-
-            views._read(self)
-            hit = self._project_events(workspace, project_id, after, 1)
-            return {"cursor": head, "changed": bool(hit)}
+                return {"cursor": 0, "changed": after > 0}
+            self._refuse_stale()
+            with self._transaction(write=False):
+                head = self.head(workspace)
+                if after >= head:
+                    return {"cursor": head, "changed": after > head}
+                hit = project_feed.read(self, workspace, project_id, after, 1, cursor_only=True)
+                return {"cursor": head, "changed": bool(hit)}
 
     def events(self, workspace, after=0, limit=100, project=None):
         """An event page after a cursor. ``project`` keeps the events that touch it."""
-        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+        if type(after) is not int or not 0 <= after <= cursors.MAX_CURSOR or type(limit) is not int or not 1 <= limit <= 1000:
             invalid("Invalid event cursor or limit")
         if project is not None and (not isinstance(project, str) or not project):
             invalid("Invalid project filter")
@@ -551,7 +644,9 @@ class Store:
             if not self._has_schema():
                 return []
             if project is not None:
-                rows = self._project_events(workspace, project, after, limit)
+                self._refuse_stale()
+                with self._transaction(write=False):
+                    rows = project_feed.read(self, workspace, project, after, limit)
             else:
                 rows = self.db.execute(
                     "SELECT c.seq,e.workspace,e.operation_id,e.entity_id,e.action,e.before_data,e.after_data,e.created_at,e.actor FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq WHERE c.workspace=? AND c.seq>? ORDER BY c.seq LIMIT ?",
@@ -576,6 +671,12 @@ class Store:
                 }
                 for row in rows
             ]
+
+    def activity(self, workspace, *, after=None, limit=20):
+        """A compact page of workspace activity, with a cursor for the next session."""
+        from . import views
+
+        return views.activity(self, workspace, after=after, limit=limit)
 
     def _receipt(self, workspace, operation_id, action, payload, expected_version):
         if (
@@ -619,12 +720,25 @@ class Store:
             ).fetchone()
             return json.loads(row[0]) if row else {"deciders": []}
 
-    def set_policy(self, workspace, *, deciders):
-        """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
+    def policy_state(self, workspace):
+        """Read the authoritative list and its revision together."""
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return {"deciders": [], "version": 0}
+            self._check_schema(upgrading=False)
+            self._require_revision_tracking("policy")
+            data, version = self._scheduler_state("policy:" + workspace)
+        return {**(json.loads(data) if data is not None else {"deciders": []}), "version": version}
 
-        The check is only as strong as the actor name it is given. The HTTP
-        service supplies the authenticated principal; a local caller states its own.
-        """
+    def decision_access(self, workspace, actor):
+        """Whether the workspace proposal policy admits this actor at the time of the read."""
+        deciders = self.policy(workspace)["deciders"]
+        return {"actor": actor, "policy_allows": not deciders or actor in deciders,
+                "rule": "named_deciders" if deciders else "any_writer"}
+
+    @staticmethod
+    def validate_policy_change(workspace, deciders, expected_version=None, operation_id=None):
+        """Validate a policy change before opening a writable database."""
         if (
             not isinstance(workspace, str)
             or not 1 <= len(workspace) <= 128
@@ -633,28 +747,54 @@ class Store:
             or any(not isinstance(x, str) or not 1 <= len(x) <= 200 for x in deciders)
         ):
             invalid("Deciders must be a list of at most 100 actor names")
+        try:
+            workspace.encode("utf-8")
+            for name in deciders:
+                name.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("Policy workspace and deciders must be UTF-8 text")
+        if expected_version is not None or operation_id is not None:
+            if type(expected_version) is not int or expected_version < 0 or operation_id is None:
+                invalid("A guarded policy change needs an operation ID and a nonnegative expected version")
+            Store._setting_op_key(workspace, operation_id)
+
+    def set_policy(self, workspace, *, deciders, expected_version=None, operation_id=None):
+        """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
+
+        The check is only as strong as the actor name it is given. The HTTP
+        service supplies the authenticated principal; a local caller states its own.
+        """
+        self.validate_policy_change(workspace, deciders, expected_version, operation_id)
+        key = "policy:" + workspace
         value = {"deciders": sorted(set(deciders))}
-        with self._transaction():
-            self.db.execute(
-                "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("policy:" + workspace, canonical(value)),
-            )
-        return value
+        text = canonical(value)
+        if expected_version is None and operation_id is None:
+            with self._transaction():
+                self._write_scheduler_value(key, text)
+            return value
 
-    def setting(self, workspace, name):
-        """A named workspace setting (a small JSON value), or None. Settings are
-        configuration, not records: they have no history and are not exported."""
-        with self._lock:
-            if not self._has_schema("daymark_scheduler"):
-                return None
-            row = self.db.execute(
-                "SELECT value FROM daymark_scheduler WHERE key=?",
-                (f"setting:{workspace}:{name}",),
-            ).fetchone()
-            return json.loads(row[0]) if row else None
+        def apply():
+            self._require_revision_tracking("policy", install=True)
+            if self.policy_state(workspace)["version"] != expected_version:
+                raise DomainError(
+                    "conflict", "Proposal decision policy changed; read it again with policy --versioned"
+                )
+            self._write_scheduler_value(key, text)
+            return self.policy_state(workspace), {}
 
-    def set_setting(self, workspace, name, value):
-        """Store or, with None, remove a workspace setting of at most 64 kB."""
+        # The colon distinguishes policy from any valid setting name in shared receipts.
+        return self._configuration_operation(
+            workspace, "policy:", operation_id, [expected_version, value], apply
+        )
+
+    def _write_scheduler_value(self, key, text):
+        self.db.execute(
+            "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, text),
+        )
+
+    @staticmethod
+    def _setting_key(workspace, name):
         if (
             not isinstance(workspace, str)
             or not 1 <= len(workspace) <= 128
@@ -663,21 +803,134 @@ class Store:
         ):
             invalid("Setting needs a workspace and a short lowercase name")
         try:
+            workspace.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("A setting workspace must be UTF-8 text")
+        return f"setting:{workspace}:{name}"
+
+    def setting_state(self, workspace, name):
+        """Read a local configuration value and its revision in one snapshot."""
+        key = self._setting_key(workspace, name)
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return {"value": None, "version": 0}
+            self._check_schema(upgrading=False)
+            self._require_revision_tracking("setting")
+            data, version = self._scheduler_state(key)
+        return {"value": json.loads(data) if data is not None else None, "version": version}
+
+    def _scheduler_state(self, key):
+        data, revision = self.db.execute(
+            "SELECT (SELECT value FROM daymark_scheduler WHERE key=?),"
+            "(SELECT value FROM daymark_scheduler WHERE key=?)",
+            (key, "revision:" + key),
+        ).fetchone()
+        # Older releases stored the value alone. Its first observed version is one.
+        return data, int(revision) if revision is not None else int(data is not None)
+
+    def setting(self, workspace, name):
+        """A named workspace setting (a small JSON value), or None."""
+        key = self._setting_key(workspace, name)
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return None
+            self._check_schema(upgrading=False)
+            row = self.db.execute("SELECT value FROM daymark_scheduler WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_setting(self, workspace, name, value, *, expected_version=None):
+        """Store or remove a small JSON setting. An observed version guards against stale edits."""
+        key = self._setting_key(workspace, name)
+        if expected_version is not None and (
+            type(expected_version) is not int or expected_version < 0
+        ):
+            invalid("Expected configuration version must be a nonnegative integer")
+        try:
             text = None if value is None else canonical(value)
-        except (TypeError, ValueError):
-            invalid("A setting is plain JSON")
+            if text is not None:
+                text.encode("utf-8")
+        except (TypeError, ValueError, RecursionError):
+            invalid("A setting is plain UTF-8 JSON")
         if text is not None and len(text) > 65_536:
-            invalid("Setting exceeds 64 kB")
-        key = f"setting:{workspace}:{name}"
+            invalid("Setting exceeds 65,536 JSON characters")
         with self._transaction():
+            self._require_revision_tracking("setting", install=True)
+            state = self.setting_state(workspace, name)
+            if expected_version is not None and expected_version != state["version"]:
+                raise DomainError("conflict", "Workspace setting changed; read it again")
+            if canonical(state["value"]) == canonical(value):
+                return value
             if text is None:
                 self.db.execute("DELETE FROM daymark_scheduler WHERE key=?", (key,))
             else:
-                self.db.execute(
-                    "INSERT INTO daymark_scheduler VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (key, text),
-                )
+                self._write_scheduler_value(key, text)
         return value
+
+    @staticmethod
+    def _setting_op_key(workspace, operation_id):
+        if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 200:
+            invalid("Configuration operation ID must be 1 to 200 characters")
+        try:
+            operation_id.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("A configuration operation ID must be UTF-8 text")
+        # Workspace and operation IDs can contain separators. JSON preserves the pair.
+        return "setting-op:" + canonical([workspace, operation_id])
+
+    def setting_operation(self, workspace, name, operation_id, request, apply, *, reversible=False):
+        """Commit a local settings write and its replay receipt in one transaction.
+
+        The callback receives the setting's observed state. Settings and their
+        receipts live outside entity exports. A reversible write keeps its prior
+        value, including the distinction between an unset value and a default.
+        """
+        self._setting_key(workspace, name)
+
+        def perform():
+            self._require_revision_tracking("setting", install=True)
+            before = self.setting_state(workspace, name)
+            return apply(before), ({"before": before["value"]} if reversible else {})
+
+        return self._configuration_operation(workspace, name, operation_id, request, perform)
+
+    def _configuration_operation(self, workspace, name, operation_id, request, apply):
+        key = self._setting_op_key(workspace, operation_id)
+        try:
+            digest = hashlib.sha256(canonical([name, request]).encode()).hexdigest()
+        except (TypeError, ValueError, RecursionError):
+            invalid("A configuration request must be plain UTF-8 JSON")
+        with self._transaction():
+            row = self.db.execute(
+                "SELECT value FROM daymark_scheduler WHERE key=?", (key,)
+            ).fetchone()
+            if row:
+                receipt = json.loads(row[0])
+                if receipt["digest"] != digest:
+                    raise DomainError(
+                        "conflict", "Configuration operation ID reused with a different request"
+                    )
+                return receipt["result"]
+            result, metadata = apply()
+            receipt = {"name": name, "digest": digest, "result": result, **metadata}
+            self.db.execute("INSERT INTO daymark_scheduler VALUES(?,?)", (key, canonical(receipt)))
+        return result
+
+    def setting_before(self, workspace, name, operation_id):
+        """The prior value and resulting version of a reversible configuration operation."""
+        self._setting_key(workspace, name)
+        key = self._setting_op_key(workspace, operation_id)
+        with self._lock:
+            row = (
+                self.db.execute(
+                    "SELECT value FROM daymark_scheduler WHERE key=?", (key,)
+                ).fetchone()
+                if self._has_schema("daymark_scheduler")
+                else None
+            )
+        receipt = json.loads(row[0]) if row else {}
+        if receipt.get("name") != name or "before" not in receipt:
+            raise DomainError("not_found", "No reversible configuration operation with that ID")
+        return {"value": receipt["before"], "version": receipt["result"]["version"]}
 
     def execute(self, workspace, operation_id, action, payload, expected_version=None, actor=None):
         """Apply one operation. ``actor`` names who is acting; it is recorded on the
@@ -833,17 +1086,54 @@ class Store:
 
         return views.tree(self, workspace, id, depth=depth)
 
-    def projects(self, workspace, *, now=None):
+    def projects(self, workspace, *, now=None, scope=None):
         """Every unarchived project in a workspace with its roll-up. See views.projects."""
         from . import views
 
-        return views.projects(self, workspace, now=now)
+        return views.projects(self, workspace, now=now, scope=scope)
 
     def _execute(self, workspace, operation_id, action, payload, expected_version):
+        if action == "take" and payload.get("owner") != self._actor:
+            invalid("Take requires the owner to match the acting worker")
+        forgetting = action == "forget"
+        if forgetting:
+            if "id" not in payload or set(payload) - {"id", "review_token"}:
+                invalid("Forget requires a memory ID")
+            # Forget has always recorded an archive event and receipt. Keep
+            # matching those requests, with a memory-kind check on both paths.
+            action = "archive"
         digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
         if replay is not None:
+            if forgetting and replay.get("kind") != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
             return replay
+        if "review_token" in payload:
+            if not forgetting and action not in {"update", "accept", "dismiss", "undo"}:
+                invalid("This operation does not support a review token")
+            payload = dict(payload)
+            token = payload.pop("review_token")
+            if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+                invalid("Use the review token returned by show or brief")
+            if not isinstance(payload.get("id"), str):
+                invalid("Entity ID required")
+            if self._review_token(workspace, payload["id"]) != token:
+                raise DomainError("conflict", "The reviewed entity has changed or was replaced")
         now = normalize_now().isoformat()
+        taking = action == "take"
+        if taking:
+            if expected_version != 0:
+                raise DomainError("conflict", "Selecting work requires version zero")
+            candidate = self._take_candidate(workspace, payload, now)
+            if candidate is None:
+                empty = {"task": None}
+                self._record(workspace, operation_id, digest, empty)
+                return empty
+            # Continue through the ordinary versioned claim transition and
+            # attribute its event to the caller's actual operation ID.
+            action = "claim"
+            expected_version = candidate["version"]
+            payload = {key: value for key, value in payload.items() if key not in {"scope", "context", "project"}}
+            payload["id"] = candidate["id"]
         before = None
         if action == "create":
             if expected_version != 0:
@@ -889,10 +1179,17 @@ class Store:
                 self._record(workspace, operation_id, digest, data)
                 return data
             before = self.get(workspace, payload["id"])
+            if forgetting and before["kind"] != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
             if before["version"] != expected_version:
                 raise DomainError("conflict", "Version mismatch")
             raw = {**before, "version": before["version"] + 1, "updated_at": now}
             if action == "update":
+                if (payload.get("waiting_on") and "status" not in payload
+                        and before["kind"] == "task" and before["status"] == "open" and not before["archived"]):
+                    # Receiving a waiting reason parks live work. Keep the
+                    # caller's original fields in the operation digest above.
+                    payload = {**payload, "status": "waiting"}
                 protected = {
                     "id",
                     "workspace",
@@ -925,6 +1222,9 @@ class Store:
                 }:
                     invalid("A proposal changes status only through accept or dismiss")
                 raw.update({k: v for k, v in payload.items() if k not in protected})
+                if raw.get("recurrence") and not before["recurrence"] and not raw["occurrence_key"]:
+                    raw["series_id"] = raw["series_id"] or raw["id"]
+                    raw["occurrence_key"] = f"{raw['series_id']}:0"
                 if isinstance(payload.get("values"), dict):
                     # Values merge per field: name only what changes; null clears one.
                     merged = {**before.get("values", {}), **payload["values"]}
@@ -940,17 +1240,21 @@ class Store:
                     invalid("Unexpected action fields")
                 if before["status"] != "proposed":
                     invalid("Only a proposal can be accepted or dismissed")
-                deciders = self.policy(workspace)["deciders"]
-                if deciders and self._actor not in deciders:
+                if not self.decision_access(workspace, self._actor)["policy_allows"]:
                     raise DomainError(
                         "forbidden", "Only a designated decider can accept or dismiss"
                     )
-                raw["status"] = "open" if action == "accept" else "cancelled"
+                raw["status"] = "cancelled"
+                if action == "accept":
+                    require_visible_proposal(before)
+                    raw["status"] = "waiting" if before["waiting_on"] else "open"
             elif action in {"complete", "cancel", "reopen", "archive", "skip", "delete"}:
                 if set(payload) - {"id", "completed_at"}:
                     invalid("Unexpected action fields")
                 if before["status"] == "proposed" and action in {"complete", "skip", "reopen"}:
                     invalid("Accept or dismiss a proposal first")
+                if action in {"skip", "complete"}:
+                    require_active_round(before, action)
                 if action == "archive":
                     raw["archived"] = True
                 elif action == "complete":
@@ -1055,9 +1359,37 @@ class Store:
                     and (before is None or before["status"] != "completed")
                 )
             ):
+                # Edits and stage moves can also produce a completion. Keep
+                # a closed round from starting new work through those routes.
+                if data["archived"]:
+                    require_active_round(data, "complete")
+                if action == "update":
+                    require_active_round({**before, "recurrence": data["recurrence"]}, "complete")
                 self._successor(data, operation_id)
-        self._record(workspace, operation_id, digest, data)
-        return data
+        result = {"task": data} if taking else data
+        self._record(workspace, operation_id, digest, result)
+        return result
+
+    def _take_candidate(self, workspace, payload, now):
+        """Selection uses the same readiness and ordering that the worker sees."""
+        if set(payload) - {"owner", "scope", "context", "project", "lease_seconds"}:
+            invalid("Unexpected take fields")
+        owner, scope = payload.get("owner"), payload.get("scope")
+        if not isinstance(owner, str) or not owner.strip() or len(owner) > 200:
+            invalid("Take requires a named acting worker")
+        lease = payload.get("lease_seconds", 3600)
+        if type(lease) is not int or not 1 <= lease <= 604_800:
+            invalid("Claim requires a lease of at most seven days")
+        if scope not in (None, "") and (
+            not isinstance(scope, str) or len(scope) > 100 or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", scope)
+        ):
+            invalid("Invalid scope name")
+        context = payload.get("context")
+        if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
+            invalid("Context must be an entity ID")
+        filters = {key: payload[key] for key in ("context", "project") if key in payload}
+        ready = self.ready(workspace, now=now, limit=1, next_move="agent", scope=scope, **filters)
+        return ready[0] if ready else None
 
     def _claim_action(self, raw, before, action, payload, now):
         """Take or give back an expiring working claim; one live holder at a time."""
@@ -1342,18 +1674,35 @@ class Store:
         index = sum(1 for x in others if plans.effective_rank(x) <= task["rank"])
         task["rank"] = self._key_at(others, index, operation_id, now)
 
+    def _same_materialized_state(self, recorded, live):
+        """Compare canonical JSON, supplying defaults absent in older event snapshots."""
+        return recorded == live or (
+            recorded is not None and live is not None
+            and canonical(self._validated(json.loads(recorded))) == live
+        )
+
     def _undo(self, workspace, payload, expected_version, operation_id, now):
         if set(payload) != {"id"}:
             invalid("Undo requires entity ID")
-        row = self.db.execute(
-            "SELECT action,before_data,after_data,operation_id FROM daymark_events WHERE workspace=? AND entity_id=? ORDER BY seq DESC LIMIT 1",
-            (workspace, payload["id"]),
+        row = self._entity_history(
+            workspace, payload["id"], "e.action,e.before_data,e.after_data,e.operation_id", 1
         ).fetchone()
-        if row is None or row[1] is None:
+        live_row = self.db.execute(
+            "SELECT data FROM daymark_entities WHERE workspace=? AND id=?", (workspace, payload["id"])
+        ).fetchone()
+        live = live_row[0] if live_row else None
+        if row is None and live is None:
+            invalid("No prior state to restore")
+        if row is None or not self._same_materialized_state(row[2], live) or (
+            live is None and row[0] != "delete"
+        ):
+            raise DomainError("conflict", "Current state lacks matching event history",
+                              ["Inspect the current record and its history before choosing a change."])
+        if row[1] is None:
             invalid("No prior state to restore")
         undone = row[3]
         previous = json.loads(row[1])
-        current = self.get(workspace, payload["id"]) if row[2] is not None else None
+        current = json.loads(live) if live is not None else None
         version = current["version"] if current else previous["version"] + 1
         if version != expected_version:
             raise DomainError("conflict", "Version mismatch")
@@ -1409,8 +1758,9 @@ class Store:
         """Undoing a project's configuration change also puts back the task stages
         that change cleared, for each task nobody has written since."""
         rows = self.db.execute(
-            "SELECT before_data,after_data FROM daymark_events WHERE workspace=? AND "
-            "operation_id=? AND action='stage.reset' ORDER BY seq",
+            "SELECT e.before_data,e.after_data FROM daymark_events e JOIN daymark_event_cursors c "
+            "ON c.event_seq=e.seq WHERE e.workspace=? AND e.operation_id=? "
+            "AND e.action='stage.reset' ORDER BY c.seq",
             (workspace, undone),
         ).fetchall()
         for before_text, after_text in rows:
@@ -1419,8 +1769,8 @@ class Store:
                 task = self.get(workspace, after["id"])
             except DomainError:
                 continue
-            if task["version"] != after["version"]:
-                continue  # Written since: leave it as it is now.
+            if not self._same_materialized_state(after_text, canonical(task)):
+                continue  # The task changed or was replaced since this stage was reset.
             updated = {**task, "stage": before["stage"], "version": task["version"] + 1,
                        "updated_at": now}  # fmt: skip
             self._settle_stage(updated, None, {})
@@ -1429,8 +1779,33 @@ class Store:
             self._put(updated)
             self._event(workspace, operation_id, "stage.restore", task, updated)
 
-    def _successor(self, data, operation_id):
-        now = normalize_now().isoformat()
+    def _occurrence_slot(self, workspace, candidate, key):
+        """Return ours, other or None from current and historical slot evidence."""
+        # The usual correction finds its already generated successor in the
+        # first row. A deleted or reused ID still reserves its historical slot.
+        sql = (
+            "SELECT NULL,{} FROM daymark_entities WHERE workspace=? AND id=? UNION ALL "
+            "SELECT {},{} FROM daymark_events WHERE workspace=? AND entity_id=?"
+        )
+        fields = ("data", "before_data", "after_data")
+        params = (workspace, candidate, workspace, candidate)
+        try:
+            rows = self.db.execute(sql.format(*(f"json_extract({f},'$.occurrence_key')" for f in fields)), params)
+        except sqlite3.OperationalError as exc:
+            if "no such function" not in str(exc):
+                raise
+            rows = (
+                tuple(json.loads(value).get("occurrence_key") if value else None for value in row)
+                for row in self.db.execute(sql.format(*fields), params)
+            )
+        state = None
+        for previous, following in rows:
+            if key in (previous, following):
+                return "ours"
+            state = "other"
+        return state
+
+    def _next_round(self, data, at):
         recurrence = Recurrence.model_validate(data["recurrence"])
         index = recurrence.occurrence_index + 1
         series = data["series_id"] or data["id"]
@@ -1438,52 +1813,79 @@ class Store:
         workspace, key = data["workspace"], f"{series}:{index}"
         hashed = uuid.uuid5(uuid.NAMESPACE_URL, canonical([workspace, series, index])).hex
 
-        def slot(candidate):
-            """ "ours" if this ID ever held this occurrence, "other" if only
-            something unrelated did, None if it has never been used."""
-            states = [
-                json.loads(text)
-                for row in self.db.execute(
-                    "SELECT before_data,after_data FROM daymark_events WHERE workspace=? AND entity_id=?",
-                    (workspace, candidate),
-                )
-                for text in row
-                if text
-            ]
-            live = self.db.execute(
-                "SELECT data FROM daymark_entities WHERE workspace=? AND id=?",
-                (workspace, candidate),
-            ).fetchone()
-            if live:
-                states.append(json.loads(live[0]))
-            if any(state.get("occurrence_key") == key for state in states):
-                return "ours"
-            return "other" if states else None
-
         # Prefer a readable "<series>.<n>"; a name some unrelated entity uses or
         # used, or an over-long one, leaves the hashed identity. A slot that was
         # ever materialized, even if since deleted, is never materialized again.
         readable = f"{series}.{index}"
-        state = slot(readable) if len(readable) <= 128 else "other"
-        if state == "ours" or slot(hashed) is not None:
-            return
+        state = self._occurrence_slot(workspace, readable, key) if len(readable) <= 128 else "other"
+        if state == "ours":
+            return "next_round_previously_created", None
+        hashed_state = self._occurrence_slot(workspace, hashed, key)
+        if hashed_state is not None:
+            return ("next_round_previously_created" if hashed_state == "ours" else "successor_id_reserved"), None
         id = readable if state is None else hashed
-        original_row = self.db.execute(
-            "SELECT after_data FROM daymark_events WHERE workspace=? AND entity_id=? AND after_data IS NOT NULL AND action IN ('create','recurrence.create') ORDER BY seq DESC LIMIT 1",
-            (data["workspace"], data["id"]),
+        original_row = self._entity_history(
+            workspace, data["id"], "e.after_data", 1, creations=True
         ).fetchone()
         original = json.loads(original_row[0]) if original_row else data
-        if not original.get("recurrence"):
-            original = data
-        current = Temporal.model_validate(
-            original["planned"] or original["deadline"] or original["recurrence"]["anchor"]
-        )
-        # Skip advances the series at its transition time without recording activity.
-        following = next_occurrence(
-            recurrence, current, normalize_now(data["completed_at"] or data["updated_at"])
-        )
+        if original.get("recurrence"):
+            nominal = original["planned"] or original["deadline"] or original["recurrence"]["anchor"]
+        else:
+            # This task joined its series after creation. Its enrollment
+            # anchor survives rescheduling of the first individual occurrence.
+            nominal = data["recurrence"]["anchor"]
+        current = Temporal.model_validate(nominal)
+        following = next_occurrence(recurrence, current, at)
         if following is None:
+            return "recurrence_ended", None
+        field = recurrence_date_field(data)
+        dates = {"planned": data["planned"], "deadline": data["deadline"]}
+        dates[field] = following.model_dump(mode="json")
+        return "would_create_next_round", {
+            "id": id,
+            "series_id": series,
+            "occurrence_key": key,
+            "occurrence_index": index,
+            **dates,
+        }
+
+    def recurrence_forecast(self, workspace, id=None, *, action, now=None, source=None):
+        """Describe the calendar effect of one fresh transition in a read snapshot."""
+        if action not in {"skip", "done"}:
+            invalid("Choose skip or done")
+        with self.read_snapshot():
+            return self._read_entity(Store._forecast_round, workspace, id, source, action, now)
+
+    def _forecast_round(self, workspace, id, action, now):
+        data = self.get(workspace, id)
+        if not data["recurrence"]:
+            invalid("Forecast requires a recurring task")
+        if data["status"] == "proposed":
+            invalid("Accept or dismiss a proposal first")
+        require_active_round(data, "complete" if action == "done" else action)
+        at = normalize_now(now)
+        timestamp = at.isoformat().removesuffix("+00:00") + "Z"
+        outcome, successor = self._next_round(data, at)
+        return {
+            "id": id,
+            "version": data["version"],
+            "evaluated_at": timestamp,
+            "action": action,
+            "status": "completed" if action == "done" else "cancelled",
+            "completed_at": timestamp if action == "done" else None,
+            "outcome": outcome,
+            "successor": {
+                field: successor[field] for field in ("id", "occurrence_index", "planned", "deadline")
+            } if successor is not None else None,
+        }
+
+    def _successor(self, data, operation_id):
+        now = normalize_now().isoformat()
+        at = normalize_now(data["completed_at"] or data["updated_at"])
+        _, successor = self._next_round(data, at)
+        if successor is None:
             return
+        id = successor["id"]
         raw = {
             **data,
             "id": id,
@@ -1492,9 +1894,11 @@ class Store:
             "completed_at": None,
             "created_at": normalize_now().isoformat(),
             "updated_at": normalize_now().isoformat(),
-            "series_id": series,
-            "occurrence_key": f"{series}:{index}",
-            "recurrence": {**data["recurrence"], "occurrence_index": index},
+            "series_id": successor["series_id"],
+            "occurrence_key": successor["occurrence_key"],
+            "recurrence": {**data["recurrence"], "occurrence_index": successor["occurrence_index"]},
+            "planned": successor["planned"],
+            "deadline": successor["deadline"],
             "source_refs": [],
             "checklist": [{**x, "completed": False} for x in data["checklist"]],
             # Progress notes and waiting state describe one occurrence, not the series.
@@ -1513,8 +1917,6 @@ class Store:
                 else None
             ),
         }
-        field = "planned" if data["planned"] else "deadline" if data["deadline"] else "planned"
-        raw[field] = following.model_dump(mode="json")
         child = self._validated(raw)
         self._put(child)
         self._validate_entity(child)
@@ -1553,7 +1955,7 @@ class Store:
             (workspace, task_id),
         ).fetchall()
         for item in (json.loads(row[0]) for row in rows):
-            active = item["reminder_state"] in {"pending", "leased", "snoozed", "failed"}
+            active = item["reminder_state"] in outbox.ACTIVE_STATES
             if active or detach:
                 updated = {
                     **item,
@@ -1571,6 +1973,8 @@ class Store:
 
     def _invalidate_reminders(self, before, after, operation_id, now):
         if before["kind"] == "reminder":
+            if after["reminder_state"] not in outbox.ACTIVE_STATES:
+                return  # Archiving a delivered or acknowledged reminder preserves its outcome.
             if after["archived"] or after["status"] not in {"open", "waiting"}:
                 after.update(
                     reminder_state="cancelled", lease_owner=None, lease_until=None, lease_token=None
@@ -1633,20 +2037,7 @@ class Store:
                 return replay
             if expected_version != 0:
                 raise DomainError("conflict", "Import merge requires version zero")
-            if (
-                not isinstance(snapshot, dict)
-                or snapshot.get("schema_version") != 1
-                or snapshot.get("workspace", workspace) != workspace
-                or set(snapshot)
-                - {"schema_version", "workspace", "entities", "events", "operations"}
-            ):
-                invalid("Invalid snapshot envelope")
-            for field in ("entities", "events", "operations"):
-                if (
-                    not isinstance(snapshot.get(field, []), list)
-                    or len(snapshot.get(field, [])) > 100_000
-                ):
-                    invalid("Invalid snapshot collection")
+            validate_snapshot_envelope(snapshot, workspace)
             seen = set()
             for raw in snapshot.get("entities", []):
                 data = self._validated(raw)
@@ -1659,7 +2050,9 @@ class Store:
                     "SELECT data FROM daymark_entities WHERE workspace=? AND id=?",
                     (workspace, data["id"]),
                 ).fetchone()
-                if existing and json.loads(existing[0]) != data:
+                # Scheduler writes and older records may spell equivalent UTC
+                # instants differently. Compare model values, leaving live bytes intact.
+                if existing and not self._same_materialized_state(existing[0], canonical(data)):
                     raise DomainError("conflict", "Entity collision")
                 if not existing:
                     self._put(data)
@@ -1683,7 +2076,7 @@ class Store:
                 if (
                     event["workspace"] != workspace
                     or type(event["seq"]) is not int
-                    or event["seq"] < 1
+                    or not 1 <= event["seq"] <= cursors.MAX_CURSOR
                     or event["seq"] in seen_events
                     or not (
                         event["actor"] is None
@@ -1897,6 +2290,15 @@ class Store:
 
         return compile_node(ast, 0)
 
+    def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
+               archived=False, source=None, claimed_by=None, now=None, context=None, projection=None):
+        """Search titles and descriptions. Continue from the last ID with the same filters."""
+        from .search import page
+
+        return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit,
+                    archived=archived, source=source, claimed_by=claimed_by, now=now,
+                    context=context, projection=projection)
+
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
         # Top-level kind/status equality narrows the indexed scan; the compiled
@@ -1917,26 +2319,32 @@ class Store:
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]
 
-    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None):
+    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, project=None, brief=False, projection=None):
         """Open tasks that can be acted on now, most pressing first. See views.ready."""
         from . import views
 
         return views.ready(
-            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope
+            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, project=project, brief=brief, projection=projection
         )
 
-    def agenda(self, workspace, *, now=None, days=7, scope=None):
+    def explain_ready(self, workspace, *, now=None, limit=20, owner=None, next_move=None, context=None, scope=None, project=None):
+        from . import views
+
+        return views.explain_ready(self, workspace, now=now, limit=limit,
+                                   owner=owner, next_move=next_move, scope=scope, context=context, project=project)
+
+    def agenda(self, workspace, *, now=None, days=7, context=None, scope=None, deadlines=False, day_zone=None):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""
         from . import views
 
-        return views.agenda(self, workspace, now=now, days=days, scope=scope)
+        return views.agenda(self, workspace, now=now, days=days, scope=scope, context=context, deadlines=deadlines, day_zone=day_zone)
 
-    def explore(self, workspace, goal_id=None, *, now=None):
+    def explore(self, workspace, goal_id=None, *, now=None, scope=None):
         """The conditions behind a goal (or every goal): what is met, what is next,
         and where nothing is moving. See views.explore."""
         from . import views
 
-        return views.explore(self, workspace, goal_id, now=now)
+        return views.explore(self, workspace, goal_id, now=now, scope=scope)
 
     def workspaces(self):
         """Every workspace in this database with its entity count. Local callers only:
@@ -1949,16 +2357,104 @@ class Store:
             ).fetchall()
             return [{"workspace": row[0], "entities": row[1]} for row in rows]
 
-    def context(self, workspace, id, *, history=10):
+    def _read_entity(self, read, workspace, id, source, *args, **kwargs):
+        """Resolve a source and inspect its owner within the very same snapshot."""
+        if source is None:
+            if id is None:
+                invalid("An entity ID or source reference is required")
+            return read(self, workspace, id, *args, **kwargs)
+        if id is not None:
+            invalid("Choose an entity ID or a source reference")
+        ref = SourceRef.parse_ref(source)
+        with self._lock:
+            if not self._has_schema():
+                raise DomainError("not_found", "No entity owns this source")
+            with self._transaction(write=False):
+                row = self.db.execute(
+                    "SELECT entity_id FROM daymark_sources "
+                    "WHERE workspace=? AND system=? AND kind=? AND ref_id=?",
+                    (workspace, ref.system, ref.kind, ref.id),
+                ).fetchone()
+                if row is None:
+                    raise DomainError("not_found", "No entity owns this source")
+                return read(self, workspace, row[0], *args, **kwargs)
+
+    def brief(self, workspace, id=None, *, now=None, owner=None, before_note=None, source=None, actor=None):
+        from . import brief
+
+        return self._read_entity(brief.read, workspace, id, source, now=now, owner=owner, before_note=before_note, actor=actor)
+
+    def changes_since(self, workspace, id=None, *, version, source=None):
+        from . import comparison
+
+        return self._read_entity(comparison.read, workspace, id, source, version)
+
+    def read_note(self, workspace, id, note_id, *, source=None):
+        from . import brief
+
+        return self._read_entity(brief.note, workspace, id, source, note_id)
+
+    def context(self, workspace, id=None, *, history=10, now=None, owner=None, source=None, actor=None):
         """An entity with its blockers, dependents, children, reminders and history."""
         from . import views
 
-        return views.context(self, workspace, id, history=history)
+        return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner, actor=actor)
 
-    def summary(self, workspace, *, now=None, scope=None):
+    def orientation(self, workspace, *, now=None, owner=None, scope=None):
+        """An atomic startup snapshot including active work and shared memory previews."""
         from . import views
 
-        return views.summary(self, workspace, now=now, scope=scope)
+        return views.orientation(self, workspace, now=now, owner=owner, scope=scope)
+
+    def summary(self, workspace, *, now=None, context=None, scope=None, owner=None):
+        from . import views
+
+        return views.summary(self, workspace, now=now, scope=scope, context=context, owner=owner)
+
+    def _review_token(self, workspace, id):
+        """Identify this entity's latest recorded state inside the caller's transaction."""
+        row = self._entity_history(
+            workspace, id,
+            "h.cursor,e.after_data=(SELECT i.data FROM daymark_entities i "
+            "WHERE i.workspace=e.workspace AND i.id=e.entity_id),e.seq", 1
+        ).fetchone()
+        if row is None:
+            return None
+        if not row[1]:
+            # A schema upgrade may have added defaults to today's entity while
+            # preserving the event as written. A sparse import may have no
+            # evidence at its current version. Only the first case gets a token.
+            raw = self.db.execute(
+                "SELECT after_data FROM daymark_events WHERE seq=?", (row[2],)
+            ).fetchone()[0]
+            if not self._same_materialized_state(raw, canonical(self.get(workspace, id))):
+                return None
+        evidence = ["daymark-review-v2", cursors.event_fingerprint(self, workspace, row[0])]
+        return hashlib.sha256(canonical(evidence).encode()).hexdigest()[:32]
+
+    def receipt_context(self, workspace, operation_id, *, action, entity_id=None, actor=None):
+        """Recover the original read for a plain-verb retry. Reject unrelated receipts."""
+        with self._lock:
+            result = self.receipt(workspace, operation_id)
+            if result is None:
+                return None
+            forgetting = action == "forget"
+            if forgetting:
+                action = "archive"
+            if not isinstance(result.get("id"), str) or (
+                entity_id is not None and result["id"] != entity_id
+            ):
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+            row = self.db.execute(
+                "SELECT before_data,actor FROM daymark_events "
+                "WHERE workspace=? AND entity_id=? AND operation_id=? AND action=? LIMIT 1",
+                (workspace, result["id"], operation_id, action),
+            ).fetchone()
+            if not row or (actor is not None and row[1] is not None and row[1] != actor):
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+            if forgetting and result.get("kind") != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
+            return {"before": json.loads(row[0]) if row[0] else None, "result": result}
 
     def receipt(self, workspace, operation_id):
         """The stored result of a completed operation ID, or None."""
@@ -1978,38 +2474,16 @@ class Store:
                 "INSERT INTO daymark_scheduler VALUES('tick',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (now.isoformat(),),
             )
-            workspaces = [
-                row[0]
-                for row in self.db.execute(
-                    "SELECT DISTINCT workspace FROM daymark_entities WHERE kind='reminder'"
-                )
-            ]
-            cancelled = 0
-            for workspace in workspaces:
-                for item in self.list(workspace, kind="reminder", include_archived=True):
-                    if item["reminder_state"] not in {"pending", "leased", "snoozed", "failed"}:
-                        continue
-                    if not self._dispatchable(item, dormant=True):
-                        before = dict(item)
-                        item.update(
-                            reminder_state="cancelled",
-                            lease_owner=None,
-                            lease_until=None,
-                            lease_token=None,
-                            version=item["version"] + 1,
-                            updated_at=now.isoformat(),
-                        )
-                        self._put(item)
-                        self._event(
-                            workspace,
-                            None,
-                            "reminder.invalidate",
-                            before,
-                            item,
-                            created_at=now.isoformat(),
-                        )
-                        cancelled += 1
-            return {"cancelled": cancelled}
+            expired = [(r.workspace, r.id) for r in outbox.active(self.db) if r.availability == "inactive"]
+            for workspace, id in expired:
+                before = self.get(workspace, id)
+                updated = {
+                    **before, "reminder_state": "cancelled", "lease_owner": None, "lease_until": None,
+                    "lease_token": None, "version": before["version"] + 1, "updated_at": now.isoformat(),
+                }
+                self._put(updated)
+                self._event(workspace, None, "reminder.invalidate", before, updated, created_at=now.isoformat())
+            return {"cancelled": len(expired)}
 
     def heartbeat(self, owner, now=None):
         if not isinstance(owner, str) or not 1 <= len(owner) <= 200:
@@ -2023,23 +2497,9 @@ class Store:
             )
         return {"last_heartbeat": now.isoformat()}
 
-    def _dispatchable(self, reminder, *, dormant=False):
-        """Whether a reminder may fire. ``dormant`` also passes one that is only
-        waiting for its proposed task to be accepted, so a tick does not cancel it."""
-        if reminder["archived"] or reminder["status"] not in {"open", "waiting"}:
-            return False
-        if reminder["task_id"]:
-            try:
-                task = self.get(reminder["workspace"], reminder["task_id"])
-            except DomainError as exc:
-                if exc.code != "not_found":
-                    raise
-                return False
-            if dormant and task["status"] == "proposed" and not task["archived"]:
-                return True
-            if task["archived"] or task["status"] not in {"open", "waiting"}:
-                return False
-        return True
+    def _dispatchable(self, reminder):
+        status = outbox.target_status(self.db, reminder["workspace"], reminder["task_id"])
+        return outbox.availability(reminder["status"], reminder["archived"], reminder["task_id"], status) == "eligible"
 
     def claim_reminders(self, owner, now=None, lease_seconds=60, limit=50):
         if (
@@ -2053,32 +2513,13 @@ class Store:
             invalid("Invalid claim limits or owner")
         now = normalize_now(now)
         with self._transaction():
-            reminders = [
-                json.loads(row[0])
-                for row in self.db.execute(
-                    "SELECT data FROM daymark_entities WHERE kind='reminder' ORDER BY workspace,id"
-                )
-            ]
-            candidates = []
-            for item in reminders:
-                if not self._dispatchable(item):
-                    continue
-                state = item["reminder_state"]
-                if state == "leased":
-                    if item["lease_until"] and normalize_now(item["lease_until"]) > now:
-                        continue
-                elif state not in {"pending", "snoozed", "failed"}:
-                    continue
-                due = max(
-                    normalize_now(item["scheduled_at"]),
-                    normalize_now(item["retry_at"])
-                    if item["retry_at"]
-                    else normalize_now(item["scheduled_at"]),
-                )
-                if due <= now:
-                    candidates.append((due, item["workspace"], item["id"], item))
+            candidates = (
+                (due, row.workspace, row.id) for row in outbox.active(self.db)
+                if (due := row.due(now)) is not None
+            )
             claimed = []
-            for _, workspace, id, item in sorted(candidates, key=lambda x: x[:3])[:limit]:
+            for _, workspace, id in heapq.nsmallest(limit, candidates):
+                item = self.get(workspace, id)
                 token = uuid.uuid4().hex
                 updated = {
                     **item,
@@ -2164,19 +2605,10 @@ class Store:
 
     def health(self, workspace=None):
         with self._lock:
-            rows = self.db.execute(
-                "SELECT data FROM daymark_entities WHERE kind='reminder'"
-                + (" AND workspace=?" if workspace is not None else ""),
-                (workspace,) if workspace is not None else (),
-            ).fetchall()
-            counts = {key: 0 for key in ("pending", "leased", "failed", "delivered")}
-            for row in rows:
-                state = json.loads(row[0])["reminder_state"]
-                if state == "snoozed":
-                    state = "pending"
-                if state in counts:
-                    counts[state] += 1
-            scheduler = dict(self.db.execute("SELECT key,value FROM daymark_scheduler"))
+            counts = outbox.counts(self.db, workspace)
+            scheduler = dict(self.db.execute(
+                "SELECT key,value FROM daymark_scheduler WHERE key IN ('tick','heartbeat')"
+            ))
             return {
                 "outbox": counts,
                 **{key: counts[key] for key in ("pending", "leased", "failed")},

@@ -16,14 +16,28 @@ import os
 import re
 import secrets
 import uuid
+from contextlib import contextmanager, nullcontext
+from copy import copy
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
-from dateutil.tz import datetime_exists, resolve_imaginary
+from dateutil.tz import datetime_ambiguous, datetime_exists, resolve_imaginary
+from pydantic import ValidationError
 
 from . import plans
-from .models import DomainError, Temporal, normalize_now
+from .client import Client
+from .models import (
+    DomainError,
+    Recurrence,
+    SourceRef,
+    Temporal,
+    first_occurrence,
+    normalize_now,
+    require_active_round,
+    require_visible_proposal,
+    start_has_arrived,
+)
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -43,15 +57,29 @@ EVERY_FORMS = (
 )
 
 
-def local_timezone() -> str:
-    """DAYMARK_TZ, then TZ, then the system zone, then UTC."""
-    for name in (os.environ.get("DAYMARK_TZ"), os.environ.get("TZ")):
-        if name:
-            try:
-                ZoneInfo(name)
-                return name
-            except (KeyError, ValueError, OSError):
-                continue  # An unusable name falls through to the next source.
+def _explicit_timezone(name: str) -> str:
+    try:
+        ZoneInfo(name)
+    except (KeyError, ValueError, OSError):
+        raise DomainError(
+            "invalid", "Unrecognized Daymark timezone",
+            ["Use an IANA name such as America/New_York, Europe/London or UTC with --tz or DAYMARK_TZ."],
+        ) from None
+    return name
+
+
+def local_timezone(explicit: str | None = None) -> str:
+    """Honor the call's zone, then the configured zone, then the host's IANA zone."""
+    if explicit is not None:
+        return _explicit_timezone(explicit)
+    if configured := os.environ.get("DAYMARK_TZ"):
+        return _explicit_timezone(configured)
+    if host_zone := os.environ.get("TZ"):
+        try:
+            ZoneInfo(host_zone)
+            return host_zone
+        except (KeyError, ValueError, OSError):
+            pass  # The host may be using a POSIX TZ expression instead of an IANA key.
     try:
         target = os.path.realpath("/etc/localtime")
         if "/zoneinfo/" in target:
@@ -68,7 +96,18 @@ def _weekday(word):
     return matches[0] if len(matches) == 1 else None
 
 
-def parse_when(text, timezone="UTC", now=None) -> dict:
+def _check_wall_time(at):
+    if not datetime_exists(at):
+        valid = resolve_imaginary(at).isoformat()
+        raise DomainError("invalid", f"This local time does not exist in {at.tzinfo}",
+                          [f"Choose an existing local time, for example {valid}."])
+    if datetime_ambiguous(at):
+        choices = [at.replace(fold=fold).isoformat() for fold in (0, 1)]
+        raise DomainError("invalid", f"This local time occurs twice in {at.tzinfo}",
+                          ["Specify the intended offset: " + " or ".join(choices)])
+
+
+def parse_when(text, timezone="UTC", now=None, *, _replay=False) -> dict:
     """Resolve the documented date grammar to a Temporal dict, or raise."""
     if isinstance(text, dict):
         return Temporal.model_validate(text).model_dump(mode="json")
@@ -84,6 +123,8 @@ def parse_when(text, timezone="UTC", now=None) -> dict:
             at = datetime.fromisoformat(raw)
             if at.tzinfo is None:
                 at = at.replace(tzinfo=zone)
+                if not _replay:
+                    _check_wall_time(at)
             return Temporal(at=at, timezone=timezone).model_dump(mode="json")
         match = re.fullmatch(r"(\S+)(?:\s+(\d{1,2}):(\d{2}))?", lowered)
         if not match:
@@ -104,8 +145,11 @@ def parse_when(text, timezone="UTC", now=None) -> dict:
             value = Temporal(date=day, timezone=timezone, expression=raw)
         else:
             at = datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=zone)
-            if not datetime_exists(at):
-                at = resolve_imaginary(at)  # A clock time skipped by DST moves forward.
+            if _replay:
+                # Match the original result on receipts from earlier versions.
+                at = resolve_imaginary(at)
+            else:
+                _check_wall_time(at)
             value = Temporal(at=at, timezone=timezone, expression=raw)
         return value.model_dump(mode="json")
     except DomainError:
@@ -289,16 +333,17 @@ _DATE_FIELDS = {
 class Tasks:
     """Plain verbs for one workspace. ``actor`` names who is acting, for claims and notes."""
 
-    def __init__(self, engine, workspace="default", *, actor="agent", timezone=None, now=None):
+    def __init__(self, engine, workspace="default", *, actor=None, timezone=None, now=None):
         self.engine = engine
+        self.workspace = workspace
         # The HTTP client is already bound to a workspace by its credential.
-        remote = type(engine).__name__ == "Client"
+        remote = isinstance(engine, Client)
         self._ws = () if remote else (workspace,)
         # Over HTTP the server records its authenticated principal instead.
-        self._who = {} if remote else {"actor": actor}
-        self.actor = actor
-        self.timezone = timezone or local_timezone()
-        ZoneInfo(self.timezone)
+        self._take_identity = remote or actor is not None
+        self.actor = "agent" if actor is None else actor
+        self._who = {} if remote else {"actor": self.actor}
+        self.timezone = local_timezone(timezone)
         self._now = now
 
     # -- plumbing
@@ -306,9 +351,41 @@ class Tasks:
     def now(self):
         return normalize_now(self._now)
 
-    def _replayed(self, op):
-        receipt = getattr(self.engine, "receipt", None)
-        return receipt(*self._ws, op) if op and receipt else None
+    @staticmethod
+    def _op_id(op):
+        if op is None:
+            return uuid.uuid4().hex
+        if not isinstance(op, str) or not 1 <= len(op) <= 200:
+            raise DomainError("invalid", "Operation ID must be 1 to 200 characters")
+        return op
+
+    @staticmethod
+    def _part_id(base, part):
+        key = f"{base}:{part}"
+        return key if len(key) <= 200 else str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:" + key))
+
+    def _retry_context(self, op, action, id=None):
+        """Look up the original read, never trust an arbitrary result under the same ID."""
+        lookup = getattr(self.engine, "receipt_context", None)
+        if op is None or not lookup:
+            return None
+        return lookup(*self._ws, self._op_id(op), action=action, entity_id=id, **self._who)
+
+    @staticmethod
+    def _retry_dates(fields, result, date_keys):
+        # Keep the first absolute value when the caller retries the same relative
+        # expression in the same timezone. The kernel still compares the entire
+        # original request, including which fields were supplied.
+        out = dict(fields)
+        for key in date_keys:
+            value, saved = fields.get(key), result.get(key)
+            if (
+                isinstance(value, dict) and isinstance(saved, dict)
+                and value.get("expression") and value["expression"] == saved.get("expression")
+                and value["timezone"] == saved["timezone"]
+            ):
+                out[key] = saved
+        return out
 
     def _new_id(self):
         for attempt in range(40):
@@ -324,31 +401,38 @@ class Tasks:
                 raise
         return "dm-" + uuid.uuid4().hex
 
-    def _act(self, id, action, fields=None, *, op=None, build=None):
-        """Run an action against the current version, retrying if someone else wrote first."""
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
+    @staticmethod
+    def _check_expected_version(expected_version):
+        if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
+            raise DomainError("invalid", "expected_version must be a positive integer")
+
+    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=(), review_token=None):
+        """Apply the caller's intent or verify it against the original kernel receipt."""
+        self._check_expected_version(expected_version)
+        key = self._op_id(op)
         for attempt in range(4):
-            current = self.engine.get(*self._ws, id)
-            payload = {"id": id, **(build(current) if build else (fields or {}))}
+            retry = self._retry_context(op, action, id)
+            current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            if not retry and not self._ws and action in ("skip", "complete") and current["status"] != "proposed":
+                require_active_round(current, action)  # Older services lack this guard.
+            changes = build(current, retry) if build else (fields or {})
+            if review_token is not None:
+                changes = {**changes, "review_token": review_token}
+            if retry:
+                changes = self._retry_dates(changes, retry["result"], date_keys)
+            version = expected_version if expected_version is not None else current["version"]
             try:
                 return self.engine.execute(
-                    *self._ws,
-                    op or uuid.uuid4().hex,
-                    action,
-                    payload,
-                    expected_version=current["version"],
+                    *self._ws, key, action, {"id": id, **changes}, expected_version=version,
                     **self._who,
                 )
             except Exception as exc:
-                conflict = getattr(exc, "code", None) == "conflict" or (
-                    getattr(exc, "status_code", None) == 409
-                )
-                if not conflict or attempt == 3:
+                if getattr(exc, "code", None) != "conflict" or retry or attempt == 3:
                     raise
-                if self.engine.get(*self._ws, id)["version"] == current["version"]:
-                    raise  # A real refusal (for example a live claim), not a stale read.
+                if op and self._retry_context(op, action, id):
+                    continue  # A simultaneous request recorded its result after our first read.
+                if action == "undo" or review_token is not None or expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
+                    raise  # Stale explicit precondition or a domain refusal such as a live claim.
 
     @staticmethod
     def _missing(exc):
@@ -366,12 +450,14 @@ class Tasks:
         except Exception as exc:  # client and store raise different types
             if not self._missing(exc):
                 raise
-        wanted = value.strip().casefold()
+        from .search import fold_text
+
+        wanted = fold_text(value.strip())
         matches = [
             item["id"]
             for kind in ("person", "principal")
             for item in self.engine.list(*self._ws, kind=kind)
-            if item["title"].strip().casefold() == wanted
+            if fold_text(item["title"].strip()) == wanted
         ]
         if len(matches) > 1:
             raise DomainError(
@@ -385,14 +471,28 @@ class Tasks:
             ['Add them first: daymark add "NAME" --kind person'],
         )
 
-    def _resolve(self, fields):
+    def _resolve(self, fields, *, retry=None):
         if "lead" in fields:  # A project's lead is its assignee.
             fields = {
                 **{k: v for k, v in fields.items() if k != "lead"},
                 "assignee": fields["lead"],
             }
-        if fields.get("assignee"):
-            fields = {**fields, "assignee": self._person(fields["assignee"])}
+        if requested := fields.get("assignee"):
+            saved = retry["result"].get("assignee_id") if retry else None
+            if requested == saved:
+                return fields
+            try:
+                person = self._person(requested)
+            except DomainError as exc:
+                if not saved or exc.code != "invalid":
+                    raise
+                person = None
+            if saved and person != saved:
+                raise DomainError(
+                    "conflict", "The assignee does not resolve to the person on this receipt",
+                    [f"The recorded assignee ID is {saved}. Use that ID to retry the original assignment."],
+                )
+            fields = {**fields, "assignee": person}
         return fields
 
     def parse_values(self, project, pairs):
@@ -428,7 +528,7 @@ class Tasks:
                 out[key] = text
         return out
 
-    def _fields(self, values):
+    def _fields(self, values, *, replay=False):
         """Translate friendly keyword names into entity fields."""
         out = {}
         for key, value in values.items():
@@ -436,7 +536,7 @@ class Tasks:
                 continue
             if key in _DATE_FIELDS:
                 out[_DATE_FIELDS[key]] = (
-                    None if value == "" else parse_when(value, self.timezone, self._now)
+                    None if value == "" else parse_when(value, self.timezone, self._now, _replay=replay)
                 )
             elif key == "after":
                 out["depends_on"] = [value] if isinstance(value, str) else list(value)
@@ -471,14 +571,10 @@ class Tasks:
                 out[key] = value
         return out
 
-    def _recurrence(self, every, fields, after_completion, index=0):
-        anchor = (
-            fields.get("planned")
-            or fields.get("deadline")
-            or parse_when("today", self.timezone, self._now)
-        )
-        anchor = {**anchor, "expression": None}
-        return {
+    def _recurrence(self, every, fields, after_completion, index=0, fallback=None):
+        supplied = fields.get("planned") or fields.get("deadline") or fallback
+        anchor = {**(supplied or parse_when("today", self.timezone, self._now)), "expression": None}
+        result = {
             "rule": parse_every(every),
             "mode": "after_completion" if after_completion else "fixed",
             "timezone": anchor["timezone"],
@@ -486,6 +582,17 @@ class Tasks:
             # Changing the rule mid-series keeps this round's place in it.
             "occurrence_index": index,
         }
+        if not supplied:
+            try:
+                schedule = Recurrence.model_validate(result)
+            except ValidationError as exc:
+                raise DomainError("invalid", "Invalid recurrence rule", [EVERY_FORMS]) from exc
+            first = first_occurrence(schedule)
+            if first is None:
+                raise DomainError("invalid", "This recurrence has no starting date on or after today",
+                                  ["Review the rule ending or provide an explicit first plan date."])
+            result["anchor"] = first.model_dump(mode="json")
+        return result
 
     # -- capture
 
@@ -508,81 +615,138 @@ class Tasks:
         waiting_on, labels, contexts, metadata. ``source`` is "system:kind:id"; a
         second add with the same source is refused, so captures are not duplicated.
         """
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
-        payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields))}
+        retry = self._retry_context(op, "create", id)
+        payload = {"kind": kind, "title": title, **self._fields(self._resolve(fields, retry=retry), replay=bool(retry))}
+        if retry:
+            date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
+            payload = self._retry_dates(payload, retry["result"], date_keys)
         if every:
-            payload["recurrence"] = self._recurrence(every, payload, after_completion)
+            original = (retry["result"].get("recurrence") or {}) if retry else {}
+            payload["recurrence"] = self._recurrence(
+                every, payload, after_completion, fallback=original.get("anchor"),
+            )
             if not payload.get("planned") and not payload.get("deadline"):
                 payload["planned"] = payload["recurrence"]["anchor"]
         if proposed:
             payload["status"] = "proposed"
         elif payload.get("waiting_on"):
             payload["status"] = "waiting"
-        if source:
-            parts = source.split(":", 2)
-            if len(parts) != 3 or not all(parts):
-                raise DomainError("invalid", "Source must be system:kind:id")
-            payload["source_refs"] = [dict(zip(("system", "kind", "id"), parts))]
+        if source is not None:
+            payload["source_refs"] = [SourceRef.parse_ref(source).model_dump()]
+        capture_options = {}
         if note:
             # Part of the same write, so a retry can never lose or repeat it.
+            saved = next(iter(retry["result"]["notes"]), {}) if retry else {}
+            author = self.actor
+            if not self._ws:
+                # An old receipt can contain a historical supplied author.
+                # Fresh capture on a current service is stamped inside the write.
+                # A 0.5 service has no trustworthy way to name its principal here.
+                author = saved.get("author")
+                if not retry and self.engine.identity() is not None:
+                    capture_options["attribute_capture_note"] = True
             payload["notes"] = [
                 {
-                    "id": uuid.uuid4().hex[:12],
-                    "at": normalize_now().isoformat(),
-                    "author": self.actor,
+                    "id": saved.get("id") or uuid.uuid4().hex[:12],
+                    "at": normalize_now(saved.get("at")).isoformat(),
+                    "author": author,
                     "text": note,
                 }
             ]
-        payload["id"] = id or self._new_id()
-        return self.engine.execute(
-            *self._ws, op or uuid.uuid4().hex, "create", payload, expected_version=0, **self._who
-        )
+        payload["id"] = id or (retry["result"]["id"] if retry else self._new_id())
+        try:
+            return self.engine.execute(
+                *self._ws, self._op_id(op), "create", payload, expected_version=0, **self._who, **capture_options
+            )
+        except Exception as exc:
+            if retry or not op or getattr(exc, "code", None) != "conflict":
+                raise
+            if not self._retry_context(op, "create", id):
+                raise
+            return self.add(
+                title, kind=kind, every=every, after_completion=after_completion, note=note,
+                proposed=proposed, source=source, id=id, op=op, **fields,
+            )
 
     def propose(self, title, **fields):
         """Suggest a task for a person to accept or dismiss. It is not ready work."""
         return self.add(title, proposed=True, **fields)
 
-    def remember(self, text, *, op=None):
-        """Keep a durable fact that ``prime`` hands to every later session."""
-        return self.add(text, kind="memory", op=op)
+    def remember(self, text, *, scope=None, source=None, op=None):
+        """Keep an explicitly supplied fact for later sessions in this workspace."""
+        if not isinstance(text, str) or not text.strip():
+            raise DomainError("invalid", "A remembered fact needs text")
+        return self.add(text, kind="memory", scope=scope, source=source, op=op)
 
     def memories(self):
         return self.engine.list(*self._ws, kind="memory")
 
-    def forget(self, id, *, op=None):
-        return self._act(id, "archive", op=op)
+    def forget(self, id, *, op=None, expected_version=None, review_token=None):
+        """Retire a remembered fact while retaining its archived record and history."""
+        return self._act(id, "forget", op=op, expected_version=expected_version, review_token=review_token)
 
     # -- change
 
-    def edit(self, id, *, every=None, after_completion=False, op=None, **fields):
-        """Change fields. Pass an empty string to clear a date or link."""
-        replay = self._replayed(op)
-        if replay is not None:
-            return replay
-        changes = self._fields(self._resolve(dict(fields)))
+    def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, review_token=None, **fields):
+        """Edit fields, optionally refusing if the version observed by the caller is stale."""
+        resolved = None
 
-        def build(current):
-            out = dict(changes)
+        def build(current, retry):
+            nonlocal resolved
+            if resolved is None:
+                resolved = self._resolve(fields, retry=retry)
+            changes = self._fields(resolved, replay=bool(retry))
+            date_keys = [_DATE_FIELDS[k] for k, v in fields.items() if k in _DATE_FIELDS and isinstance(v, str)]
+            out = self._retry_dates(changes, retry["result"], date_keys) if retry else dict(changes)
             if every == "":
                 out["recurrence"] = None
             elif every:
                 merged = {**current, **out}
                 index = (current["recurrence"] or {}).get("occurrence_index", 0)
-                out["recurrence"] = self._recurrence(every, merged, after_completion, index)
+                fallback = ((retry["result"].get("recurrence") or {}).get("anchor") if retry else None)
+                out["recurrence"] = self._recurrence(every, merged, after_completion, index, fallback)
+                if (not current["recurrence"] and not merged.get("planned") and not merged.get("deadline")
+                        and "plan" not in fields and "due" not in fields
+                        and (not retry or retry["result"]["planned"])):
+                    # Enrolling an undated task uses the same first round as a
+                    # fresh capture. Earlier receipts had no inferred plan.
+                    out["planned"] = out["recurrence"]["anchor"]
             return out
 
-        return self._act(id, "update", op=op, build=build)
+        return self._act(id, "update", op=op, build=build, expected_version=expected_version, review_token=review_token)
 
     def note(self, id, text, *, op=None):
         """Append a progress note: what was done, learned, or left for the next session."""
         return self._act(id, "note", {"text": text, "author": self.actor}, op=op)
 
-    def done(self, id, *, note=None, op=None):
-        if note:
-            self.note(id, note, op=(op + ":note") if op else None)
-        return self._act(id, "complete", op=op)
+    def _with_note(self, id, action, fields, note, op, expected_version):
+        self._check_expected_version(expected_version)
+        base = self._op_id(op)
+        note_op = str(uuid.uuid5(uuid.NAMESPACE_URL, "daymark:note:" + base))
+        # 0.5.0 appended the closing note before completing. Validate its own
+        # receipt before finishing an interrupted legacy operation.
+        legacy_op = base + ":note"
+        old_note = (
+            op and action == "complete" and len(legacy_op) <= 200
+            and self._retry_context(legacy_op, "note", id)
+        )
+        if not note:
+            if old_note or (op and self._retry_context(note_op, "note", id)):
+                raise DomainError("conflict", "Operation ID belongs to a request with a note")
+            return self._act(id, action, fields, op=op, expected_version=expected_version)
+        if old_note:
+            if expected_version is not None and old_note["before"]["version"] != expected_version:
+                raise DomainError("conflict", "Version mismatch")
+            self.note(id, note, op=legacy_op)
+            completion_version = None if expected_version is None else expected_version + 1
+            return self._act(id, action, fields, op=op, expected_version=completion_version)
+        return self._paired_actions(
+            id, (note_op, "note", {"text": note, "author": self.actor}), (base, action, fields),
+            retryable=op is not None, expected_version=expected_version,
+        )
+
+    def done(self, id, *, note=None, op=None, expected_version=None):
+        return self._with_note(id, "complete", {}, note, op, expected_version)
 
     def skip(self, id, *, op=None):
         """Pass over one occurrence of a recurring task without recording completion."""
@@ -597,15 +761,34 @@ class Tasks:
     def archive(self, id, *, op=None):
         return self._act(id, "archive", op=op)
 
-    def undo(self, id, *, op=None):
-        return self._act(id, "undo", op=op)
+    def unarchive(self, id, *, op=None, expected_version=None, review_token=None):
+        """Restore an archived record's visibility, retaining its current status."""
+        def restore(current, retry):
+            if not current["archived"]:
+                raise DomainError("conflict", "This record is already visible")
+            return {"archived": False}
 
-    def accept(self, id, *, op=None):
-        """Turn a proposal into an open task. A person's decision, not an agent's."""
-        return self._act(id, "accept", op=op)
+        return self._act(id, "update", build=restore, op=op,
+                         expected_version=expected_version, review_token=review_token)
 
-    def dismiss(self, id, *, op=None):
-        return self._act(id, "dismiss", op=op)
+    def undo(self, id, *, op=None, expected_version=None, review_token=None):
+        """Reverse the latest change only if the observed revision still matches."""
+        return self._act(id, "undo", op=op, expected_version=expected_version, review_token=review_token)
+
+    def accept(self, id, *, op=None, expected_version=None, review_token=None):
+        """Accept the reviewed proposal, retaining a recorded wait."""
+        def check(current, retry):
+            # Older services permit a hidden acceptance. A versioned write
+            # ensures a concurrent archive forces a new read before accepting.
+            if not retry and not self._ws:
+                require_visible_proposal(current)
+            return {}
+
+        return self._act(id, "accept", build=check, op=op,
+                         expected_version=expected_version, review_token=review_token)
+
+    def dismiss(self, id, *, op=None, expected_version=None, review_token=None):
+        return self._act(id, "dismiss", op=op, expected_version=expected_version, review_token=review_token)
 
     def claim(self, id, *, minutes=60, op=None):
         """Take a task so parallel workers do not collide. Fails if another holds it."""
@@ -613,34 +796,79 @@ class Tasks:
             id, "claim", {"owner": self.actor, "lease_seconds": int(minutes) * 60}, op=op
         )
 
-    def release(self, id, *, op=None):
-        return self._act(id, "release", {"owner": self.actor}, op=op)
+    def take(self, *, scope=None, context=None, project=None, minutes=60, op=None):
+        """Claim the first unclaimed ready task explicitly delegated to an agent.
 
-    def wait(self, id, on, *, until=None, op=None):
+        Selection and claim share one transaction. Returns None for an empty
+        queue. Repeating an operation returns its original selection or None.
+        """
+        if not self._take_identity:
+            raise DomainError("invalid", "Choose a distinct worker with --as NAME or DAYMARK_ACTOR")
+        if type(minutes) is not int or not 1 <= minutes <= 10080:
+            raise DomainError("invalid", "Claim minutes must be between 1 and 10080")
+        selection = {"owner": self.actor, "scope": scope, "lease_seconds": minutes * 60}
+        if context is not None:
+            selection["context"] = context
+        if project is not None:
+            selection["project"] = project
+        result = self.engine.execute(
+            *self._ws, self._op_id(op), "take", selection,
+            expected_version=0, **self._who,
+        )
+        return result["task"]
+
+    def release(self, id, *, note=None, op=None, expected_version=None):
+        """Give back a claim, optionally recording a handoff note in the same transaction."""
+        return self._with_note(id, "release", {"owner": self.actor}, note, op, expected_version)
+
+    @staticmethod
+    def _check_wait_state(current, retry):
+        # A legacy operation may have restarted closed work. Its committed
+        # receipt still replays, without applying that transition again.
+        if retry:
+            return
+        if current["archived"]:
+            raise DomainError("conflict", "This record is archived. Unarchive it before changing its wait.")
+        if current["status"] in {"completed", "cancelled"}:
+            raise DomainError("conflict", f"This record is {current['status']}. Reopen it to restart work.")
+
+    def wait(self, id, on, *, until=None, op=None, expected_version=None, review_token=None):
         """Park a task on someone or something else; optionally hide it until a date."""
-        changes = {"status": "waiting", "waiting_on": on}
-        if until:
-            changes["earliest_start"] = parse_when(until, self.timezone, self._now)
-        return self._act(id, "update", changes, op=op)
+        def build(current, retry):
+            self._check_wait_state(current, retry)
+            changes = {"status": "waiting", "waiting_on": on}
+            if until:
+                changes["earliest_start"] = parse_when(until, self.timezone, self._now, _replay=bool(retry))
+            return changes
 
-    def resume(self, id, *, op=None):
+        return self._act(
+            id, "update", build=build, op=op, expected_version=expected_version,
+            review_token=review_token, date_keys=("earliest_start",) if isinstance(until, str) else (),
+        )
+
+    def resume(self, id, *, op=None, expected_version=None, review_token=None):
         """Stop waiting and make the task actionable now, lifting a future start date."""
 
-        def build(current):
+        def build(current, retry):
+            self._check_wait_state(current, retry)
             out = {"status": "open", "waiting_on": None}
-            if current["earliest_start"]:
-                start, now = Temporal.model_validate(current["earliest_start"]), self.now()
-                today = now.astimezone(ZoneInfo(start.timezone)).date()
-                if (start.date and start.date > today) or (start.at and start.at > now):
+            if retry:
+                if current["earliest_start"] and not retry["result"]["earliest_start"]:
                     out["earliest_start"] = None
+                return out
+            if not start_has_arrived(current["earliest_start"], self.now()):
+                out["earliest_start"] = None
             return out
 
-        return self._act(id, "update", op=op, build=build)
+        return self._act(id, "update", op=op, build=build, expected_version=expected_version, review_token=review_token)
 
     def defer(self, id, until, *, op=None):
         """Hide a task from ready work until a date. Its deadline does not move."""
         return self._act(
-            id, "update", {"earliest_start": parse_when(until, self.timezone, self._now)}, op=op
+            id, "update", op=op, build=lambda _current, retry: {
+                "earliest_start": parse_when(until, self.timezone, self._now, _replay=bool(retry))
+            },
+            date_keys=("earliest_start",) if isinstance(until, str) else ()
         )
 
     def block(self, id, on, *, op=None):
@@ -649,7 +877,7 @@ class Tasks:
             id,
             "update",
             op=op,
-            build=lambda current: {"depends_on": sorted({*current["depends_on"], on})},
+            build=lambda current, retry: {"depends_on": sorted({*current["depends_on"], on})},
         )
 
     def unblock(self, id, on, *, op=None):
@@ -657,51 +885,252 @@ class Tasks:
             id,
             "update",
             op=op,
-            build=lambda current: {"depends_on": [x for x in current["depends_on"] if x != on]},
+            build=lambda current, retry: {"depends_on": [x for x in current["depends_on"] if x != on]},
         )
+
+    def _reminder_schedule(self, when, retry):
+        """Resolve a new request or recover the civil-time intent in its creation receipt."""
+        saved = retry["result"] if retry else {}
+        expression = when.strip() if isinstance(when, str) else None
+        intent = {"expression": expression, "timezone": self.timezone}
+        metadata = {"daymark.remind": intent}
+        previous = saved.get("metadata", {}).get("daymark.remind")
+        if expression and previous == intent:
+            return normalize_now(saved["scheduled_at"]), metadata
+
+        value = Temporal.model_validate(parse_when(when, self.timezone, self._now, _replay=bool(retry)))
+        if value.at is None:
+            raise DomainError("invalid", "A reminder needs a time", [WHEN_FORMS])
+        if not expression or not value.expression:
+            return value.at, None
+        if not retry or previous is not None:
+            return value.at, metadata
+
+        # Pre-upgrade receipts kept only the UTC instant. Recover it when the
+        # original creation day corroborates the relative expression.
+        original = parse_when(when, self.timezone, saved["created_at"], _replay=True)
+        if original.get("at") and saved.get("scheduled_at"):
+            scheduled = normalize_now(saved["scheduled_at"])
+            if normalize_now(original["at"]) == scheduled:
+                return scheduled, None
+        return value.at, None
 
     def remind(self, id, when, *, recipient, channel="recording", op=None):
         """Schedule a reminder about a task for a person or principal entity."""
-        at = parse_when(when, self.timezone, self._now)
-        value = Temporal.model_validate(at)
-        if value.at is None:
-            raise DomainError("invalid", "A reminder needs a time", [WHEN_FORMS])
-        return self.add(
-            "",
-            kind="reminder",
-            task_id=id,
-            scheduled_at=value.at.astimezone(UTC).isoformat(),
-            recipient_id=recipient,
-            channel=channel,
-            op=op,
-        )
+        retry = self._retry_context(op, "create")
+        instant, metadata = self._reminder_schedule(when, retry)
+        try:
+            return self.add(
+                "", kind="reminder", task_id=id, scheduled_at=instant.astimezone(UTC).isoformat(),
+                recipient_id=recipient, channel=channel, op=op, metadata=metadata,
+            )
+        except Exception as exc:
+            if retry or not op or getattr(exc, "code", None) != "conflict":
+                raise
+            if self._retry_context(op, "create") is None:
+                raise
+            # Another session may have resolved this request across a day boundary.
+            return self.remind(id, when, recipient=recipient, channel=channel, op=op)
 
     # -- read
 
     def get(self, id):
         return self.engine.get(*self._ws, id)
 
-    def show(self, id, history=10):
-        return self.engine.context(*self._ws, id, history=history)
+    def activity(self, *, after=None, limit=20):
+        """Recent workspace changes, or the next page after a saved cursor."""
+        return self.engine.activity(*self._ws, after=after, limit=limit)
 
-    def ready(self, *, limit=20, move=None, mine=True, scope=None):
-        """``scope`` narrows to one scope; ``""`` to tasks that have none."""
+    def show(self, id=None, history=10, *, source=None):
+        return self.engine.context(
+            *self._ws, id, history=history, now=self._now, **self._read_owner(), **self._who,
+            **({"source": source} if source is not None else {}),
+        )
+
+    def recurrence_forecast(self, id=None, *, action, source=None):
+        """Read the calendar effect of skipping or finishing one recurring round."""
+        return self.engine.recurrence_forecast(
+            *self._ws, id, action=action, source=source, now=self._now
+        )
+
+    def brief(self, id=None, *, before_note=None, source=None):
+        """A bounded task handoff, including the latest attributed note previews."""
+        return self.engine.brief(
+            *self._ws, id, now=self._now, before_note=before_note, **self._read_owner(), **self._who,
+            **({"source": source} if source is not None else {}),
+        )
+
+    def changes_since(self, id=None, *, version, source=None):
+        """Read net changes since the exact version a person reviewed."""
+        return self.engine.changes_since(*self._ws, id, version=version, source=source)
+
+    def read_note(self, id, note_id, *, source=None):
+        """Read one complete note using the ID from a brief."""
+        return self.engine.read_note(*self._ws, id, note_id, **({"source": source} if source is not None else {}))
+
+    def _read_owner(self, mine=True):
+        if not mine:
+            return {}
+        return {"owner": self.actor} if self._ws else {"mine": True, "owner": self.actor}
+
+    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None, brief=False, projection=None):
+        """Select eligible tasks. A card projection retains planning and checklist fields."""
         return self.engine.ready(
             *self._ws,
             now=self._now,
             limit=limit,
-            owner=self.actor if mine else None,
+            **self._read_owner(mine),
+            **({"context": context} if context is not None else {}),
+            **({"project": project} if project is not None else {}),
             next_move=move,
+            **({"brief": True} if brief else {}),
+            **({"projection": projection} if projection is not None else {}),
             **({} if scope is None else {"scope": scope}),
         )
 
-    def agenda(self, days=7, *, scope=None):
+    def explain_ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None):
+        """Count actionable and held work and name examples of each holding reason."""
+        return self.engine.explain_ready(
+            *self._ws, now=self._now, limit=limit, next_move=move, scope=scope, context=context,
+            **({"project": project} if project is not None else {}),
+            **self._read_owner(mine),
+        )
+
+    def ready_summary(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None):
+        """Orientation-sized records, in precisely the same order as ready."""
+        return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, project=project, brief=True)
+
+    def agenda(self, days=7, *, context=None, scope=None, deadlines=False, local_day=False):
+        if type(local_day) is not bool:
+            raise DomainError("invalid", "local_day must be a boolean; set the viewer timezone on Tasks")
         extra = {} if scope is None else {"scope": scope}
+        if context is not None:
+            extra["context"] = context
+        if deadlines:
+            extra["deadlines"] = True
+        if local_day:
+            extra["day_zone"] = self.timezone
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
-    def summary(self, *, scope=None):
+    @contextmanager
+    def read_snapshot(self):
+        """Group reads at one instant; local Store readers share a SQLite snapshot."""
+        reader = copy(self)
+        reader._now = self.now()
+        snapshot = getattr(self.engine, "read_snapshot", nullcontext)
+        with snapshot():
+            yield reader
+
+    @property
+    def supports_consistent_reads(self):
+        """Whether multiple factual reads can share a single engine snapshot."""
+        return callable(getattr(self.engine, "read_snapshot", None))
+
+    def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None, brief=False):
+        """Run the chosen profile with one-call adjustments, without saving them."""
+        from .store import Store
+        from .strategies import selected_advice
+        from .strategies.remote import advice as service_advice
+
+        if type(brief) is not bool:
+            raise DomainError("invalid", "Brief advice must be true or false")
+        options = {"settings": settings, "drops": drops, "scope": scope, "context": context}
+        if isinstance(self.engine, Client):
+            result = service_advice(self, profile, brief=brief, **options)
+        else:
+            result = selected_advice(self, profile, brief=brief and isinstance(self.engine, Store), **options)
+        if brief:
+            from .render import list_record
+
+            now = result.as_of or self.now()
+            result.picks = [list_record(item, now, line_fields=True, context=context) for item in result.picks]
+        return result
+
+    def profile(self, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None):
+        """Read or adjust the active workspace profile."""
+        from .strategies import has_adjustments
+        from .strategies.preferences import active_profile
+
+        if (isinstance(self.engine, Client) and name is None and undo is None
+                and op is None and expected_version is None and not has_adjustments(settings, drops)):
+            current = self.engine.profile_read("active")
+            if current is not None:
+                return current
+            return {"name": "plain", "strategies": [], "execution": "legacy-client"}
+
+        return active_profile(
+            self, name, settings=settings, drops=drops, op=op, expected_version=expected_version, undo=undo,
+        )
+
+    def saved_profiles(self, name=None):
+        """List named profiles, or inspect one saved configuration and version."""
+        from .strategies.preferences import saved_profiles
+
+        if isinstance(self.engine, Client):
+            result = self.engine.profile_read("saved", name)
+            if result is not None:
+                return result
+            raise DomainError("invalid", "Upgrade the service to read saved profiles")
+        entries = saved_profiles(self)
+        if name is None:
+            return entries
+        for entry in entries:
+            if entry["name"] == name:
+                return entry
+        raise DomainError("not_found", "No saved profile with that name", [name])
+
+    def profile_catalog(self, *, strategy=None):
+        """Discover profiles and adjustment defaults, or inspect one strategy's parameters."""
+        from .strategies import available, describe, installed_plugins
+        from .strategies.profiles import PROFILES
+
+        if isinstance(self.engine, Client):
+            from .strategies.builtin import BUILTINS
+
+            if strategy is None or (isinstance(strategy, str) and strategy in BUILTINS):
+                data = self.engine.profile_read("catalog" if strategy is None else "strategy", strategy)
+                if data is not None:
+                    if strategy is None and (plugins := installed_plugins()):
+                        data["client_plugins"] = plugins
+                    return data
+        if strategy is not None:
+            return describe(strategy)
+        saved = self.saved_profiles() if hasattr(self.engine, "setting") else None
+        plugins = installed_plugins()
+        return {
+            **({"installed_plugins": plugins} if plugins else {}),
+            "active": self.profile(),
+            "builtins": list(PROFILES),
+            "saved": [{k: entry[k] for k in ("name", "version")} for entry in saved]
+            if saved is not None else None,
+            "adjustments": {s.name: {key: p.default for key, p in s.params.items()} for s in available()},
+        }
+
+    def save_profile(self, name, *, profile=None, settings=(), drops=(), expected_version=0, op=None):
+        """Save a reusable copy. Replacing a copy requires its current version."""
+        from .strategies.preferences import save_profile
+
+        return save_profile(
+            self, name, profile=profile, settings=settings, drops=drops,
+            expected_version=expected_version, op=op,
+        )
+
+    def remove_profile(self, name, *, expected_version, op=None):
+        """Remove a named copy at the version the caller observed."""
+        from .strategies.preferences import remove_profile
+
+        return remove_profile(self, name, expected_version=expected_version, op=op)
+
+    def orientation(self, *, scope=None):
+        """Read the facts for a returning worker, using one clock and one database snapshot."""
+        return self.engine.orientation(*self._ws, now=self._now, owner=self.actor,
+                                       **({"scope": scope} if scope is not None else {}))
+
+    def summary(self, *, context=None, scope=None):
         extra = {} if scope is None else {"scope": scope}
-        return self.engine.summary(*self._ws, now=self._now, **extra)
+        if context is not None:
+            extra["context"] = context
+        return self.engine.summary(*self._ws, now=self._now, **self._read_owner(), **extra)
 
     def condition(self, statement, *, goal, requires=None, state="unknown", id=None, op=None):
         """Record something that must be true for a goal to be reached."""
@@ -717,21 +1146,35 @@ class Tasks:
 
     def assess(self, id, state, *, evidence=None, op=None):
         """Say how a condition stands, with the evidence for saying so."""
-        current = self.get(id)
+        retry = self._retry_context(op, "update", id)
+        current = retry["before"] if retry else self.get(id)
         if current["kind"] != "condition":
             raise DomainError("invalid", "Only a condition can be assessed")
-        item = self._act(id, "update", {"condition": state}, op=op)
+        base = self._op_id(op)
+        evidence_op = self._part_id(base, "evidence")
         if evidence:
-            item = self.note(id, evidence, op=(op + ":evidence") if op else None)
-        return item
+            return self._paired_actions(
+                id, (base, "update", {"condition": state}),
+                (evidence_op, "note", {"text": evidence, "author": self.actor}),
+                retryable=op is not None,
+            )
+        if retry and self._retry_context(evidence_op, "note", id):
+            raise DomainError("conflict", "Operation ID belongs to an assessment with evidence")
+        return self._act(id, "update", {"condition": state}, op=op)
 
-    def explore(self, goal=None):
+    def explore(self, goal=None, *, scope=None):
         """Conditions behind a goal, which are next, and where nothing is moving."""
-        return self.engine.explore(*self._ws, goal, now=self._now)
+        extra = {} if scope is None else {"scope": scope}
+        return self.engine.explore(*self._ws, goal, now=self._now, **extra)
 
     def focus(self, id, rank=None, *, op=None):
         """Put a task on the person's short list. Without a rank it goes last."""
-        if rank is None:
+        retry = self._retry_context(op, "update", id) if rank is None else None
+        if retry:
+            rank = retry["result"]["focus"]
+            if rank is None:
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+        elif rank is None:
             placed = [x["focus"] for x in self.find(status="open", limit=10**6) if x["focus"]]
             rank = max(placed, default=0) + 1
         return self._act(id, "update", {"focus": rank}, op=op)
@@ -800,7 +1243,7 @@ class Tasks:
         (None clears). Writes planned and latest_target for start and end, keeps a
         timed value's clock time, and moves a deadline only when given one."""
 
-        def build(current):
+        def build(current, retry):
             return plans.schedule(current, timezone=self.timezone, **dates)
 
         return self._act(id, "update", op=op, build=build)
@@ -827,57 +1270,121 @@ class Tasks:
         if stage is None:
             return self._act(id, "place", place, op=op)
         if place is None:
+            if op and self._retry_context(self._part_id(op, "place"), "place", id):
+                raise DomainError("conflict", "Operation ID belongs to a move with a position")
             return self._act(id, "update", {"stage": stage}, op=op)
-        replay = self._replayed(op)
-        if replay is not None:
-            return self._replayed(op + ":place") or replay
-        base = op or uuid.uuid4().hex
+        base = self._op_id(op)
+        return self._paired_actions(
+            id, (base, "update", {"stage": stage}), (self._part_id(base, "place"), "place", place),
+            retryable=op is not None,
+        )
+
+    def _paired_actions(self, id, first, second, *, retryable, expected_version=None):
+        """Two ordered changes, checked against both original receipts on replay."""
         for attempt in range(4):
-            version = self.engine.get(*self._ws, id)["version"]
+            retry = self._retry_context(first[0], first[1], id) if retryable else None
+            next_retry = self._retry_context(second[0], second[1], id) if retryable else None
+            if next_retry and not retry:
+                # A simultaneous atomic batch may have committed between our reads.
+                retry = self._retry_context(first[0], first[1], id)
+            if bool(retry) != bool(next_retry):
+                raise DomainError("conflict", "Operation ID belongs to a different request")
+            current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            version = current["version"] if expected_version is None else expected_version
+            if not retry and not self._ws and second[1] == "complete" and current["status"] != "proposed":
+                require_active_round(current, "complete")
+            next_version = next_retry["before"]["version"] if next_retry and expected_version is None else version + 1
+            versions = (version, next_version)
             operations = [
                 {
-                    "operation_id": base,
-                    "action": "update",
-                    "payload": {"id": id, "stage": stage},
-                    "expected_version": version,
-                },
-                {
-                    "operation_id": base + ":place",
-                    "action": "place",
-                    "payload": {"id": id, **place},
-                    "expected_version": version + 1,
-                },
+                    "operation_id": key,
+                    "action": action,
+                    "payload": {"id": id, **fields},
+                    "expected_version": versions[index],
+                }
+                for index, (key, action, fields) in enumerate((first, second))
             ]
             result = self.engine.batch(*self._ws, operations, atomic=True, **self._who)
             if result["committed"]:
                 return result["results"][-1]["result"]
             error = next(r["error"] for r in result["results"] if r["error"]["code"] != "aborted")
-            stale = error["code"] == "conflict" and (
-                self.engine.get(*self._ws, id)["version"] != version
-            )
-            if not stale or attempt == 3:
+            if retry or error["code"] != "conflict" or attempt == 3:
+                raise DomainError(error["code"], error["message"], error["details"])
+            if retryable and self._retry_context(first[0], first[1], id):
+                continue
+            if expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
                 raise DomainError(error["code"], error["message"], error["details"])
 
     def plan(self, project):
         return self.engine.plan(*self._ws, project, now=self._now)
 
-    def projects(self):
-        return self.engine.projects(*self._ws, now=self._now)
+    def projects(self, *, scope=None):
+        """Projects in the selected scope, with rollups across all of each project's members."""
+        return self.engine.projects(*self._ws, now=self._now, **({"scope": scope} if scope is not None else {}))
 
     def changes(self, project, after):
         return self.engine.changes(*self._ws, project, after)
 
-    def find(self, text=None, *, kind="task", status=None, limit=50):
-        """Case-insensitive title or description search within one kind."""
-        clauses = [{"field": "kind", "op": "eq", "value": kind}]
-        if status:
-            clauses.append({"field": "status", "op": "eq", "value": status})
-        items = self.engine.query(*self._ws, {"and": clauses})
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
+               claimed=False, archived=False, source=None):
+        """Lean search hits for live records, archived records, or the actor's live claims."""
+        if type(claimed) is not bool:
+            raise DomainError("invalid", "claimed must be true or false")
+        filters = {}
+        if claimed:
+            filters = {"claimed_by": self.actor} if self._ws else {"claimed": True}
+            filters["now"] = self._now
+        if source is not None:
+            filters["source"] = source
+        if archived is not False:
+            filters["archived"] = archived
+        return self.engine.search(
+            *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
+        )
+
+    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None, brief=False, projection=None):
+        """Find full records by title or description. A brief retains the fields for a listing."""
+        from .search import entity_filters, fold_text, line_record, matches_text
+        from .store import Store
+        from .views import check_task_projection, task_card
+
+        check_task_projection(projection, brief)
+        filters = entity_filters(kind, status, scope=scope, context=context)
+        # Keep Python slice semantics for unbounded reads (also used by caller
+        # strategies). A service with only the original query API still gets
+        # all scope and context predicates before it returns any records.
+        searchable = text is None or len(text) <= 2000
+        bounded = type(limit) is int and 1 <= limit <= 1000 and searchable
+        if projection == "card":
+            if kind != "task":
+                raise DomainError("invalid", "A task card requires kind=task")
+            if isinstance(self.engine, Store) and searchable and (bounded or limit is None):
+                found, after = [], None
+                with self.engine.read_snapshot():
+                    while True:
+                        page = self.engine.search(*self._ws, text, kind=kind, status=status, scope=scope,
+                                                  context=context, projection="card", limit=limit or 1000, after=after)
+                        found.extend(page["items"])
+                        after = page["next"]
+                        if limit is not None or after is None:
+                            return found
+            rows = self.find(text, kind=kind, status=status, limit=limit, scope=scope, context=context)
+            return [task_card(item) for item in rows]
+        if bounded and isinstance(self.engine, (Store, Client)):
+            options = {"projection": "line" if brief else "entity"}
+            if context is not None:
+                options["context"] = context
+            if self._ws or self.engine.supports_search_options(*options):
+                return self.engine.search(*self._ws, text, kind=kind, status=status, scope=scope,
+                                          limit=limit, **options)["items"]
+        items = self.engine.query(*self._ws, filters)
+        if scope is not None:
+            items = [item for item in items if (item["scope"] or "") == scope]
+        if context is not None:
+            items = [item for item in items if context in item["context_ids"]]
         if text:
-            needle = text.lower()
-            items = [
-                x
-                for x in items
-                if needle in x["title"].lower() or needle in x["description"].lower()
-            ]
+            needle = fold_text(text)
+            items = [x for x in items if matches_text(needle, x["title"], x["description"])]
+        if brief:
+            return [line_record(item) for item in items[:limit]]
         return items[:limit]

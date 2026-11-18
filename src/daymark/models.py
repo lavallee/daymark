@@ -13,17 +13,25 @@ from dateutil.rrule import rrulestr
 from dateutil.tz import datetime_exists, resolve_imaginary
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from daymark.errors import DomainError
 
-class DomainError(ValueError):
-    """A domain failure with a stable code.
 
-    ``details`` names offending fields and rules only; it never echoes input values.
-    """
+def require_active_round(record, action):
+    """Do not turn a shelved or settled occurrence into new calendar work."""
+    if action == "skip" and (record["kind"] != "task" or not record["recurrence"]):
+        raise DomainError("invalid", "Skip requires a recurring task. Use cancel to retire a one-off task.")
+    if not record["recurrence"]:
+        return
+    if record["archived"]:
+        raise DomainError("conflict", "This occurrence is archived. Unarchive it before advancing the series.")
+    if record["status"] in ("completed", "cancelled"):
+        raise DomainError("conflict", f"This occurrence is {record['status']}. Reopen it before changing the recorded outcome.")
 
-    def __init__(self, code: str, message: str, details: list[str] | None = None):
-        self.code = code
-        self.details = details or []
-        super().__init__(message)
+
+def require_visible_proposal(record):
+    """Approval requires an explicit restoration of a shelved proposal."""
+    if record["status"] == "proposed" and record["archived"]:
+        raise DomainError("conflict", "Unarchive the proposal before accepting it")
 
 
 class Model(BaseModel):
@@ -79,6 +87,22 @@ class Temporal(Model):
             if self.date
             else (self.at.astimezone(UTC) < now.astimezone(UTC))
         )
+
+
+def day_offset(temporal, now: datetime) -> int:
+    """Whole local days from today, in the recorded temporal value's own zone."""
+    value = Temporal.model_validate(temporal)
+    return (value.local().date() - now.astimezone(ZoneInfo(value.timezone)).date()).days
+
+
+def start_has_arrived(start, now: datetime) -> bool:
+    """An unset start imposes no gate. A recorded civil date opens at local midnight."""
+    if start is None:
+        return True
+    value = Temporal.model_validate(start)
+    if value.date:
+        return day_offset(value, now) <= 0
+    return value.at.astimezone(UTC) <= now.astimezone(UTC)
 
 
 _WEEKDAYS = {"MO", "TU", "WE", "TH", "FR", "SA", "SU"}
@@ -188,6 +212,11 @@ class Recurrence(Model):
         return self
 
 
+def recurrence_date_field(item):
+    """The date advanced when a repeating task materializes its next occurrence."""
+    return "deadline" if item["deadline"] and not item["planned"] else "planned"
+
+
 def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: datetime):
     """Next local slot; gaps advance, overlaps use first fold, endings stay finite.
 
@@ -195,13 +224,24 @@ def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: dat
     Reaching a search limit raises recurrence_limit; it does not end the series.
     Completion-based COUNT uses occurrence_index, persisted by the materializer.
     """
+    return _calendar_slot(recurrence, current, completed_at, mode=recurrence.mode)
+
+
+def first_occurrence(recurrence: Recurrence):
+    """First matching slot on or after an implicit starting day, within the rule's limits."""
+    return _calendar_slot(recurrence, recurrence.anchor, None, mode="initial")
+
+
+def _calendar_slot(recurrence, current, completed_at, *, mode):
     zone = ZoneInfo(recurrence.timezone)
     anchor = recurrence.anchor.local().replace(tzinfo=None)
     cursor = current.local().astimezone(zone).replace(tzinfo=None)
     parts = dict(part.split("=", 1) for part in recurrence.rule.split(";"))
     count = int(parts.pop("COUNT")) if "COUNT" in parts else None
     ending = _until(parts.pop("UNTIL")) if "UNTIL" in parts else None
-    if recurrence.mode == "after_completion":
+    if mode != "initial" and count == 1:
+        return None  # The explicitly captured occurrence consumes the first place.
+    if mode == "after_completion":
         if count is not None and recurrence.occurrence_index + 1 >= count:
             return None
         anchor = aware(completed_at).astimezone(zone).replace(tzinfo=None)
@@ -220,21 +260,25 @@ def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: dat
     body = ";".join(f"{key}={item}" for key, item in parts.items())
     rule = rrulestr(body, dtstart=anchor).replace(until=limit)
     following = None
-    instant_cursor = completed_at if recurrence.mode == "after_completion" else current.at
+    instant_cursor = completed_at if mode == "after_completion" else current.at
     for ordinal, candidate in enumerate(rule, start=1):
-        if recurrence.mode == "fixed" and count is not None and ordinal > count:
+        if mode == "fixed" and count is not None and ordinal == 1 and candidate > anchor:
+            # An explicit first day may fall outside a BY selector. Its stored
+            # round already used one place before the first matching date.
+            count -= 1
+        if mode == "fixed" and count is not None and ordinal > count:
             return None
-        if candidate > cursor:
+        if candidate > cursor or (mode == "initial" and candidate == cursor):
             local = candidate.replace(tzinfo=zone, fold=0)
             if not datetime_exists(local):
                 local = resolve_imaginary(local)
             # A later wall time can still be an earlier instant in the second fold.
-            if instant_cursor is None or local.astimezone(UTC) > aware(instant_cursor).astimezone(
+            if mode == "initial" or instant_cursor is None or local.astimezone(UTC) > aware(instant_cursor).astimezone(
                 UTC
             ):
                 following = local
                 break
-        if recurrence.mode == "fixed" and count == ordinal:
+        if mode == "fixed" and count == ordinal:
             return None
     if following is None:
         if artificial_limit and limit < datetime.max:
@@ -256,6 +300,20 @@ class SourceRef(Model):
     system: str = Field(min_length=1, max_length=100)
     kind: str = Field(min_length=1, max_length=100)
     id: str = Field(min_length=1, max_length=500)
+
+
+    @classmethod
+    def parse_ref(cls, value):
+        """Accept an exact source triple, or its CLI system:kind:id spelling."""
+        if isinstance(value, str):
+            parts = value.split(":", 2)
+            if len(parts) != 3:
+                raise DomainError("invalid", "Source must be system:kind:id")
+            value = dict(zip(("system", "kind", "id"), parts))
+        try:
+            return cls.model_validate(value)
+        except ValueError:
+            raise DomainError("invalid", "Source needs a system, kind and ID within their length limits") from None
 
 
 class CheckItem(Model):

@@ -74,7 +74,7 @@ class Worker:
                 return None
             if current.get("task_id"):
                 task = self.store.get(current["workspace"], current["task_id"])
-                if task["status"] in {"completed", "cancelled"} or task.get("archived"):
+                if task["status"] not in {"open", "waiting"} or task.get("archived"):
                     return None
             return current
         except DomainError as exc:

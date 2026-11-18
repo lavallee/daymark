@@ -394,7 +394,10 @@ def test_plan_read_resolves_dates_dependencies_people_and_rollups(tasks):
     assert tasks.plan("site")["rollup"]["percent_done"] == 33
     listed = tasks.projects()
     assert [p["id"] for p in listed["projects"]] == ["site"]
-    assert listed["projects"][0]["rollup"]["done"] == 1
+    summary = listed["projects"][0]
+    assert summary["rollup"]["done"] == 1
+    detail = tasks.plan("site")
+    assert all(summary[key] == detail[key] for key in ("facts", "stages", "rollup", "health"))
     code("not_found", tasks.plan, "missing")
     code("not_found", tasks.plan, "map")
     # Another workspace sees none of it.
@@ -511,9 +514,9 @@ def test_partial_batch_keeps_what_succeeded_and_replays_by_operation(tasks):
     code("invalid", store.batch, "w", ops, atomic="yes")
 
 
-def test_batch_from_two_writers_applies_one_and_refuses_the_other_whole(tmp_path):
+def test_batch_from_two_writers_applies_one_and_refuses_the_other_whole(open_store, tmp_path):
     path = tmp_path / "batch.db"
-    Tasks(Store(path), "w", timezone=ZONE, now=NOW).add("Shared", id="s")
+    Tasks(open_store(path), "w", timezone=ZONE, now=NOW).add("Shared", id="s")
     stores, barrier, results = [Store(path), Store(path)], threading.Barrier(2), {}
 
     def run(store, name):

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import closing
 
 import httpx
 import pytest
@@ -23,8 +24,8 @@ class Engine:
         return {"id": "synthetic", "version": 1}
 
     def get(self, workspace, entity_id):
-        if entity_id == "private":
-            raise DomainError("not_found", "private title token-secret")
+        if entity_id == "synthetic-log-record":
+            raise DomainError("not_found", "synthetic-log-error token-secret")
         return {"id": entity_id, "workspace": workspace}
 
     def list(self, workspace, kind=None):
@@ -58,7 +59,7 @@ def boundary():
     app = create_app(
         engine,
         {
-            "secret-token": Identity("one", "actor\nprivate"),
+            "secret-token": Identity("one", "actor\nsynthetic-log-principal"),
             "other-token": {"workspace": "two", "principal": "other"},
         },
     )
@@ -96,7 +97,7 @@ def test_workspace_is_resolved_only_from_server_mapping(boundary):
     assert engine.calls == [
         (
             ("one", "op-1", "create", {"title": "synthetic"}),
-            {"expected_version": 0, "actor": "actor\nprivate"},
+            {"expected_version": 0, "actor": "actor\nsynthetic-log-principal"},
         )
     ]
     assert (
@@ -156,6 +157,17 @@ def test_schema_ids_health_and_cors(boundary):
     ]
     assert len(ids) == len(set(ids))
     assert "daymark_v1_execute" in ids
+    brief = client.get("/v1/schema?brief=true", headers=auth())
+    assert brief.status_code == 200 and len(brief.content) < len(response.content) // 4
+    assert set(brief.json()) == {"paths"}
+    compact_paths = brief.json()["paths"]
+    full_paths = response.json()["paths"]
+    assert compact_paths.keys() == full_paths.keys()
+    for path, methods in full_paths.items():
+        assert compact_paths[path].keys() == methods.keys()
+        for method, spec in methods.items():
+            expected = [p["name"] for p in spec.get("parameters", []) if p.get("in") == "query"]
+            assert [p["name"] for p in compact_paths[path][method].get("parameters", [])] == expected
     health = client.get("/v1/health", headers={**auth(), "Origin": "https://untrusted.invalid"})
     assert health.json()["outbox"]["pending"] == 2
     assert "private" not in health.text and "secret" not in health.text
@@ -165,18 +177,18 @@ def test_schema_ids_health_and_cors(boundary):
 def test_error_and_logs_never_echo_private_content(boundary, caplog):
     _, client = boundary
     with caplog.at_level(logging.INFO, logger="daymark.api"):
-        response = client.get("/v1/entities/private", headers=auth())
+        response = client.get("/v1/entities/synthetic-log-record", headers=auth())
         client.post(
-            "/v1/operations", headers=auth(), json=operation(payload={"title": "private title"})
+            "/v1/operations", headers=auth(), json=operation(payload={"title": "synthetic-log-title"})
         )
     assert response.status_code == 404
     assert response.json() == {"detail": "Not found"}
     records = [record for record in caplog.records if record.name == "daymark.api"]
     assert records
-    assert all(
-        "private" not in str(record.__dict__) and "secret-token" not in str(record.__dict__)
-        for record in records
-    )
+    forbidden = ("synthetic-log-principal", "synthetic-log-record", "synthetic-log-title",
+                 "synthetic-log-error", "token-secret", "secret-token")
+    for record in records:
+        assert all(value not in str(record.__dict__) for value in forbidden)
 
 
 def test_router_requires_trusted_identity():
@@ -215,15 +227,76 @@ def test_cli_help_and_backup_restore(tmp_path, capsys):
     source, backup, restored = (
         tmp_path / name for name in ("source.db", "backup.db", "restored.db")
     )
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         connection.execute("CREATE TABLE synthetic (value TEXT)")
         connection.execute("INSERT INTO synthetic VALUES ('test')")
     assert main(["--db", str(source), "backup", "--file", str(backup)]) == 0
     assert main(["--db", str(restored), "restore", "--file", str(backup)]) == 0
-    with sqlite3.connect(restored) as connection:
+    with closing(sqlite3.connect(restored)) as connection:
         assert connection.execute("SELECT value FROM synthetic").fetchone() == ("test",)
     assert main(["--db", str(restored), "restore", "--file", str(backup)]) == 1
     assert "test" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command,option", [("backup", "--file"), ("restore", "--db")])
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink", "dangling"])
+def test_snapshot_cli_identifies_occupied_destination(tmp_path, capsys, command, option, kind):
+    source = tmp_path / "source.db"
+    destination = tmp_path / "occupied"
+    target = tmp_path / "link-target"
+    assert main(["--db", str(source), "init"]) == 0
+    capsys.readouterr()
+    if kind == "file":
+        destination.write_bytes(b"existing")
+    elif kind == "directory":
+        destination.mkdir()
+        (destination / "keep").write_bytes(b"existing")
+    else:
+        if kind == "symlink":
+            target.write_bytes(b"existing")
+        try:
+            destination.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"Symlinks unavailable: {exc}")
+
+    db, file = (source, destination) if command == "backup" else (destination, source)
+    assert main(["--db", str(db), command, "--file", str(file)]) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert "destination_exists" in captured.err and f"unused path for {option}" in captured.err
+    assert str(tmp_path) not in captured.err
+    if kind == "file":
+        assert destination.read_bytes() == b"existing"
+    elif kind == "directory":
+        assert (destination / "keep").read_bytes() == b"existing"
+    else:
+        assert destination.readlink() == target
+        if kind == "symlink":
+            assert target.read_bytes() == b"existing"
+        else:
+            assert not target.exists()
+
+
+def test_serve_closes_database_if_service_setup_fails(tmp_path, monkeypatch):
+    import sqlite3
+
+    from daymark import cli
+
+    opened = []
+    open_store = cli._open_store
+
+    def record_store(path):
+        store = open_store(path)
+        opened.append(store)
+        return store
+
+    monkeypatch.setattr(cli, "_open_store", record_store)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}")
+    assert main(["--db", str(tmp_path / "sample.db"), "serve", "--auth-file", str(auth)]) == 1
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        opened[0].db.execute("SELECT 1")
 
 
 def test_deep_or_malformed_json_redacted(boundary):
@@ -274,10 +347,8 @@ def test_client_does_not_forward_bearer_on_redirect():
         assert len(called) == 1
 
 
-def test_real_engine_replay_conflict_unknown_fields_and_workspace(tmp_path):
-    from daymark.store import Store
-
-    store = Store(tmp_path / "api.db")
+def test_real_engine_replay_conflict_unknown_fields_and_workspace(open_store, tmp_path):
+    store = open_store(tmp_path / "api.db")
     with TestClient(create_app(store, {"secret-token": Identity("one", "actor")})) as client:
         body = operation(payload={"id": "task", "kind": "task", "title": "synthetic"})
         first = client.post("/v1/operations", headers=auth(), json=body)
@@ -309,10 +380,8 @@ def test_real_engine_replay_conflict_unknown_fields_and_workspace(tmp_path):
         assert len(store.list("one")) == 1
 
 
-def test_real_http_reads_exports_and_errors_do_not_cross_workspace(tmp_path):
-    from daymark.store import Store
-
-    store = Store(tmp_path / "isolation.db")
+def test_real_http_reads_exports_and_errors_do_not_cross_workspace(open_store, tmp_path):
+    store = open_store(tmp_path / "isolation.db")
     store.execute(
         "one",
         "create-visible",
@@ -348,10 +417,8 @@ def test_real_http_reads_exports_and_errors_do_not_cross_workspace(tmp_path):
         assert [item["id"] for item in query.json()] == ["visible"]
 
 
-def test_python_client_against_real_router_and_store(tmp_path):
-    from daymark.store import Store
-
-    store = Store(tmp_path / "client.db")
+def test_python_client_against_real_router_and_store(open_store, tmp_path):
+    store = open_store(tmp_path / "client.db")
     with TestClient(create_app(store, {"secret-token": Identity("one", "actor")})) as app_client:
 
         def send(request):
@@ -446,12 +513,10 @@ def test_cli_real_create_update_action_export_import(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["title"] == "second"
 
 
-def test_http_health_outbox_counts_are_workspace_scoped(tmp_path):
+def test_http_health_outbox_counts_are_workspace_scoped(open_store, tmp_path):
     from datetime import UTC, datetime
 
-    from daymark.store import Store
-
-    store = Store(tmp_path / "health-isolation.db")
+    store = open_store(tmp_path / "health-isolation.db")
     with TestClient(create_app(store, {"secret-token": Identity("one", "actor")})) as client:
         baseline = client.get("/v1/health", headers=auth())
         assert baseline.status_code == 200
@@ -569,3 +634,109 @@ def test_cli_serve_and_client_live_loopback(tmp_path):
         "synthetic-live-token" in line or "live-private-canary" in line or "live-canary-id" in line
         for line in logs
     )
+
+
+def test_online_backup_publishes_only_complete_file_and_preserves_competing_creator(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
+    from daymark.cli import _copy_database
+
+    source = tmp_path / "source.db"
+    destination = tmp_path / "backup.db"
+    connect = sqlite3.connect
+    with closing(connect(source)) as db:
+        db.execute("CREATE TABLE sample(value)")
+        db.execute("INSERT INTO sample VALUES(42)")
+        db.commit()
+
+    class ObservedConnection(sqlite3.Connection):
+        def backup(self, target):
+            assert not destination.exists()
+            super().backup(target)
+            destination.write_bytes(b"owned by another writer")
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: connect(*a, **kw, factory=ObservedConnection))
+    with pytest.raises(FileExistsError):
+        _copy_database(source, destination)
+    assert destination.read_bytes() == b"owned by another writer"
+    assert not list(tmp_path.glob(".daymark-backup-*"))
+
+
+def test_backup_on_filesystem_without_links_and_empty_source(tmp_path, monkeypatch):
+    import errno
+    import os
+    import sqlite3
+    from contextlib import closing
+
+    from daymark.cli import _copy_database
+
+    source = tmp_path / "data.db"
+    destination = tmp_path / "copy.db"
+    source.touch()
+    with pytest.raises(ValueError, match="empty"):
+        _copy_database(source, destination)
+    assert not destination.exists()
+    with closing(sqlite3.connect(source)) as db:
+        db.execute("CREATE TABLE items(value)")
+        db.execute("INSERT INTO items VALUES('proof')")
+        db.commit()
+
+    def unavailable(*args):
+        raise OSError(errno.ENOTSUP, "links unavailable")
+
+    monkeypatch.setattr(os, "link", unavailable)
+    _copy_database(source, destination)
+    with closing(sqlite3.connect(destination)) as db:
+        assert db.execute("SELECT value FROM items").fetchall() == [("proof",)]
+    with pytest.raises(FileExistsError):
+        _copy_database(source, destination)
+
+
+def test_online_backup_is_a_self_contained_read_only_file(tmp_path):
+    from contextlib import closing
+
+    from daymark import Store, Tasks
+    from daymark.cli import _copy_database
+
+    live = tmp_path / "live.db"
+    destination = tmp_path / "archive"
+    destination.mkdir()
+    copy = destination / "backup.db"
+    with closing(Store(live)) as writer:
+        Tasks(writer, "sample").add("Proof forms", id="proof")
+        _copy_database(live, copy)
+        assert writer.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        with closing(Store(copy, read_only=True)) as reader:
+            assert reader.db.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+            assert reader.get("sample", "proof")["title"] == "Proof forms"
+            assert list(destination.iterdir()) == [copy]
+    with closing(Store(copy)) as restored:
+        assert restored.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+def test_export_publishes_complete_json_and_preserves_a_competing_creator(tmp_path, monkeypatch):
+    from daymark.snapshot_files import write_export
+
+    destination = tmp_path / "export.json"
+    original = json.dump
+
+    def interrupt(snapshot, out, **kwargs):
+        out.write('{"partial":')
+        raise OSError("Synthetic interruption")
+
+    monkeypatch.setattr(json, "dump", interrupt)
+    with pytest.raises(OSError, match="interruption"):
+        write_export(destination, {"sample": 1})
+    assert list(tmp_path.iterdir()) == []
+
+    def competing(snapshot, out, **kwargs):
+        assert not destination.exists()
+        original(snapshot, out, **kwargs)
+        destination.write_text("Created separately")
+
+    monkeypatch.setattr(json, "dump", competing)
+    with pytest.raises(FileExistsError):
+        write_export(destination, {"sample": 2})
+    assert destination.read_text() == "Created separately"
+    assert list(tmp_path.iterdir()) == [destination]

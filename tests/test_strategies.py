@@ -2,6 +2,7 @@
 
 import ast
 import json
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 from daymark import DomainError, Store, Tasks, strategies
 from daymark.cli import main
 from daymark.mcp import handle
-from daymark.render import advice_text
+from daymark.render import advice_text, projects_text
 from daymark.strategies import Advice, Strategy, register
 from daymark.strategies.profiles import PROFILES
 
@@ -176,7 +177,7 @@ def test_the_strategy_layer_reads_only_the_public_surface():
     assert ".db." not in source and "_rows" not in source and "engine.execute" not in source
 
 
-def test_command_line_and_mcp(tmp_path, monkeypatch, capsys):
+def test_command_line_and_mcp(open_store, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "s.sqlite3"))
     monkeypatch.setenv("DAYMARK_TZ", ZONE)
 
@@ -198,7 +199,7 @@ def test_command_line_and_mcp(tmp_path, monkeypatch, capsys):
     assert (shown["profile"], shown["held_back"], len(shown["picks"])) == ("gentle (edited)", 2, 2)
     assert cli("profile", "nope")[0] == 3
     assert cli("profile", "--set", "shortlist.size=0")[0] == 5
-    tasks = Tasks(Store(str(tmp_path / "s.sqlite3")), timezone=ZONE)
+    tasks = Tasks(open_store(str(tmp_path / "s.sqlite3")), timezone=ZONE)
     reply = handle(tasks, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "daymark_view", "arguments": {"view": "advise"}}})  # fmt: skip
     assert "(2 more ready" in reply["result"]["content"][0]["text"]
@@ -332,7 +333,9 @@ def test_a_stale_stored_profile_never_locks_a_workspace_out(tasks):
     tasks.engine.set_setting("w", "profile", broken)
     profile = strategies.stored_profile(tasks)
     assert profile["skipped"] == ["uninstalled-plugin"]
-    assert profile["strategies"] == [{"use": "shortlist", "with": {"size": 1}}]
+    assert profile["strategies"] == [
+        {"use": "shortlist", "with": {"size": 1}, "unavailable_parameters": {"renamed_away": 9}}
+    ]
     advice = strategies.advise(tasks, profile)
     assert "could not be used: uninstalled-plugin" in advice.notes[0].text
     assert "! uninstalled-plugin" in __import__("daymark.render", fromlist=["x"]).profile_text(
@@ -379,11 +382,64 @@ def test_explore_ignores_finished_goals_and_counts_a_proposed_move(tasks):
     assert tasks.edit("work", advances="")["advances"] == [] and task["advances"] == ["need"]
 
 
+def test_frontier_first_identifies_proposal_only_conditions_without_exposing_other_scopes(tasks):
+    tasks.goal("Press ready", id="press")
+    tasks.add("By phone", kind="context", id="phone")
+    for condition in ("slot", "paper", "binding", "delivery"):
+        tasks.add(condition, kind="condition", id=condition, goal="press", condition="unmet",
+                  scope="studio" if condition != "delivery" else "offsite")
+    tasks.propose("Offsite proposal", id="secret-record", scope="offsite",
+                  advances=["slot", "paper", "binding", "delivery"])
+    tasks.add("Supplier contacted", id="supplier", waiting_on="press", advances=["binding"])
+    tasks.add("Prior action", id="prior", advances=["slot"])
+    tasks.done("prior")
+    before = tasks.engine.head("w")
+    result = tasks.advise(scope="studio", settings=["frontier-first.gaps=1"]).to_dict()
+    assert not result["picks"] and not result["suggestions"]
+    finding, = result["notes"]
+    assert "2 next conditions have only proposed work" in finding["text"]
+    assert len(finding["ids"]) == 1 and finding["ids"][0] in {"slot", "paper"}
+    assert all(word not in json.dumps(result) for word in ("secret-record", "Offsite proposal", "delivery"))
+    assert not tasks.advise(scope="studio", context="phone", settings=["frontier-first"]).notes
+    assert not tasks.advise(scope="studio", settings=["frontier-first.gaps=0"]).notes
+    assert tasks.engine.head("w") == before
+    tasks.accept("secret-record")
+    assert not tasks.advise(scope="studio", settings=["frontier-first"]).notes
+
+
 def test_lookahead_stays_bounded(tasks):
     for index in range(30):
         tasks.add(f"Due soon {index}", id=f"d{index:02d}", due="+3d")
     notes = run(tasks, ("lookahead", {"limit": 4})).notes
     assert len(notes) == 5 and "26 more due soon" in notes[-1].text
+
+
+def test_lookahead_warns_when_even_the_earliest_planned_work_is_after_the_cutoff(tasks):
+    def add(key, plan, due, **fields):
+        tasks.add(key, id=key, plan=plan, due=due, **fields)
+
+    due = {"date": "2030-04-04", "timezone": "America/New_York"}
+    add("late-day", "2030-04-06", due, start="2030-04-05")
+    add("same-day", "2030-04-04", due)
+    add("early", "2030-04-03", due)
+    # Local dates differ, but April 5 in Tokyo begins during April 4 in New York.
+    add("overlap", {"date": "2030-04-05", "timezone": "Asia/Tokyo"}, due)
+    add("after-midnight", "2030-04-05T04:00:00Z", due)
+    add("before-midnight", "2030-04-05T03:59:59Z", due)
+    plan = {"date": "2030-04-05", "timezone": "America/Los_Angeles"}
+    add("same-label-late", plan, "2030-04-05T06:59:59Z")
+    add("possible", plan, "2030-04-05T07:00:00Z")
+    add("exact", "2030-04-05T09:00:00Z", "2030-04-05T09:00:00Z")
+    add("waiting", "2030-04-06", due, waiting_on="printer")
+    add("far", "2030-05-05", "2030-05-04")
+    add("missing", None, due)
+    before = tasks.engine.head("w")
+    notes = run(tasks, ("lookahead", {})).notes
+    late = {n.ids[0] for n in notes if "planned work falls after" in n.text}
+    assert late == {"late-day", "after-midnight", "same-label-late"}
+    assert {n.ids[0] for n in notes} == late | {"missing"}
+    assert "late-day" not in {row["id"] for row in tasks.ready()}
+    assert tasks.engine.head("w") == before
 
 
 def test_a_0_4_0_database_upgrades_in_place(tmp_path):
@@ -414,3 +470,439 @@ def test_a_0_4_0_database_upgrades_in_place(tmp_path):
     upgraded.condition("Works after upgrade", goal="fixture-goal", id="works")
     assert upgraded.explore("fixture-goal")["frontier"] == ["works"]
     store.close()
+
+
+def test_temporary_advice_uses_the_same_adjustments_as_adoption(tasks):
+    for i in range(4):
+        tasks.add(f"Studio item {i}", id=f"s{i}", scope="studio")
+    tasks.add("Other item", id="other")
+    saved = strategies.store_profile(tasks, PROFILES["assistant"])
+    before = tasks.engine.events("w", limit=100)
+    options = {"settings": ["shortlist.size=2"], "drops": ["first-step"]}
+    preview = tasks.advise(profile="gentle", scope="studio", **options)
+    assert preview.profile == "gentle (edited)"
+    assert ([x["id"] for x in preview.picks], preview.held_back) == (["s0", "s1"], 2)
+    assert strategies.stored_profile(tasks) == saved
+    assert tasks.engine.events("w", limit=100) == before
+    assert tasks.advise().profile == "assistant"
+    for invalid in ("shortlist.", "shortlist=2", "shortlist.size=0", "shortlist.=2"):
+        code("invalid", tasks.advise, settings=[invalid])
+    assert strategies.stored_profile(tasks) == saved
+    tasks.profile("gentle", **options)
+    active = tasks.advise(scope="studio").to_dict()
+    trial = preview.to_dict()
+    assert active.pop("profile_source")["kind"] == "workspace"
+    assert trial.pop("profile_source") == {"kind": "built-in", "name": "gentle", "adjusted": True}
+    assert active == trial
+
+
+def test_preview_from_cli_and_mcp(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "tasks.sqlite3"))
+    monkeypatch.setenv("DAYMARK_TZ", "UTC")
+    assert main(["init"]) == 0
+    for i in range(3):
+        assert main(["add", f"Studio item {i}", "--id", f"item{i}"]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "advise",
+                "--profile",
+                "gentle",
+                "--drop",
+                "first-step",
+                "--set",
+                "shortlist.size=1",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    preview = json.loads(capsys.readouterr().out)
+    assert (preview["profile"], len(preview["picks"]), preview["held_back"]) == (
+        "gentle (edited)",
+        1,
+        2,
+    )
+    store = Store(str(tmp_path / "tasks.sqlite3"))
+    try:
+        tasks = Tasks(store, timezone="UTC")
+        args = {
+            "view": "advise",
+            "profile": "gentle",
+            "set": ["shortlist.size=1"],
+            "drop": ["first-step"],
+        }
+        reply = handle(
+            tasks,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "daymark_view", "arguments": args},
+            },
+        )
+        assert not reply["result"]["isError"]
+        assert "(2 more ready" in reply["result"]["content"][0]["text"]
+        assert strategies.stored_profile(tasks) == PROFILES["plain"]
+    finally:
+        store.close()
+
+
+def test_time_fit_uses_only_individual_recorded_estimates(tasks):
+    tasks.add("Draft outline", id="short", minutes=15)
+    tasks.add("Check minutes", id="edge", minutes=20, priority=1)
+    tasks.add("Review packet", id="long", minutes=21, priority=1)
+    tasks.add("Ask for an estimate", id="unknown")
+    tasks.add("Later", id="later", start="+1d", minutes=10)
+    tasks.add("Work elsewhere", id="other", scope="studio", minutes=2)
+    advice = tasks.advise(profile="plain", settings=["time-fit.minutes=20"], scope="")
+    assert [x["id"] for x in advice.picks] == ["edge", "short"]
+    assert advice.held_back == 2
+    assert (
+        advice.notes[0].text
+        == "2 tasks have individual estimates of 20 minutes or less. 1 task needs more time. 1 task has no estimate."
+    )
+    assert len(tasks.ready(scope="")) == 4
+    empty = tasks.advise(profile="plain", settings=["time-fit.minutes=5"], scope="")
+    assert not empty.picks and empty.held_back == 4
+    assert "No picks for this view." in advice_text(empty)
+    assert "Nothing is ready" not in advice_text(empty)
+    code("invalid", tasks.advise, settings=["time-fit.minutes=0"])
+
+
+def test_scoped_frontier_filters_which_conditions_to_mention_not_what_moves_them(tasks):
+    tasks.goal("Prepare publication", id="pub")
+    tasks.goal("Arrange a delivery", id="delivery")
+    tasks.add(
+        "Signed proof",
+        kind="condition",
+        goal="pub",
+        condition="unknown",
+        id="proof",
+        scope="studio",
+    )
+    tasks.add(
+        "Print slot confirmed",
+        kind="condition",
+        goal="pub",
+        condition="unmet",
+        id="slot",
+        scope="studio",
+    )
+    tasks.add(
+        "Delivery window known",
+        kind="condition",
+        goal="delivery",
+        condition="unknown",
+        id="window",
+        scope="home",
+    )
+    tasks.add("Check the proof", id="check", scope="home", advances=["proof"])
+    view = tasks.explore(scope="studio")
+    assert set(view["frontier"]) == {"proof", "slot"} and view["gaps"] == ["slot"]
+    advice = tasks.advise(profile="assistant", scope="studio").to_dict()
+    assert "window" not in json.dumps(advice)
+    assert advice["suggestions"][0]["advances"] == ["slot"]
+    assert tasks.explore(scope="")["conditions"] == []
+
+
+def test_readiness_limit_message_requires_actual_truncation(tasks, monkeypatch):
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    tasks.add("One", id="a")
+    tasks.add("Two", id="b")
+    tasks.add("Other scope", id="c", scope="studio")
+    unscoped = tasks.advise(scope="")
+    assert not unscoped.notes and "ready_coverage" not in unscoped.to_dict()
+    broader = tasks.advise()
+    assert broader.to_dict()["ready_coverage"] == {"reviewed": 2, "available": 3}
+    assert "first 2 of 3" in broader.notes[0].text and "scope or task context" in broader.notes[0].text
+
+
+def test_shortlist_reads_only_the_ready_view(tasks, monkeypatch):
+    def unneeded(*args, **kwargs):
+        pytest.fail("A preview using only ready picks fetched unrelated workspace data")
+
+    tasks.add("Task", id="sample")
+    for method in ("find", "explore", "agenda"):
+        monkeypatch.setattr(tasks, method, unneeded)
+    assert [x["id"] for x in tasks.advise(settings=["shortlist"]).picks] == ["sample"]
+    assert [x["id"] for x in tasks.advise(profile="gentle").picks] == ["sample"]
+
+
+def test_context_filters_picks_and_review_inputs_without_assigning_untagged_work(tasks):
+    tasks.add("By phone", kind="context", id="phone")
+    tasks.add("At the press", kind="context", id="press")
+    tasks.goal("Print brochure", id="print")
+    tasks.add("Paper confirmed", kind="condition", goal="print", id="paper", condition="unmet")
+    tasks.add("Untouched goal gap", kind="condition", goal="print", id="gap", condition="unknown")
+    tasks.add("Call to confirm stock", id="call", contexts=["phone", "press"], advances=["paper"])
+    tasks.add("At the press only", id="other", contexts=["press"], advances=["paper"])
+    tasks.add("No recorded context", id="uncertain")
+    tasks.add("Match by label alone", id="phone-label", kind="label")
+    tasks.add("Label only", id="labeled", labels=["phone-label"])
+    tasks.add("Proof at the press", id="wait-elsewhere", contexts=["press"], waiting_on="supplier")
+    tasks.propose("Suggested plain task", id="proposed-elsewhere")
+    tasks.add("Separate scope", id="studio", contexts=["phone"], scope="studio")
+
+    snapshot = strategies.snapshot(tasks, scope="", context="phone")
+    assert [t["id"] for t in snapshot.ready] == [t["id"] for t in snapshot.open] == ["call"]
+    assert not snapshot.waiting and not snapshot.proposed
+    assert snapshot.context == "phone"
+    assert [c["id"] for c in snapshot.exploration["conditions"]] == ["paper"]
+    assert [t["id"] for t in snapshot.exploration["conditions"][0]["advancing"]] == ["call"]
+    advice = tasks.advise(profile="assistant", scope="", context="phone").to_dict()
+    assert advice["context"] == "phone"
+    assert [t["id"] for t in advice["picks"]] == ["call"]
+    assert not advice["suggestions"]
+    assert not any(n["ids"] for n in advice["notes"] if n["strategy"] == "frontier-first")
+    assert "uncertain" in {t["id"] for t in tasks.ready()}
+    code("not_found", tasks.advise, context="phone-label")
+
+
+def test_context_counts_and_fallback_keep_both_filters(tasks, monkeypatch):
+    tasks.add("Workstation", kind="context", id="desk")
+    tasks.add("Travel", kind="context", id="travel")
+    for key in ("first", "second", "third"):
+        tasks.add(key, id=key, contexts=["desk"], scope="print")
+    tasks.add("Another task", id="untagged", scope="print")
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    advice = tasks.advise(scope="print", context="desk", settings=["shortlist.size=1"])
+    assert "first 2 of 3" in advice.notes[0].text
+    assert advice.ready_coverage == {"reviewed": 2, "available": 3}
+    assert "narrow the next review" not in advice.notes[0].text
+    assert "daymark ready --scope print --context desk" in advice_text(advice)
+    assert "No ready tasks tagged with context travel." in advice_text(
+        tasks.advise(context="travel")
+    )
+
+
+def test_time_fit_reports_the_candidate_set_a_prior_stage_selected(tasks):
+    tasks.add("Prepare binder", id="long", minutes=90, priority=1)
+    tasks.add("Confirm order", id="short", minutes=5)
+    limited = tasks.advise(profile="plain", settings=["shortlist.size=1", "time-fit.minutes=10"])
+    assert not limited.picks and limited.held_back == 2
+    assert "This step checked 1 of 2 ready candidates." in limited.notes[0].text
+    reordered = tasks.advise(
+        profile="gentle",
+        drops=["shortlist"],
+        settings=["time-fit.minutes=10", "shortlist.size=1"],
+    )
+    assert [item["id"] for item in reordered.picks] == ["short"]
+    assert reordered.held_back == 1
+
+
+def test_optional_project_review_checks_recorded_work_across_task_scopes_and_contexts(tasks):
+    for id in ("empty", "ideas", "held", "working", "closed", "other"):
+        tasks.project(id, id=id, scope="home" if id == "other" else "studio")
+    tasks.done("closed")
+    tasks.add("Wait for proof", id="wait", project="held", waiting_on="printer")
+    tasks.add("Future task", id="later", project="working", scope="home", start="+1w")
+    tasks.propose("A possible cover", id="cover", project="ideas", scope="home")
+    tasks.add("By phone", kind="context", id="phone")
+    before = tasks.engine.export("w")
+    rendered = projects_text(tasks.projects())
+    closed = next(line for line in rendered.splitlines() if line.startswith("closed "))
+    assert "completed" in closed
+    assert not tasks.advise().notes
+    review = tasks.advise(profile="plain", settings=["project-review"], scope="studio")
+    assert [n.ids for n in review.notes] == [["empty"], ["ideas"]]
+    assert "1 proposal awaits a decision" in review.notes[1].text
+    assert not review.suggestions
+    contextual = tasks.advise(
+        profile="plain", settings=["project-review"], scope="studio", context="phone"
+    )
+    assert len(contextual.notes) == 1 and not contextual.notes[0].ids
+    assert "Omit the task context" in contextual.notes[0].text
+    assert tasks.engine.export("w") == before
+    assert tasks.profile()["version"] == 0
+
+    tasks.accept("cover")
+    tasks.add("Inspect first page", project="empty")
+    done = tasks.advise(settings=["project-review"], scope="studio")
+    assert [n.text for n in done.notes] == [
+        "Each open project has an open or waiting task (4 reviewed)."
+    ]
+
+
+def test_project_review_limits_named_projects_and_remains_opt_in(tasks, monkeypatch):
+    for i in range(3):
+        tasks.project(f"Project {i}", id=f"project-{i}")
+    advice = tasks.advise(settings=["project-review.limit=1"])
+    assert advice.notes[0].ids == ["project-0"] and "2 more projects" in advice.notes[1].text
+    monkeypatch.setattr(
+        tasks, "projects", lambda: pytest.fail("A plain listing read project plans")
+    )
+    assert not tasks.advise().notes
+
+
+def test_ready_recovery_reaches_new_ids_on_the_original_database_workspace_and_actor(
+    tmp_path, monkeypatch, capsys
+):
+    import re
+    import shlex
+
+    first, second = tmp_path / "studio work.sqlite3", tmp_path / "other.sqlite3"
+    with closing(Store(first)) as store:
+        tasks = Tasks(store, "studio", actor="reviewer")
+        tasks.add("By phone", id="phone", kind="context")
+        for i in range(32):
+            tasks.add(f"Proof {i}", id=f"sample-{i:02}", contexts=["phone"], scope="proofs")
+        preview = tasks.advise(
+            profile="plain", settings=["shortlist.size=25"], scope="proofs", context="phone"
+        )
+        assert preview.to_dict()["ready_query"] == {
+            "scope": "proofs",
+            "context": "phone",
+            "limit": 30,
+        }
+        mcp = advice_text(preview, mcp=True)
+        assert 'daymark_view {"view":"ready","scope":"proofs","context":"phone","limit":30}' in mcp
+
+    forward = ["--db", str(first), "--workspace", "studio", "--as", "reviewer", "--tz", "UTC"]
+    assert (
+        main(
+            [
+                *forward,
+                "advise",
+                "--profile",
+                "plain",
+                "--set",
+                "shortlist.size=25",
+                "--scope",
+                "proofs",
+                "--context",
+                "phone",
+            ]
+        )
+        == 0
+    )
+    text = capsys.readouterr().out
+    shown = set(re.findall(r"^(sample-\d+) ", text, re.MULTILINE))
+    command = shlex.split(re.search(r"see `([^`]+)`", text)[1])
+    assert len(shown) == 25 and command[0] == "daymark"
+    monkeypatch.setenv("DAYMARK_DB", str(second))
+    assert main(command[1:]) == 0
+    reached = set(re.findall(r"^(sample-\d+) ", capsys.readouterr().out, re.MULTILINE))
+    assert len(reached) == 30 and len(reached - shown) == 5
+    assert not second.exists()
+
+
+def test_time_window_marks_hidden_hard_deadlines_and_excludes_time_gated_work(tasks):
+    tasks.add("Supplier reply", id="wait", minutes=1, due="today", waiting_on="supplier")
+    tasks.add("Future check", id="future", minutes=1, start="+1d", due="+1d")
+    tasks.add("Due without estimate", id="unknown", due="today")
+    tasks.add("Large proof", id="long", due="today", minutes=45)
+    tasks.add("Short approval", id="sign", due="today", minutes=5, move="answer")
+    tasks.add("Planned only", id="plan", plan="today", minutes=30)
+    tasks.add("Soft target", id="target", target="today", minutes=30)
+    configured = ["time-fit.minutes=5"]
+    advisory = tasks.advise(settings=configured)
+    assert [t["id"] for t in advisory.picks] == ["sign"] and advisory.held_back == 4
+    assert set(advisory.notes[-1].ids) == {"long", "unknown"}
+    assert "hard deadlines today or earlier" in advisory.notes[-1].text
+    broad = tasks.advise(settings=["time-fit.minutes=60"])
+    assert broad.notes[-1].ids == ["unknown"]
+    tomorrow = Tasks(tasks.engine, "w", actor="alice", now=NOW + timedelta(days=1), timezone=ZONE)
+    assert {x["id"] for x in tomorrow.advise(settings=configured).picks} == {"sign", "future"}
+
+
+def test_later_limits_remove_first_steps_of_omitted_tasks_from_all_surfaces(tasks):
+    for id, minutes in (("first", 30), ("second", 5)):
+        tasks.add(id, id=id, minutes=minutes, checklist=[{"id": "check", "text": f"Next for {id}"}])
+    advice = tasks.advise(settings=["first-step", "time-fit.minutes=10"])
+    assert [x["id"] for x in advice.picks] == ["second"] and advice.held_back == 1
+    assert advice.steps == advice.to_dict()["steps"] == {"second": "Next for second"}
+    assert "Next for first" not in advice_text(advice)
+    empty = tasks.advise(settings=["first-step", "time-fit.minutes=2"])
+    assert not empty.steps and not empty.picks
+
+
+@pytest.mark.parametrize(
+    ("until", "opens"),
+    [
+        ("2030-04-10", datetime(2030, 4, 9, 23, tzinfo=UTC)),  # midnight in London
+        ("2030-04-10 09:15", datetime(2030, 4, 10, 8, 15, tzinfo=UTC)),
+    ],
+)
+def test_waiting_check_respects_the_recorded_return_and_reports_only_task_update_age(
+    monkeypatch, until, opens
+):
+    from daymark.models import normalize_now
+
+    clock = datetime(2030, 4, 1, 9, tzinfo=UTC)
+    monkeypatch.setattr("daymark.store.normalize_now", lambda now=None: normalize_now(now or clock))
+    with closing(Store(":memory:")) as store:
+        writer = Tasks(store, "studio", timezone=ZONE, now=clock)
+        writer.add("Review proof", id="proof", due="2030-04-05")
+        writer.wait("proof", "the print shop", until=until)
+        clock += timedelta(days=2)
+        writer.note("proof", "Attachment filed.")
+        due_day = Tasks(store, "studio", timezone=ZONE, now=datetime(2030, 4, 5, 8, tzinfo=UTC))
+        (waiting,) = due_day.agenda()["waiting"]
+        assert waiting["id"] == "proof" and waiting["deadline"]["date"] == "2030-04-05"
+        before = Tasks(store, "studio", timezone="UTC", now=opens - timedelta(microseconds=1))
+        assert run(before, ("waiting-check", {"days": 5})).notes == []
+        assert [x["id"] for x in before.agenda()["overdue"]] == ["proof"]
+        assert not before.ready()
+        at_return = Tasks(store, "studio", timezone="UTC", now=opens)
+        (note,) = run(at_return, ("waiting-check", {"days": 5})).notes
+        assert note.ids == ["proof"] and "Waiting on the print shop." in note.text
+        assert f"No task update in {(opens - clock).days} days." in note.text
+        assert not at_return.ready()
+
+
+def test_decision_batches_count_ready_work_but_name_only_visible_decisions(tasks):
+    for i in range(6):
+        tasks.add(f"Choose proof {i}", id=f"d{i}", move="answer", minutes=30 if i < 3 else 5)
+    tasks.add("Check unconfirmed slot", id="future", move="answer", start="+2d")
+    tasks.add("Review fixture", id="read", move="agent", due="today")
+    batch = ("decisions-first", {"limit": 2})
+    shortlist = ("shortlist", {"size": 1})
+    time = ("time-fit", {"minutes": 5})
+    first = run(tasks, batch, shortlist)
+    assert first.notes[0].ids == ["d0"] and first.picks[0]["id"] == "d0"
+    assert first.notes[0].text == (
+        "Of 7 ready tasks reviewed, 6 need the person's answer. 1 offered for discussion in this batch."
+    )
+    # Earlier stages may leave no decision, or remove the first two originally ranked decisions.
+    narrowed = run(tasks, shortlist, batch)
+    assert narrowed.picks[0]["id"] == "read" and narrowed.notes[0].ids == []
+    assert "6 need" in narrowed.notes[0].text and "0 offered" in narrowed.notes[0].text
+    timed = run(tasks, batch, time)
+    discussion = next(n for n in timed.notes if n.strategy == "decisions-first")
+    assert discussion.ids == ["d3", "d4"] and "2 offered" in discussion.text
+    # A separate deadline advisory can still name a task outside the picks.
+    assert any(n.strategy == "time-fit" and n.ids == ["read"] for n in timed.notes)
+    tasks.profile("plain", settings=["decisions-first.limit=2"])
+    assert tasks.advise().notes[0].ids == ["d0", "d1"]
+
+
+def test_capacity_distinguishes_ready_dates_focus_and_blocked_plans_without_writing(tasks):
+    tasks.add("Fold pages", id="fold", minutes=30, plan="today")
+    tasks.add("Compare drafts", id="focus", minutes=80, plan="+7d")
+    tasks.focus("focus")
+    tasks.add("Await press", id="hold", waiting_on="press")
+    tasks.add("Send proof", id="send", after="hold", minutes=100, plan="today")
+    shape = tasks.engine.export("w")
+    strategy = "overbooked"
+    default = run(tasks, (strategy, {"capacity_minutes": 60}))
+    (note,) = default.notes
+    assert note.ids == ["focus", "fold"] and "about 110 min" in note.text
+    assert (
+        "30 min are due or planned" in note.text
+        and "Focus alone adds 80 min from 1 task" in note.text
+    )
+    dated = tasks.advise(
+        profile="plain",
+        settings=["overbooked.capacity_minutes=60", "overbooked.include_focus=false"],
+    )
+    assert not dated.notes
+    assert {x["id"] for x in tasks.agenda()["today"]} == {"fold", "send"}
+    tight = run(tasks, (strategy, {"capacity_minutes": 15, "include_focus": False}))
+    assert tight.notes[0].ids == ["fold"] and "about 30 min" in tight.notes[0].text
+    assert tasks.engine.export("w") == shape
+    assert (
+        tasks.profile_catalog(strategy=strategy)["parameters"]["include_focus"]["default"] is True
+    )
+    code("invalid", tasks.advise, settings=["overbooked.include_focus=yes"])

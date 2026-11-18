@@ -1,21 +1,43 @@
-"""Daymark: tasks, plans and time for work and life.
-
-Start with `daymark init`, then `daymark prime`. Everyday verbs: add, ready,
-agenda, show, claim, note, done. The lower-level commands (create, update,
-action, query, events, export, import) expose the engine's explicit operation
-IDs and expected versions.
-"""
+"""Daymark's command-line interface."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shlex
 import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+from .snapshot_files import copy_database as _copy_database
+from .snapshot_files import write_export
+
+_QUICK_START = """Daymark keeps track of a person's tasks, plans and decisions across sessions.
+
+Choose where to work
+  daymark where                     Show the selected database and workspace
+  daymark init --here               Set up here (daymark init is per-user)
+
+Capture work
+  daymark propose "Review cover"    Save a suggestion for someone's decision
+  daymark add "Review cover"        Record work already agreed
+
+Return to the same folder
+  daymark prime --brief             See the current state
+  daymark find --status proposed    Find suggestions still awaiting a decision
+  daymark show ID                   Read one record
+
+  daymark propose --help            See the options for one command
+  daymark --help                    List every command and global option"""
+
+
+def _activity_cursor(text):
+    from .cursors import numeric_or_checkpoint
+
+    return numeric_or_checkpoint(text)
 
 
 def _json_file(path: str) -> Any:
@@ -28,8 +50,8 @@ def _print(value: Any) -> None:
 
 
 SIMPLE = {
-    "prime", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
-    "reopen", "archive", "undo", "accept", "dismiss", "claim", "release", "note", "wait",
+    "prime", "activity", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
+    "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim", "take", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
     "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
     "tree", "advise", "profile", "strategies", "condition", "assess", "explore",
@@ -40,22 +62,57 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "daymark"
 
 
-def resolve_db(explicit: str | None) -> str | None:
-    """--db, then DAYMARK_DB, the nearest .daymark/ above the working directory,
-    a legacy ./daymark.sqlite3, then the per-user database."""
+def _location(explicit: str | None) -> tuple[str | None, str]:
+    """The file used by an everyday command, and how it was selected."""
     if explicit:
-        return explicit
+        return explicit, "--db"
     if os.environ.get("DAYMARK_DB"):
-        return os.environ["DAYMARK_DB"]
+        return os.environ["DAYMARK_DB"], "DAYMARK_DB"
     here = Path.cwd()
     for folder in (here, *here.parents):
         candidate = folder / ".daymark" / "daymark.sqlite3"
         if candidate.is_file():
-            return str(candidate)
-    for candidate in (here / "daymark.sqlite3", data_home() / "daymark.sqlite3"):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+            return str(candidate), "project"
+    for path, source in (
+        (here / "daymark.sqlite3", "legacy"),
+        (data_home() / "daymark.sqlite3", "user"),
+    ):
+        if path.is_file():
+            return str(path), source
+    return None, "none"
+
+
+def resolve_db(explicit: str | None) -> str | None:
+    return _location(explicit)[0]
+
+
+def _where(args) -> int:
+    if args.url:
+        from .render import endpoint_origin
+
+        result = {"source": "--url", "endpoint": endpoint_origin(args.url),
+                  "identity_source": "server credential"}
+        message = f"Endpoint {result['endpoint']} (--url). The server credential selects the workspace and actor."
+    else:
+        file, source = _location(args.db)
+        database = str(Path(file).absolute()) if file and file != ":memory:" else file
+        actor = "agent" if args.actor is None else args.actor
+        result = {"database": database, "source": source, "workspace": args.workspace,
+                  "actor": actor, "file_exists": bool(file and Path(file).is_file())}
+        message = f"Workspace {args.workspace}, actor {actor}."
+        if file:
+            message += f"\nDatabase {database} (selected by {source})."
+            if file != ":memory:":
+                real = str(Path(file).resolve())
+                if database != real:
+                    result["resolved_database"] = real
+                    message += f"\nResolves to {real}."
+                if not result["file_exists"]:
+                    message += "\nThe selected file does not exist yet."
+        else:
+            message += "\nNo database selected. Use daymark init or daymark init --here."
+    _print(result) if args.json else print(message)
+    return 0
 
 
 def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
@@ -82,7 +139,7 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     )
     item.add_argument("--label", action="append", dest="labels", metavar="ID")
     item.add_argument("--context", action="append", dest="contexts", metavar="ID")
-    item.add_argument("--waiting-on", metavar="WHO")
+    item.add_argument("--waiting-on", metavar="WHO", help="A reply or prerequisite that parks open work")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
     item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
     item.add_argument(
@@ -120,6 +177,13 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
 STATES = ["met", "partly_met", "unmet", "unknown"]
 
 
+def _scope_filter(parser, help_text):
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--scope", metavar="NAME", help=help_text)
+    group.add_argument("--unscoped", action="store_const", const="", dest="scope",
+                       help="Only records with no scope")
+
+
 def _simple_commands(sub) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="Compact JSON instead of text")
@@ -129,41 +193,79 @@ def _simple_commands(sub) -> None:
     def add(name, help, *, writes=False):
         return sub.add_parser(name, help=help, parents=[common, *([write] if writes else [])])
 
+    add("where", "Explain which database and workspace everyday commands will use")
     init = sub.add_parser("init", help="Create a database: per-user, or --here for this folder")
     init.add_argument("--here", action="store_true", help="Use ./.daymark/ in this directory")
-    add("prime", "Print the workflow guide and current state; read this first")
+    prime = add("prime", "Print the current state and workflow guide; read this first")
+    _scope_filter(prime, "Return a compact orientation for one scope")
+    prime.add_argument("--brief", action="store_true", help="Skip the workflow guide")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
-    onboard.add_argument("--write", metavar="FILE", help="Insert or refresh the snippet in FILE")
+    mode = onboard.add_mutually_exclusive_group()
+    mode.add_argument("--mcp-config", choices=["claude", "codex"], help="Print a read-only MCP launch configuration for this installation")
+    mode.add_argument("--skill", action="store_true", help="Print the full agent skill for this installed version")
+    mode.add_argument("--write", metavar="FILE", help="Insert or refresh the snippet in FILE")
+    mode.add_argument("--check", metavar="FILE", help="Check the snippet without writing (1 if missing or outdated)")
     advise = add("advise", "What to offer and what to mention, by the workspace's profile")
     advise.add_argument("--profile", metavar="NAME", help="Try a profile without adopting it")
-    advise.add_argument("--scope", metavar="NAME", help="Only this scope")
-    advise.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
-    profile = add("profile", "Show or choose the way of working for this workspace")
+    _scope_filter(advise, "Only this scope")
+    advise.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
+    profile = add("profile", "Show or choose the way of working for this workspace", writes=True)
     profile.add_argument("name", nargs="?", help="Adopt this profile (see `daymark strategies`)")
-    profile.add_argument(
-        "--set", action="append", default=[], metavar="STRATEGY.PARAM=VALUE",
-        help="Adjust one strategy in the current profile; adds the strategy if absent",
-    )  # fmt: skip
-    profile.add_argument("--drop", action="append", default=[], metavar="STRATEGY")
-    add("strategies", "List strategies and profiles, with how well each idea is supported")
+    profile_action = profile.add_mutually_exclusive_group()
+    profile_action.add_argument("--saved", nargs="?", const="", metavar="NAME",
+                                help="List saved profiles, or inspect one by name")
+    profile_action.add_argument("--save-as", metavar="NAME", help="Save a named copy without adopting it")
+    profile_action.add_argument("--remove", metavar="NAME", help="Remove a named copy")
+    profile_action.add_argument("--undo", metavar="OP", help="Restore the settings before an active profile change")
+    profile.add_argument("--if-version", type=int, metavar="N", help="Expected active or saved version")
+    profile.add_argument("--from-file", metavar="FILE", help="Import a profile JSON file with --save-as")
+    for command in (advise, profile):
+        command.add_argument(
+            "--set", action="append", default=[], metavar="STRATEGY[.PARAM=VALUE]",
+            help="Include a strategy or adjust one parameter",
+        )
+        command.add_argument("--drop", action="append", default=[], metavar="STRATEGY")
+    methods = add("strategies", "List strategies and profiles, or inspect one strategy")
+    methods.add_argument("strategy", nargs="?", metavar="NAME", help="Show purpose, parameters and limits")
     ready = add("ready", "Tasks that can be done now, most pressing first")
+    ready.add_argument("--project", metavar="ID", help="Only explicit members of this project")
+    ready.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
+    ready_detail = ready.add_mutually_exclusive_group()
+    ready_detail.add_argument("--explain", action="store_true", help="Show why live work is held back within these filters")
+    ready_detail.add_argument("--brief", action="store_true", help="Short task previews and ordering reasons")
     ready.add_argument("-n", "--limit", type=int, default=20)
     ready.add_argument("--move", choices=["person", "answer", "agent"], help="Only this next move")
     for view in (ready,):
-        view.add_argument("--scope", metavar="NAME", help="Only this scope")
-        view.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+        _scope_filter(view, "Only this scope")
     agenda = add("agenda", "Overdue, today, the days ahead, waiting and proposed")
+    agenda.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     agenda.add_argument("--days", type=int, default=7)
-    agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
-    agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+    agenda.add_argument("--deadlines", action="store_true", help="Only overdue and upcoming hard deadlines, including today")
+    agenda.add_argument("--local-day", action="store_true", help="Hard deadlines by day in the session timezone; separate civil dates")
+    _scope_filter(agenda, "Only this scope")
+    activity = add("activity", "Recent workspace changes and handoff notes")
+    activity.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Read on from a saved cursor")
+    activity.add_argument("-n", "--limit", type=int, default=20, help="Events per page (1–100)")
     show = add("show", "One entity with blockers, notes, reminders and history")
-    show.add_argument("id")
+    selector = show.add_mutually_exclusive_group(required=True)
+    selector.add_argument("id", nargs="?")
+    selector.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Inspect the entity captured from this source")
+    detail = show.add_mutually_exclusive_group()
+    detail.add_argument(
+        "--forecast", choices=("skip", "done"), help="Read-only recurrence forecast"
+    )
+    detail.add_argument("--brief", action="store_true", help="Bounded handoff with recent notes")
+    detail.add_argument("--before-note", metavar="NOTE_ID", help="Brief with the preceding note page")
+    detail.add_argument("--since-version", type=int, metavar="N", help="Compare the current record with a reviewed version")
+    detail.add_argument("--note", metavar="NOTE_ID", help="Read one complete note from its ID")
     for name, help in (("add", "Capture a task"), ("propose", "Suggest a task for a person")):
         item = add(name, help, writes=True)
         item.add_argument("title")
         _field_options(item, editing=False)
     edit = add("edit", 'Change fields; pass "" to clear a date or link', writes=True)
     edit.add_argument("id")
+    edit.add_argument("--if-review", metavar="TOKEN", help="Match the exact entity revision returned by show")
+    edit.add_argument("--if-version", type=int, help="Refuse if the task changed since this version")
     _field_options(edit, editing=True)
     for name, help in (
         ("done", "Complete a task"),
@@ -171,6 +273,7 @@ def _simple_commands(sub) -> None:
         ("cancel", "Cancel a task"),
         ("reopen", "Reopen a finished task"),
         ("archive", "Hide an entity without deleting it"),
+        ("unarchive", "Restore a hidden record and keep its status"),
         ("undo", "Restore the previous state of an entity"),
         ("accept", "Accept a proposal (a person's decision)"),
         ("dismiss", "Dismiss a proposal"),
@@ -181,17 +284,28 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name == "done":
-            item.add_argument("--note", help="Closing note")
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "done", "release", "resume"}:
+            item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
+            item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
+        if name in {"done", "release"}:
+            item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
     claim = add("claim", "Take a task so others leave it alone", writes=True)
     claim.add_argument("id")
     claim.add_argument("--minutes", type=int, default=60, help="Claim length (default 60)")
+    take = add("take", "Claim one ready task explicitly delegated to an agent", writes=True)
+    take.add_argument("--minutes", type=int, default=60, help="Claim length (default 60)")
+    take.add_argument("--context", metavar="ID", help="Only take tasks tagged with this context")
+    take.add_argument("--project", metavar="ID", help="Only take an explicitly delegated member of this project")
+    _scope_filter(take, "Only take from this scope")
     note = add("note", "Append a progress note", writes=True)
     note.add_argument("id")
     note.add_argument("text")
     wait = add("wait", "Park a task on someone or something", writes=True)
     wait.add_argument("id")
     wait.add_argument("--on", required=True, metavar="WHO")
+    wait.add_argument("--if-version", type=int, metavar="N", help="Require the reviewed task version")
+    wait.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed task revision")
     wait.add_argument("--until", metavar="D", help="Also hide it until this date")
     defer = add("defer", "Hide a task until a date; the deadline stays", writes=True)
     defer.add_argument("id")
@@ -208,11 +322,32 @@ def _simple_commands(sub) -> None:
     find.add_argument("text", nargs="?")
     find.add_argument("--kind", default="task")
     find.add_argument("--status")
+    find.add_argument("--archived", action="store_true", help="Search archived records only (implies --page)")
+    find.add_argument("--claimed", action="store_true", help="Show my live task claims, including held work")
+    find.add_argument("--page", action="store_true", help="Show compact search hits and a continuation ID")
+    find.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Match one exact source with the other filters")
+    find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
+    find.add_argument("--limit", "-n", type=int, default=50, metavar="N")
+    _scope_filter(find, "Filter by scope (uses compact hits)")
     remember = add("remember", "Keep a durable fact for later sessions", writes=True)
     remember.add_argument("text")
-    policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
-    policy.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
-    policy.add_argument("--clear", action="store_true", help="Let any writer decide again")
+    remember.add_argument("--scope", metavar="NAME", help="Where this preference or fact applies")
+    remember.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Exact source of this fact")
+    policy = sub.add_parser(
+        "policy", help="Show or set who may accept and dismiss proposals",
+        description="Local workspace policy. A change replaces the entire list.",
+        epilog=(
+            "For a guarded change, read with --versioned, then supply --if-version N "
+            "and --operation-id ID with --deciders or --clear. Repeat the exact write "
+            "to recover its original result. Read again to see the current list."
+        ),
+    )
+    policy_change = policy.add_mutually_exclusive_group()
+    policy_change.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
+    policy_change.add_argument("--clear", action="store_true", help="Let any writer decide again")
+    policy.add_argument("--versioned", action="store_true", help="Read the list and version for a guarded change")
+    policy.add_argument("--if-version", type=int, metavar="N", help="Require the version from policy --versioned")
+    policy.add_argument("--operation-id", "--op", metavar="ID", help="Keep this ID and repeat the same write if its result is lost")
     focus = add("focus", "Put a task on the person's short list, in their order", writes=True)
     focus.add_argument("id")
     focus.add_argument("--rank", type=int, help="Position, lowest first (default: last)")
@@ -257,7 +392,8 @@ def _simple_commands(sub) -> None:
     configure.add_argument("--apply", metavar="FILE", help="JSON with stages, types, fields")
     configure.add_argument("--preset", metavar="NAME", help="Apply a preset's configuration")
     action("presets", "Starting configurations and what each sets", writes=False)
-    add("projects", "Projects with their roll-ups and health")
+    projects = add("projects", "Projects with their roll-ups and health")
+    _scope_filter(projects, "Projects belonging to this scope, including all their members in counts")
     plan = add("plan", "One project: by stage, in its order, with roll-ups and health")
     plan.add_argument("project")
     plan.add_argument(
@@ -309,13 +445,17 @@ def _simple_commands(sub) -> None:
     assess.add_argument("--evidence", metavar="TEXT", help="What shows it")
     explore = add("explore", "A goal's conditions: what is met, what is next, where nothing moves")
     explore.add_argument("goal", nargs="?", help="Goal ID (default: every goal)")
+    _scope_filter(explore, "Show conditions and named links only in this scope")
     sub.add_parser("workspaces", help="List the workspaces in this database")
-    sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
+    mcp = sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
+    mcp.add_argument("--read-only", action="store_true", help="Expose only prime and view; open the local database read-only")
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        prog="daymark", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="daymark", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Run daymark alone for a short guide. Use daymark COMMAND --help for one command.",
+        epilog=_QUICK_START,
     )
     from . import __version__
 
@@ -333,7 +473,7 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument(
         "--as",
         dest="actor",
-        default=os.environ.get("DAYMARK_ACTOR", "agent"),
+        default=os.environ.get("DAYMARK_ACTOR"),
         help="Who is acting, for claims and notes (default: $DAYMARK_ACTOR or 'agent')",
     )
     root.add_argument("--tz", help="IANA timezone for dates (default: $DAYMARK_TZ or system)")
@@ -378,9 +518,11 @@ def parser() -> argparse.ArgumentParser:
     export = sub.add_parser("export", help="Export current workspace snapshot to a new JSON file")
     export.add_argument("--output", required=True)
     imp = sub.add_parser(
-        "import", help="Import a validated workspace snapshot; retains identities/history"
+        "import", help="Import a native Daymark JSON workspace snapshot",
+        description="Merge a native workspace snapshot written by daymark export, retaining identities and history. "
+        "For a project CSV from another app, review the rows and capture the tasks you select.",
     )
-    imp.add_argument("--file", required=True)
+    imp.add_argument("--file", required=True, help="Native Daymark workspace JSON")
     imp.add_argument(
         "--operation-id", required=True, help="Stable identifier; reuse only for identical retries"
     )
@@ -427,24 +569,6 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-def _copy_database(source: Path, destination: Path) -> None:
-    """SQLite online backup API includes committed WAL; refuses destination overwrite."""
-    if not source.is_file():
-        raise ValueError("Source database missing")
-    # Validate source before creating the destination.
-    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
-        if reader.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise ValueError("Database integrity check failed")
-        fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(fd)
-        try:
-            with closing(sqlite3.connect(destination)) as writer:
-                reader.backup(writer)
-        except BaseException:
-            destination.unlink(missing_ok=True)
-            raise
-
-
 def _stored_schema(path):
     """The schema marker of an existing Daymark database, read without writing:
     None for a new or empty file, "" for Daymark tables without a marker."""
@@ -463,55 +587,106 @@ def _stored_schema(path):
         return None
 
 
-def _open_store(path):
+def _open_store(path, *, read_only=False, require_existing=False):
     """Open a Store the way every command does: upgrading an older database in place.
     The upgrade is one-way, so the first one is announced on standard error."""
-    from .store import RELEASE, SCHEMA, Store
+    from . import __version__
+    from .store import SCHEMA, Store
 
+    if read_only:
+        return Store(path, read_only=True, require_existing=True)
     before = _stored_schema(path)
-    store = Store(path)
-    if before is not None and before != SCHEMA:
-        print(
-            f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
-            f"(Daymark {RELEASE}); older versions can no longer open it",
-            file=sys.stderr,
-        )
+    if not require_existing and path and path != ":memory:":
+        # SQLite derives WAL and shared-memory permissions from the main file.
+        # Set the mode before the first connection creates those companions.
+        try:
+            fd = os.open(Path(path).resolve(), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    store = Store(path, require_existing=require_existing)
+    try:
+        if before is not None and before != SCHEMA:
+            print(
+                f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
+                f"(Daymark {__version__}); use a pre-upgrade backup to return to an older schema",
+                file=sys.stderr,
+            )
+    except BaseException:
+        store.close()
+        raise
     return store
 
 
 def _init(args) -> int:
+    from .models import DomainError
+
+    if args.url:
+        raise DomainError("invalid", "init creates a local database",
+                          ["To inspect the service, use daymark --url URL prime."])
     explicit = args.db or os.environ.get("DAYMARK_DB")
     target = (
         Path(explicit)
         if explicit
         else (Path.cwd() / ".daymark" if args.here else data_home()) / "daymark.sqlite3"
     )
+    if args.here and target.resolve() != (Path.cwd() / ".daymark/daymark.sqlite3").resolve():
+        raise DomainError("invalid", "This folder and the explicit database select different locations",
+                          ["For init --here, omit --db and unset DAYMARK_DB."])
     existed = target.is_file()
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.here:
+        # The local database can contain private work in an otherwise public checkout.
+        try:
+            with (target.parent / ".gitignore").open("x", encoding="utf-8") as ignore:
+                ignore.write("/daymark.sqlite3\n/daymark.sqlite3-*\n")
+        except FileExistsError:
+            pass
     _open_store(str(target)).close()
-    os.chmod(target, 0o600)
     print(f"{'Using existing' if existed else 'Created'} {target}")
-    print("Next: `daymark prime` for the workflow; `daymark onboard` for an AGENTS.md snippet.")
+    visible = resolve_db(None)
+    command = "daymark prime" if visible and Path(visible).resolve() == target.resolve() else (
+        f"daymark --db {shlex.quote(str(target.resolve()))} prime"
+    )
+    print(f"Next: `{command}` for this database; `daymark onboard` for project instructions.")
     return 0
 
 
 def _onboard(args) -> int:
     from .render import ONBOARD
 
-    if not args.write:
-        print(ONBOARD, end="")
+    if args.mcp_config:
+        from .onboarding import mcp_config
+
+        print(mcp_config(
+            args.mcp_config, database=None if args.url else resolve_db(args.db),
+            workspace=args.workspace, actor=args.actor, timezone=args.tz,
+            url=args.url, token_env=args.token_env,
+        ))
         return 0
-    path = Path(args.write)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    begin, end = "<!-- daymark:begin -->", "<!-- daymark:end -->"
-    if begin in text and end in text:
-        text = text[: text.index(begin)] + ONBOARD.rstrip("\n") + text[text.index(end) + len(end) :]
+    if args.write or args.check:
+        from .onboarding import maintain
+
+        return maintain(Path(args.write or args.check), check=args.check is not None)
+    if args.skill:
+        from .onboarding import skill_text
+
+        print(skill_text(), end="")
     else:
-        text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + ONBOARD
-    path.write_text(text, encoding="utf-8")
-    print(f"Wrote the Daymark section to {path}")
+        print(ONBOARD, end="")
     return 0
+
+
+def _simple_write(args):
+    """The parser offers --op on write verbs. Profiles and project config also allow reads."""
+    if args.command == "profile":
+        operations = (args.name, args.save_as, args.remove, args.undo, args.from_file)
+        return bool(args.set or args.drop) or any(value is not None for value in operations)
+    if args.command == "project" and args.action == "config":
+        return bool(args.apply or args.preset)
+    return hasattr(args, "op")
 
 
 def _simple(args, engine) -> int:
@@ -523,36 +698,44 @@ def _simple(args, engine) -> int:
     tasks = Tasks(engine, args.workspace, actor=args.actor, timezone=args.tz)
     now, name, as_json = tasks.now(), args.command, getattr(args, "json", False)
     op = getattr(args, "op", None)
+    if args.url and name != "profile" and _simple_write(args):
+        op = args.retry_op = tasks._op_id(op)
 
     def out(value, text):
         _print(value) if as_json else print(text)
 
     def entity(item):
-        out(render.compact(item), render.line(item, now))
+        out(render.compact(item), render.line(item, now, timezone=tasks.timezone))
 
-    from .models import DomainError
-
-    scope = "" if getattr(args, "unscoped", False) else getattr(args, "scope", None)
+    scope = getattr(args, "scope", None)
 
     if name == "prime":
-        if as_json:
+        context = render.session_context(tasks, database=args.db, url=args.url)
+        if as_json and (args.brief or args.scope is not None):
+            _print(render.brief_session(tasks, context, scope=args.scope))
+        elif as_json:
+            if args.url:
+                context.update(engine.identity() or {})
             _print(
                 {
+                    "context": context,
                     "summary": tasks.summary(),
                     "memories": [m["title"] for m in tasks.memories()],
                     "ready": [render.compact(x) for x in tasks.ready(limit=5)],
                 }
             )
         else:
-            print(
-                render.prime_text(tasks, where=f"{args.db or args.url}, workspace {args.workspace}")
-            )
+            print(render.prime_text(tasks, context=context, brief=args.brief, scope=args.scope))
     elif name in {"advise", "profile", "strategies"}:
         from . import strategies
         from .strategies.profiles import PROFILES
 
-        if name == "strategies":
+        if name == "strategies" and args.strategy is not None:
+            data = tasks.profile_catalog(strategy=args.strategy)
+            out(data, render.strategy_detail(data))
+        elif name == "strategies":
             listed = strategies.available()
+            plugins = strategies.installed_plugins()
             out(
                 {
                     "strategies": [
@@ -562,53 +745,59 @@ def _simple(args, engine) -> int:
                         for s in listed
                     ],
                     "profiles": {k: [x["use"] for x in v["strategies"]] for k, v in PROFILES.items()},
+                    **({"installed_plugins": plugins} if plugins else {}),
                 },
-                render.strategies_text(listed, PROFILES),
+                render.strategies_text(listed, PROFILES, plugins=plugins),
             )  # fmt: skip
         elif name == "profile":
-            current = strategies.stored_profile(tasks)
-            if args.name:
-                if args.name not in PROFILES:
-                    raise DomainError("not_found", "Unknown profile", [", ".join(PROFILES)])
-                current = PROFILES[args.name]
-            if args.name or args.set or args.drop:
-                # Dropping a strategy the profile could not load is how to clear it.
-                gone = set(current.get("skipped") or [])
-                drops = [name for name in args.drop if name not in gone]
-                current = strategies.store_profile(
-                    tasks, strategies.edit_profile(current, args.set, drops)
-                )
-            out(current, render.profile_text(current))
+            _profile(tasks, args, out)
         else:
-            if args.profile and args.profile not in PROFILES:
-                raise DomainError("not_found", "Unknown profile", [", ".join(PROFILES)])
-            chosen = PROFILES[args.profile] if args.profile else strategies.stored_profile(tasks)
-            advice = strategies.advise(tasks, chosen, scope=scope)
+            advice = tasks.advise(
+                profile=args.profile, settings=args.set, drops=args.drop, scope=scope, context=args.context
+            )
             lean = advice.to_dict()
             lean["picks"] = [render.compact(x) for x in advice.picks]
-            out({"profile": chosen["name"], **lean}, render.advice_text(advice, now))
+            session = render.session_context(tasks, database=args.db, url=args.url)
+            out(lean, render.advice_text(advice, now, session=session))
     elif name == "ready":
-        items = tasks.ready(limit=args.limit, move=args.move, scope=scope)
-        out(
-            [{**render.compact(x), "why": render.why(x, now)} for x in items],
-            render.listing(items, now, "Nothing is ready. Try `daymark agenda`."),
-        )
-    elif name == "agenda":
-        view = tasks.agenda(args.days, scope=scope)
-        lean = {
-            key: (
-                {day: [render.compact(x) for x in items] for day, items in value.items()}
-                if key == "upcoming"
-                else [render.compact(x) for x in value]
-                if isinstance(value, list)
-                else value
+        filters = {"limit": args.limit, "move": args.move, "scope": scope, "context": args.context, "project": args.project}
+        empty = "Nothing is ready" + (" for these filters" if scope is not None or args.move or args.context or args.project else "")
+        empty += ". Repeat with --explain to see what is held."
+        if args.explain:
+            view = tasks.explain_ready(**filters)
+            out(view, render.ready_explanation(view))
+        elif args.brief:
+            rows = tasks.ready_summary(**filters)
+            out([render.compact(row) for row in rows], render.ready_previews(rows) or empty)
+        else:
+            items = tasks.ready(**filters)
+            out(
+                [{**render.compact(x), "why": render.why(x, now)} for x in items],
+                render.listing(items, now, empty),
             )
-            for key, value in view.items()
-        }
-        out(lean, render.agenda_text(view, now))
+    elif name == "agenda":
+        view = tasks.agenda(args.days, scope=scope, context=args.context, deadlines=args.deadlines, local_day=args.local_day)
+        out(render.agenda_data(view, now), render.agenda_text(view, now))
+    elif name == "activity":
+        page = tasks.activity(after=args.after, limit=args.limit)
+        session = render.session_context(tasks, database=args.db, url=args.url)
+        out(page, render.activity_text(page, session=session, limit=args.limit))
+    elif name == "show" and args.forecast:
+        forecast = tasks.recurrence_forecast(args.id, action=args.forecast, source=args.source)
+        out(forecast, render.recurrence_forecast_text(forecast))
+    elif name == "show" and args.since_version is not None:
+        comparison = tasks.changes_since(args.id, version=args.since_version, source=args.source)
+        out(comparison, render.comparison_text(comparison))
+    elif name == "show" and (args.brief or args.before_note is not None):
+        brief = tasks.brief(args.id, before_note=args.before_note, source=args.source)
+        session = render.session_context(tasks, database=args.db, url=args.url)
+        out(brief, render.brief_text(brief, timezone=tasks.timezone, session=session, source=args.source))
+    elif name == "show" and args.note is not None:
+        note = tasks.read_note(args.id, args.note, source=args.source)
+        out(note, render.note_text(note))
     elif name == "show":
-        ctx = tasks.show(args.id)
-        out({**ctx, "entity": render.compact(ctx["entity"])}, render.show_text(ctx, now))
+        ctx = tasks.show(args.id, source=args.source)
+        out(render.detail_data(ctx), render.show_text(ctx, now))
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",
@@ -626,7 +815,8 @@ def _simple(args, engine) -> int:
             if args.managed_by is not None:
                 fields["managed_by"] = args.managed_by
             item = tasks.edit(
-                args.id, every=args.every, after_completion=args.after_completion, op=op, **fields
+                args.id, every=args.every, after_completion=args.after_completion,
+                expected_version=args.if_version, review_token=args.if_review, op=op, **fields
             )
         else:
             item = tasks.add(
@@ -642,10 +832,11 @@ def _simple(args, engine) -> int:
                 **fields,
             )
         entity(item)
-    elif name == "done":
-        entity(tasks.done(args.id, note=args.note, op=op))
-    elif name in {"skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "release",
-                  "resume", "forget", "unfocus"}:  # fmt: skip
+    elif name in {"done", "release"}:
+        entity(getattr(tasks, name)(args.id, note=args.note, op=op, expected_version=args.if_version))
+    elif name in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
+        entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
+    elif name in {"skip", "cancel", "reopen", "archive", "unfocus"}:
         entity(getattr(tasks, name)(args.id, op=op))
     elif name == "condition":
         entity(
@@ -657,16 +848,23 @@ def _simple(args, engine) -> int:
     elif name == "assess":
         entity(tasks.assess(args.id, args.state, evidence=args.evidence, op=op))
     elif name == "explore":
-        view = tasks.explore(args.goal)
+        view = tasks.explore(args.goal, scope=scope)
         out(view, render.explore_text(view))
     elif name == "focus":
         entity(tasks.focus(args.id, args.rank, op=op))
+    elif name == "take":
+        selected = tasks.take(scope=scope, context=args.context, project=args.project, minutes=args.minutes, op=op)
+        if selected is None:
+            out(None, render.EMPTY_TAKE)
+        else:
+            entity(selected)
     elif name == "claim":
         entity(tasks.claim(args.id, minutes=args.minutes, op=op))
     elif name == "note":
         entity(tasks.note(args.id, args.text, op=op))
     elif name == "wait":
-        entity(tasks.wait(args.id, args.on, until=args.until, op=op))
+        entity(tasks.wait(args.id, args.on, until=args.until, op=op,
+                          expected_version=args.if_version, review_token=args.if_review))
     elif name == "defer":
         entity(tasks.defer(args.id, args.until, op=op))
     elif name in {"block", "unblock"}:
@@ -674,10 +872,23 @@ def _simple(args, engine) -> int:
     elif name == "remind":
         entity(tasks.remind(args.id, args.when, recipient=args.to, op=op))
     elif name == "find":
-        items = tasks.find(args.text, kind=args.kind, status=args.status)
-        out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
+        if not 1 <= args.limit <= 1000:
+            from .models import DomainError
+
+            raise DomainError("invalid", "Limit must be between 1 and 1000")
+        if args.archived or args.claimed or args.page or args.after is not None or scope is not None or args.source is not None:
+            page = tasks.search(args.text, kind=args.kind, status=args.status,
+                                scope=scope, after=args.after, limit=args.limit, claimed=args.claimed,
+                                archived=args.archived, source=args.source)
+            out(page, render.search_text(page))
+        else:
+            items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit, brief=not as_json)
+            if as_json:
+                _print([render.compact(x) for x in items])
+            else:
+                print(render.listing(items, now, "No matches."))
     elif name == "remember":
-        entity(tasks.remember(args.text, op=op))
+        entity(tasks.remember(args.text, scope=args.scope, source=args.source, op=op))
     elif name == "project":
         _project(args, tasks, out, entity, op)
     elif name == "goal":
@@ -707,7 +918,7 @@ def _simple(args, engine) -> int:
         entity(tasks.move(args.id, stage=args.stage, after=args.after, before=args.before,
                           first=args.first, last=args.last, op=op))  # fmt: skip
     elif name == "projects":
-        view = tasks.projects()
+        view = tasks.projects(scope=scope)
         out(view, render.projects_text(view))
     elif name == "plan":
         view = tasks.plan(args.project)
@@ -732,8 +943,48 @@ def _simple(args, engine) -> int:
     elif name == "mcp":
         from .mcp import serve
 
-        serve(tasks)
+        serve(tasks, context=render.session_context(tasks, database=args.db, url=args.url), read_only=args.read_only)
     return 0
+
+
+def _profile(tasks, args, out) -> None:
+    from . import render
+    from .models import DomainError
+
+    modifying = bool(args.name or args.set or args.drop or args.from_file)
+    if args.saved is not None:
+        if modifying or args.if_version is not None or args.op is not None:
+            raise DomainError("invalid", "--saved reads profiles. Use --save-as to edit one.")
+        result = tasks.saved_profiles(args.saved or None)
+        out(result, render.saved_profiles_text(result))
+    elif args.remove is not None:
+        if modifying or args.if_version is None:
+            raise DomainError("invalid", "Use --remove NAME --if-version N")
+        result = tasks.remove_profile(args.remove, expected_version=args.if_version, op=args.op)
+        out(result, f"Removed saved profile {args.remove}")
+    elif args.save_as is not None:
+        base = args.name
+        if args.from_file:
+            if args.name:
+                raise DomainError("invalid", "Choose a profile name or --from-file as the base")
+            try:
+                payload = _json_file(args.from_file)
+            except (OSError, ValueError) as exc:
+                raise DomainError("invalid", "Supply a readable JSON profile file") from exc
+            if not isinstance(payload, dict):
+                raise DomainError("invalid", "A profile file must contain a JSON object")
+            base = payload
+        result = tasks.save_profile(
+            args.save_as, profile=base, settings=args.set, drops=args.drop,
+            expected_version=0 if args.if_version is None else args.if_version, op=args.op,
+        )
+        out(result, render.saved_profiles_text(result))
+    else:
+        if args.from_file:
+            raise DomainError("invalid", "--from-file requires --save-as NAME")
+        result = tasks.profile(args.name, settings=args.set, drops=args.drop, undo=args.undo,
+                               expected_version=args.if_version, op=args.op)
+        out(result, render.profile_text(result, database=args.db))
 
 
 def _project(args, tasks, out, entity, op) -> None:
@@ -773,11 +1024,21 @@ def _project(args, tasks, out, entity, op) -> None:
     out(config, json.dumps(config, indent=2, sort_keys=True))
 
 
-def _fail(args, code: str, message: str, details=()) -> int:
+def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
+    if code == "conflict" and args.command in {"add", "propose", "remember"} and getattr(args, "source", None):
+        details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
+    if code == "conflict" and args.command in {"edit", "accept", "dismiss", "undo"} and getattr(args, "if_version", None):
+        details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]
+    if retry_op is not None:
+        hint = f"Write outcome uncertain. Repeat the same command and flags with --op {shlex.quote(retry_op)}"
+        details = [*details, hint]
     if getattr(args, "json", False):
+        error = {"code": code, "message": message, "details": list(details)}
+        if retry_op is not None:
+            error["operation_id"] = retry_op
         print(
-            json.dumps({"error": {"code": code, "message": message, "details": list(details)}}),
+            json.dumps({"error": error}),
             file=sys.stderr,
         )
     else:
@@ -789,18 +1050,73 @@ def _fail(args, code: str, message: str, details=()) -> int:
     )
 
 
+def _policy(args):
+    from .errors import DomainError
+    from .store import Store
+
+    if args.url:
+        raise DomainError("invalid", "Policy requires local database access")
+    writing = args.clear or args.deciders is not None
+    guarded = args.if_version is not None or args.operation_id is not None
+    if args.versioned and (writing or guarded):
+        raise DomainError("invalid", "Use --versioned to read, then --if-version N --operation-id ID to write")
+    if guarded and (not writing or args.if_version is None or args.operation_id is None):
+        raise DomainError("invalid", "Pair --if-version N with --operation-id ID and --deciders or --clear")
+    names = []
+    if writing:
+        names = [name.strip() for name in (args.deciders or "").split(",") if name.strip()]
+        if not names and not args.clear:
+            raise DomainError("invalid", "Supply at least one decision maker or use policy --clear")
+        Store.validate_policy_change(args.workspace, names, args.if_version, args.operation_id)
+
+    path = resolve_db(args.db) or "daymark.sqlite3"
+    with closing(_open_store(path, require_existing=not writing and path != ":memory:")) as engine:
+        if writing:
+            result = engine.set_policy(
+                args.workspace, deciders=names, expected_version=args.if_version, operation_id=args.operation_id
+            )
+        elif args.versioned:
+            result = engine.policy_state(args.workspace)
+        else:
+            result = engine.policy(args.workspace)
+    _print(result)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        print(_QUICK_START)
+        return 0
     args = parser().parse_args(argv)
-    from .models import DomainError
+    from .errors import ClientError, DomainError
 
     try:
+        if args.command == "import":
+            try:
+                snapshot = _json_file(args.file)
+            except OSError:
+                raise DomainError("invalid", "Cannot read the snapshot file. Check its path and permissions.") from None
+            except ValueError:
+                advice = ["For a third-party CSV, review the source rows before capturing selected tasks."]
+                raise DomainError(
+                    "invalid", "Supply a readable native Daymark JSON snapshot from daymark export.",
+                    advice if args.file.lower().endswith(".csv") else [],
+                ) from None
+            from .store import validate_snapshot_envelope
+
+            validate_snapshot_envelope(snapshot, None if args.url else args.workspace)
+        if args.command == "where":
+            return _where(args)
         if args.command == "init":
             return _init(args)
         if args.command == "onboard":
             return _onboard(args)
+        if args.command == "policy":
+            return _policy(args)
         if not args.url:
             found = resolve_db(args.db)
-            if found is None and args.command in SIMPLE:
+            if found is None and (args.command in SIMPLE or args.command == "workspaces"):
                 return _fail(
                     args,
                     "no_database",
@@ -808,6 +1124,8 @@ def main(argv: list[str] | None = None) -> int:
                     ["Run `daymark init` (per-user) or `daymark init --here` (this folder)."],
                 )
             args.db = found or "daymark.sqlite3"
+        if args.command == "show" and args.forecast is not None:
+            args.read_only = True
         if args.command in {"backup", "restore"}:
             if args.url:
                 raise ValueError("Backup commands require a local database")
@@ -816,7 +1134,13 @@ def main(argv: list[str] | None = None) -> int:
                 if args.command == "backup"
                 else (Path(args.file), Path(args.db))
             )
-            _copy_database(source, destination)
+            try:
+                _copy_database(source, destination)
+            except FileExistsError:
+                option = "--file" if args.command == "backup" else "--db"
+                return _fail(
+                    args, "destination_exists", f"Destination already exists. Choose an unused path for {option}."
+                )
             _print({"status": "ok"})
             return 0
         if args.command == "serve":
@@ -824,10 +1148,11 @@ def main(argv: list[str] | None = None) -> int:
 
             from .api import create_app
 
+            auth = _json_file(args.auth_file)
             store = _open_store(args.db)
-            app = create_app(store, _json_file(args.auth_file))
             # Uvicorn access logs include private URL/query values; never enable them here.
             try:
+                app = create_app(store, auth)
                 uvicorn.run(app, host=args.host, port=args.port, access_log=False)
             finally:
                 close = getattr(store, "close", None)
@@ -839,12 +1164,16 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("Worker requires local Store access")
             from .client import Client
 
-            engine = Client(args.url, os.environ.get(args.token_env, ""))
+            engine = Client(args.url, os.environ.get(args.token_env, ""), read_only=getattr(args, "read_only", False))
         else:
-            fresh = args.db != ":memory:" and not Path(args.db).exists()
-            engine = _open_store(args.db)
-            if fresh:
-                os.chmod(args.db, 0o600)  # Task data is private by default.
+            # The first explicit write may create a file. An ordinary workspace
+            # read may upgrade recognized Daymark data, but must never create it.
+            ordinary_read = args.command == "workspaces" or (
+                args.command in SIMPLE and args.command != "mcp" and not _simple_write(args)
+            )
+            inspect_existing = ordinary_read or args.command in {"get", "query", "events", "export", "health"}
+            engine = _open_store(args.db, read_only=getattr(args, "read_only", False),
+                                 require_existing=inspect_existing and args.db != ":memory:")
         try:
             ws = [] if args.url else [args.workspace]
             if args.command == "workspaces":
@@ -852,14 +1181,6 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Workspaces are listed on the local database")
                 _print({"database": args.db, "current": args.workspace,
                         "workspaces": engine.workspaces()})  # fmt: skip
-                return 0
-            if args.command == "policy":
-                if args.url:
-                    raise ValueError("Policy is set on the local database")
-                if args.clear or args.deciders is not None:
-                    names = [] if args.clear else [x.strip() for x in args.deciders.split(",")]
-                    engine.set_policy(args.workspace, deciders=[x for x in names if x])
-                _print(engine.policy(args.workspace))
                 return 0
             if args.command in SIMPLE:
                 return _simple(args, engine)
@@ -884,7 +1205,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.command == "import":
                 result = engine.import_snapshot(
                     *ws,
-                    _json_file(args.file),
+                    snapshot,
                     operation_id=args.operation_id,
                     expected_version=args.expected_version,
                 )
@@ -903,10 +1224,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = engine.health()
             else:
                 result = engine.export(*ws)
-                with open(
-                    args.output, "x", encoding="utf-8", opener=lambda p, f: os.open(p, f, 0o600)
-                ) as handle:
-                    json.dump(result, handle, default=str, sort_keys=True)
+                write_export(Path(args.output), result)
                 return 0
             _print(result)
         finally:
@@ -918,11 +1236,12 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except DomainError as exc:
         return _fail(args, exc.code, str(exc), exc.details)
-    except Exception as exc:  # noqa: BLE001 - prevent private exception text escaping
-        status = getattr(exc, "status_code", None)
-        if type(exc).__name__ == "ClientError" and status in {403, 404, 409, 422}:
-            code = {403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}[status]
-            return _fail(args, code, "The server refused the request")
+    except ClientError as exc:
+        if exc.code == "unauthenticated":
+            return _fail(args, exc.code, "Check the bearer credential configured for this Daymark endpoint.")
+        retry_op = getattr(args, "retry_op", None) if exc.uncertain else None
+        return _fail(args, exc.code, str(exc), [exc.recovery] if exc.recovery else (), retry_op=retry_op)
+    except Exception:  # noqa: BLE001 - prevent private exception text escaping
         # Parsing/Store/network exceptions can contain private paths and payloads.
         print(
             "Daymark command failed; check configuration, payload and expected version.",

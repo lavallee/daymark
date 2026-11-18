@@ -13,3 +13,10 @@ Include the affected version, a minimal synthetic reproduction, expected behavio
 Embedded applications own access control and database-file protection. A supplied SQLite connection participates in application transactions; it does not establish an authorization boundary on its own. Standalone service operators own token provisioning, transport security, filesystem permissions, network exposure, backups, and delivery-provider credentials.
 
 Treat metadata, imported records, and notification payloads as untrusted input. Give delivery sinks only the access they need. Stable delivery keys support deduplication; external side effects cannot be guaranteed exactly once.
+
+
+A workspace's decider list governs explicit proposal decisions. Other task
+writes and native restore use workspace write authority. An integrating
+application that needs approval for every state transition or separate restore
+privileges must define those roles at its authentication boundary.
+[Proposal policy and restore semantics](docs/operations.md#what-the-proposal-policy-enforces)
