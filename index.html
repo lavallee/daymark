@@ -13,26 +13,105 @@
 <style>
 pre { overflow-x: auto; padding: var(--sp-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 footer { margin-block: var(--sp-12); padding-block: var(--sp-6); border-top: 1px solid var(--border); }
+main p a { text-decoration: underline; text-underline-offset: .15em; }
+main pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+details { border-block-end: 1px solid var(--border); padding-block: var(--sp-3); }
+summary { cursor: pointer; font-family: var(--font-ui); font-weight: 600; padding-block: var(--sp-2); }
+summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 nav { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.situations { border: 1px solid var(--border); padding: var(--sp-4); border-radius: var(--radius-sm); }
+.situations legend { font-weight: 600; padding-inline: var(--sp-2); }
+.situations label { display: inline-block; cursor: pointer; padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; }
+.situations input { accent-color: var(--accent); }
+.situation-result { display: none; margin-top: var(--sp-3); }
+#choose-all:checked ~ #result-all, #choose-quick:checked ~ #result-quick, #choose-decide:checked ~ #result-decide { display: block; }
+.situation-result ul { padding-inline-start: 1.25rem; }
+.situation-result li { padding-block: var(--sp-1); }
+.situation-result li span { display: inline-block; padding-inline-start: .5rem; font-size: .88em; }
+@media (max-width: 40rem) { .situations label { width: calc(100% - 2.5rem); } }
 </style>
 </head>
 <body>
-<header class="article-masthead"><a class="article-masthead__name" href="#start">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
+<header class="article-masthead"><a class="article-masthead__name" href="#walkthrough">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
 <main class="article">
-<div class="article-header"><p class="article-kicker">For agents handling a person's projects and life</p><h1>A task system that simplifies the complexities of real life.</h1><p class="article-dek">A passport has a deadline; the trip you mean to book on Friday is only a plan. The filter is changed three months after it was last changed. The leak waits on the plumber. Daymark keeps those differences in the record, so an agent can ask what can be done now and trust the answer.</p><nav aria-label="Project links"><a href="https://github.com/lavallee/daymark">Source and quickstart</a><a href="https://github.com/lavallee/daymark/blob/main/docs/agents.md">Agent guide</a><a href="https://github.com/lavallee/daymark/blob/main/docs/work-and-life.md">Work and life</a><a href="llms.txt">llms.txt</a></nav></div>
-<section aria-labelledby="start"><h2 id="start">Start in a minute</h2><p>Requires Python 3.11 or newer. One SQLite file; no cloud, model or account.</p><pre><code>uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"
-daymark init
-daymark add "Renew passport" --due 2030-05-03 -p 1
-daymark add "Book flights" --plan fri --id flights
-daymark add "Book hotel" --after flights
-daymark add "Water the plants" --every "3 days" --after-completion
-daymark ready</code></pre><p><code>daymark prime</code> gives an agent the working rules, the commands and the current state in one call. <code>daymark mcp</code> serves the same verbs to an agent harness over MCP with no extra dependency.</p></section>
+<div class="article-header"><h1>What can we do now?</h1><p class="article-dek">Daymark keeps a person's commitments across agent sessions. A deadline, a day you hope to work, and an idea awaiting your decision each get their own place.</p><nav aria-label="Project links"><a href="#walkthrough">Try the walkthrough</a><a href="#situation">Try a short afternoon list</a><a href="#start">Install Daymark</a><a href="#connect">Connect an assistant</a><a href="https://github.com/lavallee/daymark">Source</a><a href="https://github.com/lavallee/daymark/blob/v0.6.0/docs/agents.md">0.6.0 agent guide</a><a href="llms.txt">llms.txt</a></nav></div>
+<!-- daymark:walkthrough -->
+<section aria-labelledby="walkthrough"><h2 id="walkthrough">Plan an event</h2>
+<p>It is May 1. The venue needs a deposit by May 8. The invitation needs a draft and an approval. Someone has suggested a poster. Explore the same workspace from four points of view.</p>
+<details name="event-example" open>
+<summary>What can the agent do?</summary>
+<p>The draft is planned for tomorrow. The agent can start it today.</p>
+<pre><code>$ daymark ready --move agent
+draft  Draft invitation  [plan 2030-05-02; move:agent]</code></pre></details>
+<details name="event-example">
+<summary>What needs the person?</summary>
+<p>The deposit has a hard cutoff. Approval will appear when the draft is complete.</p>
+<pre><code>$ daymark ready --move person
+deposit  Pay venue deposit  [due 2030-05-08; move:person]</code></pre></details>
+<details name="event-example">
+<summary>Where did the poster idea go?</summary>
+<p>The agenda keeps the suggestion visible until the person decides.</p>
+<pre><code>$ daymark agenda
+2030-05-02
+  draft  Draft invitation  [plan 2030-05-02; move:agent]
+2030-05-08
+  deposit  Pay venue deposit  [due 2030-05-08; move:person]
+PROPOSED, awaiting a decision (1)
+  poster  Design a poster  [proposed]
+1 more later or undated; see `daymark ready`.</code></pre></details>
+<details name="event-example">
+<summary>What changes when the draft is done?</summary>
+<p>Completing the draft releases the approval. The person can review it now.</p>
+<pre><code>$ daymark done draft --note &quot;Draft is in the event folder.&quot;
+$ daymark ready --move person
+deposit  Pay venue deposit  [due 2030-05-08; move:person]
+approve  Approve invitation  [move:person; after draft]</code></pre></details>
+</section>
+<section aria-labelledby="situation"><h2 id="situation">What fits this afternoon?</h2>
+<p>You have print files due today, a cover to approve, and a room list to check. An agent can answer each request from the same three commitments.</p>
+<fieldset class="situations"><legend>Choose what to ask your agent</legend>
+<input type="radio" name="situation" id="choose-all" aria-controls="result-all" checked><label for="choose-all">Everything ready</label>
+<input type="radio" name="situation" id="choose-quick" aria-controls="result-quick"><label for="choose-quick">I have ten minutes</label>
+<input type="radio" name="situation" id="choose-decide" aria-controls="result-decide"><label for="choose-decide">I can make a decision</label>
+<div class="situation-result" id="result-all" role="region" aria-label="Everything ready"><ul>
+<li>Send the print files <span>45 min · Due today</span></li>
+<li>Approve the cover <span>5 min</span></li>
+<li>Check the room list <span>10 min</span></li>
+</ul>
+<details><summary>See the command</summary><pre><code>daymark ready</code></pre></details></div>
+<div class="situation-result" id="result-quick" role="region" aria-label="I have ten minutes"><ul>
+<li>Approve the cover <span>5 min</span></li>
+<li>Check the room list <span>10 min</span></li>
+</ul>
+<p>2 tasks have individual estimates of 10 minutes or less. 1 task needs more time. </p>
+<p>One omitted task has a hard deadline today or earlier. Send the print files</p>
+<details><summary>See the command</summary><pre><code>daymark advise --profile plain --set time-fit.minutes=10</code></pre></details></div>
+<div class="situation-result" id="result-decide" role="region" aria-label="I can make a decision"><ul>
+<li>Approve the cover <span>5 min</span></li>
+</ul>
+<details><summary>See the command</summary><pre><code>daymark ready --move answer</code></pre></details></div>
+</fieldset>
+<p>These choices apply to this answer. If the person asks to keep a routine, the agent can save it for a later session.</p>
+</section>
+<!-- /daymark:walkthrough -->
+<section aria-labelledby="start"><h2 id="start">Try it in an empty folder</h2><p>Install the CLI with uv and Python 3.11 or newer. The example stores its tasks in a SQLite file in the current folder.</p><pre><code>uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.6.0"
+daymark init --here
+daymark add "Draft invitation" --id draft --plan tomorrow --move agent
+daymark add "Approve invitation" --id approve --after draft --move person
+daymark ready --move agent</code></pre><p><code>daymark prime</code> gives an agent the working rules, the commands and the current state in one call. <code>daymark mcp</code> serves the same verbs to an agent harness over MCP with no extra dependency.</p></section>
+<section aria-labelledby="connect"><h2 id="connect">Connect your assistant</h2>
+<p>Initialize a project database. Print the read-only configuration for the editor you use.</p>
+<pre><code>daymark init --here
+daymark --as reviewer onboard --mcp-config claude
+daymark --as planner onboard --mcp-config codex</code></pre>
+<p>Merge the matching entry into your editor configuration and reconnect. Ask the assistant to run <code>daymark_prime</code> and tell you which workspace and actor it sees. Two editors on the same machine can use the same file. Agents on different machines can share an authenticated service.</p></section>
 <section aria-labelledby="timing"><h2 id="timing">Four kinds of time</h2><p>A hard deadline, a plan, an earliest start and a soft target mean different things, and only a missed deadline is overdue. Repeats follow a fixed schedule or count from when the work was actually done; skipping a round is not completing it. Dates use a small fixed grammar. Daymark never guesses one.</p></section>
-<section aria-labelledby="ready"><h2 id="ready">One rule for what is ready</h2><p>A task is ready when it is open, its start has arrived, what it depends on is finished, and nobody else has claimed it. Claims lapse on their own, so a crashed session cannot hold work. Notes carry context to the next session, and every change is recorded with who made it.</p></section>
-<section aria-labelledby="consent"><h2 id="consent">Suggestions are not commitments</h2><p>An agent proposes; a person accepts or dismisses. A proposal is never ready work and its reminders stay dormant until it is accepted. A workspace can name who may decide.</p></section>
-<section aria-labelledby="projects"><h2 id="projects">Projects, as plain or as structured as the work needs</h2><p>A project can be a list of tasks and nothing more. When the work calls for it, a project can add stages for a board, a manual order, item types such as epics, milestones that work belongs to, goals, and typed fields of its own. Each piece is optional and none is enforced. One read returns a whole project as a plan, with a change cursor, so an application can show it as a board or a schedule and write changes back.</p></section>
+<section aria-labelledby="ready"><h2 id="ready">One rule for what is ready</h2><p>The ready list shows open, visible tasks whose start has arrived, whose prerequisites are resolved, and whose child tasks have finished. A repeating task also waits for its planned day. A live claim reserves work for its holder until the claim expires. A handoff note tells the next session where to resume.</p></section>
+<section aria-labelledby="consent"><h2 id="consent">Who decides on a suggestion?</h2><p>An agent can record an idea as a proposal. Its reminders wait and it stays off the ready list while someone decides. A workspace can name who may accept or dismiss proposals.</p></section>
+<section aria-labelledby="projects"><h2 id="projects">Projects, as plain or as structured as the work needs</h2><p>Start with a list of tasks. A move might need milestones, costs and packing stages. A release might need epics and points. Each project chooses its own structure. One plan shows its members, their order, and the work holding them up.</p></section>
+<section aria-labelledby="existing-tools"><h2 id="existing-tools">When another tool owns the work</h2><p>The engineering team can keep a fix in Beads while the coordinator keeps the proof deadline in Daymark. An agent checks the ticket and records what its status means for the proof. A source reference lets the next session find the same follow-up.</p></section>
 <section aria-labelledby="embed"><h2 id="embed">Embed it or run it</h2><p>Use the Python library with a caller-owned SQLite connection to keep task changes inside your application's transaction, or run the optional authenticated HTTP service. Operation identities and expected versions make retries safe and stale writes explicit.</p></section>
-<section aria-labelledby="status"><h2 id="status">Status</h2><p>Version 0.5.0. Installed from source or a tagged release; package registry publication is not yet promised. There is no sync between machines. The default reminder worker records outcomes and sends no notifications.</p><p>Read the <a href="https://github.com/lavallee/daymark/blob/main/README.md">quickstart</a>, <a href="https://github.com/lavallee/daymark/blob/main/CHANGELOG.md">changelog</a>, <a href="https://github.com/lavallee/daymark/blob/main/docs/decisions.md">decisions</a>, and <a href="https://github.com/lavallee/daymark/blob/main/SECURITY.md">security policy</a> before integrating.</p></section>
+<section aria-labelledby="status"><h2 id="status">Status</h2><p>The install example and afternoon walkthrough use Daymark 0.6.0. Each local database is independent. To share one workspace across machines, connect to the same authenticated service. The included reminder worker records outcomes locally.</p><p>Read the <a href="https://github.com/lavallee/daymark/blob/main/README.md">quickstart</a>, <a href="https://github.com/lavallee/daymark/blob/main/CHANGELOG.md">changelog</a>, <a href="https://github.com/lavallee/daymark/blob/main/docs/decisions.md">decisions</a>, and <a href="https://github.com/lavallee/daymark/blob/main/SECURITY.md">security policy</a> before integrating.</p></section>
 <footer><p>Daymark is open source under the <a href="https://github.com/lavallee/daymark/blob/main/LICENSE">MIT license</a>.</p></footer>
 </main>
 </body>
