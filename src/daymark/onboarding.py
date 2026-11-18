@@ -28,6 +28,41 @@ def skill_text():
     return (Path(__file__).resolve().parents[2] / "skills/daymark/SKILL.md").read_text(encoding="utf-8")
 
 
+_EDITOR_PROBE = """\
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.find_spec("daymark")
+if not spec or not spec.origin or not os.path.samefile(spec.origin, sys.argv[1]):
+    sys.exit(3)
+from daymark import Store, Tasks, mcp
+if sys.argv[2] == "remote":
+    import httpx
+"""
+
+
+def _check_editor_python(command, env, *, remote):
+    # Import the same MCP stack in the environment that the editor will have.
+    # A checkout or some of its dependencies may only be on the shell's PYTHONPATH.
+    args = [
+        command, "-B", "-E", "-P", "-c", _EDITOR_PROBE,
+        str(Path(__file__).with_name("__init__.py")), "remote" if remote else "local",
+    ]
+    try:
+        check = subprocess.run(args, check=False, capture_output=True, timeout=10,
+                               env={**os.environ, **env})
+    except (OSError, subprocess.TimeoutExpired):
+        raise DomainError("invalid", "The editor's Python interpreter could not be started") from None
+    if check.returncode == 3:
+        raise DomainError("invalid", "This interpreter cannot locate the same Daymark installation from an editor",
+                          ["Install the checkout into a virtual environment, then use its daymark command."])
+    if check.returncode:
+        package = "daymark-core[client]" if remote else "daymark-core"
+        raise DomainError("invalid", "The editor's Python interpreter could not load the MCP dependencies",
+                          [f"Install {package} with its dependencies in the environment running daymark."])
+
+
 def mcp_config(host, *, database, workspace, actor, timezone, url, token_env):
     """Print-ready, read-only stdio configuration for the active installation."""
     from .tasks import local_timezone
@@ -53,9 +88,13 @@ def mcp_config(host, *, database, workspace, actor, timezone, url, token_env):
             raise DomainError("invalid", "Use the environment variable name holding the service credential")
         args.extend([f"--url={url}", f"--token-env={token_env}"])
     else:
-        if not database or database == ":memory:" or not Path(database).is_file():
+        from .store import Store
+
+        if not database or database == ":memory:":
             raise DomainError("no_database", "A read-only MCP launch needs an existing database file",
                               ["Check daymark where or initialize a new workspace with daymark init --here."])
+        # Use the editor's own read-only open rules, including schema compatibility.
+        Store(database, read_only=True, require_existing=True).close()
         args.extend([f"--db={Path(database).absolute()}", f"--workspace={workspace}",
                      f"--as={'agent' if actor is None else actor}"])
     args.extend(["mcp", "--read-only"])
@@ -66,19 +105,7 @@ def mcp_config(host, *, database, workspace, actor, timezone, url, token_env):
         env["PYTHONUSERBASE"] = str(Path(site.getuserbase()).absolute())
     if url and token_env in env:
         raise DomainError("invalid", "Choose a separate environment variable for the service credential")
-    # A bare PYTHONPATH checkout is available to this shell only. Verify the
-    # launch interpreter can actually locate this installation without it.
-    probe = (
-        "import importlib.util, os, sys; spec = importlib.util.find_spec('daymark'); "
-        "sys.exit(0 if spec and spec.origin and os.path.samefile(spec.origin, sys.argv[1]) else 1)"
-    )
-    check = subprocess.run(
-        [command, "-B", "-E", "-P", "-c", probe, str(Path(__file__).with_name("__init__.py"))],
-        check=False, capture_output=True, timeout=10, env={**os.environ, **env},
-    )
-    if check.returncode:
-        raise DomainError("invalid", "This interpreter cannot locate the same Daymark installation from an editor",
-                          ["Install the checkout into a virtual environment, then print the configuration using its daymark command."])
+    _check_editor_python(command, env, remote=bool(url))
     if host == "claude":
         if any("${" in value for value in (command, *args, *env.values())):
             raise DomainError("invalid", "Claude Code expands variable references in launch arguments",
@@ -94,12 +121,13 @@ def mcp_config(host, *, database, workspace, actor, timezone, url, token_env):
     if url:
         fields.append(("env_vars", [token_env]))
     lines = ["[mcp_servers.daymark]"]
-    for key, value in fields:
-        encoded = json.dumps(value, ensure_ascii=False).replace(chr(127), "\\u007f")
-        lines.append(f"{key} = {encoded}")
     if env:
-        lines.append("[mcp_servers.daymark.env]")
-        for key, value in env.items():
+        fields.append((None, "[mcp_servers.daymark.env]"))
+        fields.extend(env.items())
+    for key, value in fields:
+        if key is None:
+            lines.append(value)
+        else:
             encoded = json.dumps(value, ensure_ascii=False).replace(chr(127), "\\u007f")
             lines.append(f"{key} = {encoded}")
     return "\n".join(lines)

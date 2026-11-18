@@ -185,6 +185,24 @@ Stated plainly, so it is paid down on purpose:
    meet.
 5. **Engine size.** Storage and transition rules still share a large module. Read projections, project rules and reminder scheduling already live in smaller modules. New boundaries should make an invariant easier to review and exercise.
 
+## Next product question
+
+Can a person return to an interrupted project and choose their next move
+without reconstructing the work for a new agent? The test starts with that
+person's usual routine and a project they already care about. At two later
+returns, record what they had to repeat, which commitments the assistant
+missed, and whether the offered next step helped. The person can prefer a
+short list on one day and a full review on the next.
+
+Daymark's synthetic trials can verify that the agent preserved a deadline,
+reported who owes a reply and kept a temporary preference out of shared
+settings. Only the person can say whether the return was easier. If the
+trial exposes a gap, first locate it in the task facts, the selected
+strategy, or the host's handling of the person's instructions. A meeting
+overrunning is a change of context. One request for a shorter answer gives
+the assistant enough evidence to change this answer.
+[Field trial worksheet](research/trying-daymark.md) · [Reproducible agent journeys](research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
+
 ## Roadmap
 
 Breaking changes are acceptable while there are few clients; each still ships

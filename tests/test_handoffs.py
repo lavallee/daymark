@@ -204,3 +204,68 @@ def test_legacy_resume_from_closed_state_replays_without_restarting_it_again(wor
     head = outgoing.engine.head("default")
     assert outgoing.resume("cover", op="historical") == stored
     assert outgoing.get("cover") == current and outgoing.engine.head("default") == head
+
+
+@pytest.mark.parametrize("guard", ["expected_version", "review_token"])
+@pytest.mark.parametrize("requested", [{"action": "resume"}, {"action": "wait", "on": "printer"}])
+def test_delayed_printer_reply_preserves_the_new_wait_and_reminder(workers, guard, requested):
+    outgoing, incoming = workers
+    outgoing.add("Collect proof", id="proof")
+    outgoing.add("Review desk", kind="person", id="desk")
+    outgoing.wait("proof", "printer")
+    review = outgoing.show("proof")
+    condition = {guard: review["review_token"] if guard == "review_token" else 2}
+    incoming.wait("proof", "editor", until="2099-07-03")
+    reminder = incoming.remind("proof", "2099-07-05 09:00", recipient="desk")
+    head = outgoing.engine.head("default")
+    current = incoming.get("proof")
+    with pytest.raises(DomainError) as stale:
+        call(outgoing, "daymark_act", {"id": "proof", "op": "reply", **requested, **condition})
+    assert stale.value.code == "conflict"
+    assert incoming.get("proof") == current and incoming.get(reminder["id"]) == reminder
+    assert outgoing.engine.head("default") == head and outgoing.engine.receipt("default", "reply") is None
+
+
+def test_guarded_dated_wait_and_resume_replay_exact_results_across_clocks(workers):
+    first, _ = workers
+    earlier = Tasks(first.engine, now="2031-05-03T12:00:00Z", timezone="UTC")
+    later = Tasks(first.engine, now="2031-05-10T12:00:00Z", timezone="UTC")
+    earlier.add("Collect proof", id="proof")
+    wait = {
+        "action": "wait", "id": "proof", "op": "park", "on": "printer", "until": "tomorrow",
+        "expected_version": 1, "review_token": earlier.brief("proof")["review_token"],
+    }
+    parked = call(earlier, "daymark_act", wait)
+    assert earlier.get("proof")["earliest_start"]["date"] == "2031-05-04"
+    resume = {
+        "action": "resume", "id": "proof", "op": "printer-replied", "expected_version": 2,
+        "review_token": earlier.brief("proof")["review_token"],
+    }
+    reopened = call(earlier, "daymark_act", resume)
+    assert earlier.get("proof")["earliest_start"] is None
+    latest = later.wait("proof", "editor")
+    assert call(later, "daymark_act", wait) == parked
+    assert call(later, "daymark_act", resume) == reopened
+    assert later.get("proof") == latest and first.engine.head("default") == 4
+    for changes in ({"until": "2031-05-12"}, {"expected_version": 2}, {"review_token": "0" * 32}):
+        with pytest.raises(DomainError):
+            call(later, "daymark_act", {**wait, **changes})
+    assert first.engine.head("default") == 4
+
+
+def test_cli_uses_original_review_for_wait_and_resume(tmp_path, capsys):
+    db = tmp_path / "proof.db"
+    base = ["--db", str(db), "--workspace", "lab", "--as", "worker"]
+    store = Store(db)
+    try:
+        work = Tasks(store, "lab")
+        work.add("Collect proof", id="proof")
+        token = work.brief("proof")["review_token"]
+        assert main([*base, "wait", "proof", "--on", "printer", "--if-version", "1", "--if-review", token]) == 0
+        capsys.readouterr()
+        reviewed = work.brief("proof")["review_token"]
+        work.wait("proof", "editor")
+        assert main([*base, "resume", "proof", "--if-version", "2", "--if-review", reviewed]) == 4
+        assert work.get("proof")["waiting_on"] == "editor"
+    finally:
+        store.close()

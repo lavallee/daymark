@@ -185,6 +185,12 @@ on completed, cancelled or archived work returns a conflict. Check the
 current handoff before restarting work. Use `unarchive` to restore visibility
 or `reopen` to explicitly restart a finished task.
 
+When acting on a reply from an earlier session, carry the version and token
+from that session’s `show ID --brief` into `resume ID --if-version N --if-review TOKEN`.
+The same flags work on `wait`. If another person changed who owes a reply,
+Daymark leaves the newer wait in place. Compare it with the incoming reply
+before deciding whether it applies.
+
 ## Writing
 
 ```sh

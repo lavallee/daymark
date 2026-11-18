@@ -2,8 +2,10 @@
 
 import json
 import os
+import sqlite3
 import subprocess
 import tomllib
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -84,3 +86,17 @@ def test_setup_refuses_to_print_credentials_or_malformed_endpoint(url, capsys):
 def test_setup_missing_database_leaves_directory_empty(tmp_path, capsys):
     assert main(["--db", str(tmp_path / "absent"), "onboard", "--mcp-config", "claude"]) == 6
     assert not capsys.readouterr().out and list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("fixture, status", [(None, 6), ("daymark-0.4.0.sql", 4)])
+def test_setup_requires_a_database_the_read_only_launch_can_open(tmp_path, capsys, fixture, status):
+    db = tmp_path / "old-or-unrelated.sqlite3"
+    with closing(sqlite3.connect(db)) as conn:
+        if fixture:
+            conn.executescript((Path(__file__).parent / "fixtures" / fixture).read_text())
+        else:
+            conn.execute("CREATE TABLE separate_project(id)")
+    before = db.read_bytes()
+    assert main(["--db", str(db), "onboard", "--mcp-config", "codex"]) == status
+    assert capsys.readouterr().out == ""
+    assert db.read_bytes() == before

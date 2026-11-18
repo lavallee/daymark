@@ -70,9 +70,11 @@ the project directory in this shell for the following steps.
    only for a trusted project. Review and merge the entry into the editor's existing
    configuration. For two agents using the same editor, print the appropriate
    format twice with distinct actor names. The commands print configuration
-   to standard output. They leave the editor files and task data alone.
+   to standard output. For a local file they check that a read-only Daymark
+   session can open its schema. They leave the editor files and task data alone.
 
-   Both launches use the Python installation that ran Daymark, the absolute
+   Both launches use paths on the machine where you print the configuration.
+   They use the Python installation that ran Daymark, the absolute
    database path, the selected timezone and `mcp --read-only`. Keep that
    installation available. For another stdio client, copy the executable and
    individual arguments from the JSON. Each host configures stdio servers in
@@ -86,6 +88,9 @@ the project directory in this shell for the following steps.
    For agents on different machines, use the same authenticated service. When a person wants
    an agent to change tasks, remove `--read-only` for that agent and reconnect.
    A writable MCP launch can initialize a previously missing file.
+   A host may also ask for approval before sending a mutation. If the host
+   refuses, the change has not been saved. Report the refusal and use a
+   read to verify the current record.
    To adopt the snippet, use `daymark onboard --write AGENTS.md` or
    `daymark onboard --write CLAUDE.md` for each file that needs it.
 
@@ -238,6 +243,7 @@ Clients using the 2024-11-05 or 2025-03-26 revision receive the JSON in `content
 | Which task came from this external reference? | `{"view":"show","source":"samples:sheet:Q-41","brief":true,"json":true}` |
 | Can I read the whole note? | `{"view":"show","id":"sample","note":"NOTE_ID","json":true}` |
 | Which goal conditions can move in this scope? | `{"view":"explore","scope":"workshop","json":true}` |
+| How do I record a reply to a wait I reviewed? | Call `daymark_act` with `action:"resume"`, the task ID, and the `expected_version` and `review_token` from that review. A changed wait returns a conflict. `wait` accepts the same guards. |
 | Which tasks await acceptance? | `{"view":"find","status":"proposed","json":true}` |
 | Where is the saved fact? | `{"view":"find","kind":"memory","text":"metric","limit":5,"json":true}` |
 | Which tasks changed after my cursor? | `{"view":"activity","after":10,"limit":5,"json":true}` |

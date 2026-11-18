@@ -43,8 +43,9 @@ remains `0.5.0`.
 
 ### Picking work and returning to it
 
-- Inspect a waiting task to see whether resuming now would cancel its active reminders when it clears a future start.
-
+- A waiting task shows whether resuming now would cancel its active reminders
+  when it clears a future start. `wait` and `resume` accept the reviewed
+  version or review token so a delayed reply cannot clear a different wait.
 - `prime --brief` returns live counts, up to five ready tasks and remembered
   facts, the evaluation time and a portable activity checkpoint in one
   snapshot on a current store or service. `prime --scope NAME` limits startup

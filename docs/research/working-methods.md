@@ -212,3 +212,21 @@ once per variant. No individual's preferences were inferred from real work.
 For an individual trying the tool, compare their existing routine with a fresh
 session and a later return. The worksheet asks the person which commitments
 they had to reconstruct and whether the next step helped. [Field trial worksheet](trying-daymark.md)
+
+
+### Confirming a preference without presenting a queue
+
+Claude Code and Codex each received four requests against independent copies
+of the same eight-task workspace. Both saved the shared two-option
+preference and confirmed who it applied to without listing tasks. A one-time
+check-in returned two choices and a warning that an omitted task had a hard
+deadline. When asked which task was due, both named it and preserved its
+date-only cutoff. When asked what had been left out, both named all six
+omissions and distinguished longer tasks, missing estimates and the
+two-option limit. The profile receipt contained no task names.
+
+Earlier sessions sometimes volunteered individual task names when asked
+only to change a setting. One also interpreted “held back” as a claim by a
+worker. The revised startup guidance sends a settings request to the profile
+view and a one-time check-in to advice. Each comparison used synthetic
+records. The Codex write used explicitly permitted access to its test server.

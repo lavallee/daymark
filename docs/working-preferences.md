@@ -107,6 +107,13 @@ picks, send this tool call:
 {"name":"daymark_view","arguments":{"view":"advise","profile":"plain","scope":"studio","set":["shortlist.size=2"]}}
 ```
 
+When the person asks you to configure a shared preference, inspect the
+profile, make the reviewed change, then confirm the rule and its audience.
+They may want to know that the new limit is two without seeing any tasks
+right now. In a separate request for two options, give those options, the
+count held back and any hard-deadline warning. A person who asks which
+tasks were omitted can see their names and the reason for each omission.
+
 ## Keep more than one way of working
 
 The same workspace can have a quiet writing session and a weekly review. Give

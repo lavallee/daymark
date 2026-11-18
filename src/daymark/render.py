@@ -1096,7 +1096,7 @@ Commands (add --json to any for structured output)
   If a remote write is uncertain, repeat the same command and flags with the returned --op.
   daymark done ID [--note TEXT] [--if-version N]   complete (a repeating task spawns its next)
   daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)
-  daymark wait ID --on WHO [--until D] / resume ID   show a waiting task first to see the effect on reminders
+  daymark wait ID --on WHO [--until D] / resume ID   review reminders with show; pass --if-review TOKEN for a delayed reply
   daymark edit ID --assignee NAME   MCP edit: assignee. Pass the name as given to check
       both people and principals for a match. Use an ID the person supplied or confirmed.
   daymark remind ID WHEN --to PERSON   schedule a reminder; show REMINDER --brief checks the local recording

@@ -832,7 +832,7 @@ class Tasks:
         if current["status"] in {"completed", "cancelled"}:
             raise DomainError("conflict", f"This record is {current['status']}. Reopen it to restart work.")
 
-    def wait(self, id, on, *, until=None, op=None):
+    def wait(self, id, on, *, until=None, op=None, expected_version=None, review_token=None):
         """Park a task on someone or something else; optionally hide it until a date."""
         def build(current, retry):
             self._check_wait_state(current, retry)
@@ -841,10 +841,12 @@ class Tasks:
                 changes["earliest_start"] = parse_when(until, self.timezone, self._now, _replay=bool(retry))
             return changes
 
-        return self._act(id, "update", build=build, op=op,
-                         date_keys=("earliest_start",) if isinstance(until, str) else ())
+        return self._act(
+            id, "update", build=build, op=op, expected_version=expected_version,
+            review_token=review_token, date_keys=("earliest_start",) if isinstance(until, str) else (),
+        )
 
-    def resume(self, id, *, op=None):
+    def resume(self, id, *, op=None, expected_version=None, review_token=None):
         """Stop waiting and make the task actionable now, lifting a future start date."""
 
         def build(current, retry):
@@ -858,7 +860,7 @@ class Tasks:
                 out["earliest_start"] = None
             return out
 
-        return self._act(id, "update", op=op, build=build)
+        return self._act(id, "update", op=op, build=build, expected_version=expected_version, review_token=review_token)
 
     def defer(self, id, until, *, op=None):
         """Hide a task from ready work until a date. Its deadline does not move."""

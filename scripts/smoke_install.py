@@ -1,5 +1,6 @@
 """Run this outside a checkout against an installed Daymark distribution."""
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -66,4 +67,25 @@ with tempfile.TemporaryDirectory() as directory:
     assert updated["status"] == "completed"
     assert store.get("demo", "draft")["status"] == "completed"
     assert store.export("demo")["entities"]
-print("Installed core: create, replay, complete, read and export passed")
+    store.close()
+
+    cli = [sys.executable, "-I", "-m", "daymark.cli"]
+    configuration = subprocess.check_output([
+        *cli, "--db", str(Path(directory) / "work.db"), "--workspace", "demo",
+        "onboard", "--mcp-config", "claude",
+    ], cwd=directory, text=True)
+    server = json.loads(configuration)["mcpServers"]["daymark"]
+    tools = subprocess.check_output(
+        [server["command"], *server["args"]], cwd=directory, text=True,
+        input=json.dumps({"jsonrpc": "2.0", "method": "tools/list", "id": 1}) + "\n",
+    )
+    assert {tool["name"] for tool in json.loads(tools)["result"]["tools"]} == {
+        "daymark_prime", "daymark_view"
+    }
+    if find_spec("httpx") is None:
+        remote = subprocess.run(
+            [*cli, "--url", "https://workspace.invalid", "onboard", "--mcp-config", "codex"],
+            cwd=directory, text=True, check=False, capture_output=True,
+        )
+        assert remote.returncode == 5 and not remote.stdout and "daymark-core[client]" in remote.stderr
+print("Installed core: create, replay, complete, export and read-only editor launch passed")

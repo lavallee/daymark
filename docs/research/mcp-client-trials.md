@@ -284,6 +284,27 @@ valid credentials both clients confirmed the shared remote workspace and
 their respective service actors. A rejected limit of 1,001 could be
 corrected on the same connection.
 
+### Launching the configuration printed by Daymark
+
+Claude Code 2.1.323 consumed the generated JSON directly. Codex CLI 0.169.1
+consumed its TOML through a temporary user-level configuration. A project
+configuration in an untrusted directory was ignored. Both editors found the
+intended local actor and workspace when launched from another directory,
+and the correct credential-bound identities through a mounted HTTP service.
+Direct write requests on the read-only connections were refused. Both
+synthetic workspaces kept their single original task.
+
+The checks included default and custom Python user-site installs, paths
+with spaces and Unicode, and an older checkout on the editor's module
+search path. On Apple Silicon a plausible configuration for a foreign
+database failed at launch during development. Another failed because a
+required Python dependency was visible only to the parent shell. The
+generator now checks the selected local database in read-only mode and
+loads the MCP stack in the interpreter environment the editor will use.
+On both systems those cases stopped before any configuration was printed.
+A core-only install requesting an HTTP launch reported the client extra.
+Remote workspace identity still requires a live authenticated read.
+
 ## TypeScript SDK across local and authenticated connections
 
 The official TypeScript SDK 1.32.1 on Node.js 25.1.0 completed the same
@@ -409,6 +430,14 @@ development wheel refused the new window at schema inspection. The
 candidate's CLI and read-only stdio client agreed over HTTP. Fixed-instant
 checks cover the two occurrences of 01:30 during a New York fall-back,
 an exact midnight cutoff, and a civil date skipped by a date-line change.
+
+A second check compared the installed viewer-day read with independently
+enumerated UTC instants on Linux x86-64 and macOS arm64. Each platform
+checked 672 windows and 29,568 record classifications around 14 historical
+offset transitions in Santiago, Kathmandu, Apia and Lord Howe. Cases
+included Samoa's skipped civil date, a 15-minute midnight change and a
+repeated half hour. Both the original SQLite file and its native backup
+retained identical contents and file hashes across the reads.
 
 ## Undo after another worker has edited the task
 

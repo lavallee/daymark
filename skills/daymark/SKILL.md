@@ -57,6 +57,8 @@ Then work in this loop:
    someone else. An edit with `--waiting-on WHO` also parks an open task. Clearing
    the reason keeps it waiting until an explicit `resume ID`. If wait or resume reports
    archived or finished work, read the latest handoff before restoring or reopening it.
+   For a previously reviewed wait or reply, pass `--if-version N --if-review TOKEN`
+   from the original task review. On conflict, check who now owes the reply.
 
 When a tab is acting on a previously reviewed claim, pass that task's
 version to `done` or `release` as `--if-version N` (MCP `expected_version`).

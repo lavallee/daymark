@@ -284,9 +284,9 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "done", "release"}:
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "done", "release", "resume"}:
             item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
-        if name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
             item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
             item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
@@ -304,6 +304,8 @@ def _simple_commands(sub) -> None:
     wait = add("wait", "Park a task on someone or something", writes=True)
     wait.add_argument("id")
     wait.add_argument("--on", required=True, metavar="WHO")
+    wait.add_argument("--if-version", type=int, metavar="N", help="Require the reviewed task version")
+    wait.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed task revision")
     wait.add_argument("--until", metavar="D", help="Also hide it until this date")
     defer = add("defer", "Hide a task until a date; the deadline stays", writes=True)
     defer.add_argument("id")
@@ -832,10 +834,9 @@ def _simple(args, engine) -> int:
         entity(item)
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op, expected_version=args.if_version))
-    elif name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
+    elif name in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
-    elif name in {"skip", "cancel", "reopen", "archive",
-                  "resume", "unfocus"}:  # fmt: skip
+    elif name in {"skip", "cancel", "reopen", "archive", "unfocus"}:
         entity(getattr(tasks, name)(args.id, op=op))
     elif name == "condition":
         entity(
@@ -862,7 +863,8 @@ def _simple(args, engine) -> int:
     elif name == "note":
         entity(tasks.note(args.id, args.text, op=op))
     elif name == "wait":
-        entity(tasks.wait(args.id, args.on, until=args.until, op=op))
+        entity(tasks.wait(args.id, args.on, until=args.until, op=op,
+                          expected_version=args.if_version, review_token=args.if_review))
     elif name == "defer":
         entity(tasks.defer(args.id, args.until, op=op))
     elif name in {"block", "unblock"}:

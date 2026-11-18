@@ -222,8 +222,8 @@ _READ_GUIDE = (
     "For a previous field value, use show with since_version. Quote original wording only from an attributed source."
 )
 _SHORT_CHECK_IN = (
-    " For a short check-in, read advise with the agreed settings. Show its picks and how many more there are. "
-    "Read or name the other tasks when the person asks to see them. "
+    " For a short check-in, start with advise using the requested settings. Give its picks, the count held back, and any hard deadline warning. "
+    "Read or name other held tasks only when asked which were left out. "
     "For hard cutoffs on the person's calendar day use agenda with local_day=true and days=0. A date alone has no recorded hour."
 )
 _TYPES = {"string": str, "boolean": bool, "integer": int, "array": list, "object": dict}
@@ -255,7 +255,8 @@ _ACT_ARGS = {
     "note": {"text"},
     "done": {"text", "expected_version"},
     "release": {"text", "expected_version"},
-    "wait": {"on", "until"},
+    "wait": {"on", "until", "expected_version", "review_token"},
+    "resume": {"expected_version", "review_token"},
     "defer": {"until"},
     "remind": {"when", "recipient"},
     "block": {"on"},
@@ -313,7 +314,7 @@ def _validate_arguments(name, args):
             "defer": ("until",), "block": ("on",), "unblock": ("on",), "assess": ("state",),
         }.get(verb, ())
         allowed = _ACT_ARGS.get(verb, set()) | {"action", "op"}
-        if verb in {"accept", "dismiss", "forget", "undo", "restore_profile"} and "expected_version" in args:
+        if verb in {"accept", "dismiss", "forget", "undo", "wait", "resume", "restore_profile"} and "expected_version" in args:
             _validate_value(
                 "expected_version", args["expected_version"], {"type": "integer", "minimum": 1}
             )
@@ -408,7 +409,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
         action, id, op = args.get("action"), args["id"], args.get("op")
         if action == "note":
             item = tasks.note(id, args["text"], op=op)
-        elif action in {"accept", "dismiss", "forget", "undo", "unarchive"}:
+        elif action in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
             item = getattr(tasks, action)(
                 id,
                 expected_version=args.get("expected_version"),
@@ -418,7 +419,8 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
         elif action in {"done", "release"}:
             item = getattr(tasks, action)(id, note=args.get("text"), op=op, expected_version=args.get("expected_version"))
         elif action == "wait":
-            item = tasks.wait(id, args["on"], until=args.get("until"), op=op)
+            item = tasks.wait(id, args["on"], until=args.get("until"), op=op,
+                              expected_version=args.get("expected_version"), review_token=args.get("review_token"))
         elif action == "remind":
             item = tasks.remind(id, args["when"], recipient=args["recipient"], op=op)
         elif action == "defer":
@@ -474,6 +476,8 @@ def _tool_error(code, message, details, protocol, name, arguments, *, retry_op=N
             recovery = "Read the current proposal; ask the person to review any changed terms."
             if "expected_version" in arguments:
                 recovery += " Use daymark_view show with since_version set to the reviewed version."
+        elif arguments.get("action") in {"wait", "resume"}:
+            recovery = "Read the current wait with daymark_view show. Check whether this reply applies to the current party."
         elif arguments.get("action") == "undo":
             recovery = "Inspect the latest event with daymark_view show before deciding what to restore."
         elif arguments.get("action") in {"done", "release"} and "expected_version" in arguments:
@@ -549,7 +553,7 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                 "serverInfo": {"name": "daymark", "version": __version__},
                 "instructions": (
                     _READ_GUIDE if read_only else
-                    "Start with daymark_prime for orientation. If the request names a scope, pass scope on the first read. "
+                    "For a workspace preference change, start with daymark_view profiles. Confirm the saved rule and who it applies to. Give examples only if requested. For general orientation use daymark_prime. If the request names a scope, pass scope on the first read. "
                     + _SCOPE_GUIDE + " Settings and memories are shared across this workspace. "
                     "Apply personal or time-limited choices per call unless the person asks to share them. "
                     "For each write, choose a fresh op. An identical retry with that op returns its original result. "

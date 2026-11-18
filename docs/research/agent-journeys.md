@@ -287,6 +287,35 @@ replacing the existing tone, a 14-minute window and a 16-minute window each
 failed. These controls exercise the scorer. They provide no measure of how
 often a person or model will choose the right action unaided.
 
+### What happened when a fresh host ran all eight requests
+
+At commit `6ef8aba`, eight fresh Claude Code 2.1.323 sessions using Opus 5.5
+passed all 37 checks. Each used only the installed Daymark MCP tools in its
+own workspace. The host received the printed request without the scorer,
+expected IDs or fixture setup. Across the eight sessions there were 38 reads
+and eight write attempts. Six writes succeeded.
+
+The transcripts exposed issues the scorer misses. The wait session tried a
+review token and then an expected version. Both failed. Its third attempt
+recorded the wait without a guard. After Daymark added those guards to wait
+and resume, another fresh session independently supplied the review token
+and recorded the undated wait in one write. The standing-preference session
+configured the requested two-option default but named six withheld options.
+The returning reader got both agreed deadlines and the outstanding reply
+right, and also named two excluded records. Completion, tool use and what
+the person had to read are different measures. Each case ran once on this
+host and model.
+
+Codex CLI 0.169.1 tried the same eight requests on the same wheel.
+Under its noninteractive host policy all three read-only journeys passed.
+The host refused six attempted writes before Daymark received them. Each
+of the five writing journeys then ran again in a fresh workspace with
+permission for that synthetic server. All five passed their 25 checks.
+Every observed tool call across the 13 Codex sessions went to Daymark.
+A verification query for 1,300 days hit the 366-day bound. The agent
+recovered by reading the saved records. Host policy and successful task
+completion have to be checked separately from process exit status.
+
 ## Returning for a project review
 
 The GTD weekly checklist asks people to inspect project outcomes and look for a
