@@ -177,3 +177,70 @@ def test_http_failure_keeps_the_code_and_excludes_service_response_body():
         result = handle(Tasks(client), tool("daymark_view", view="show", id="sample"))["result"]
     assert result["structuredContent"]["error"]["code"] == "forbidden"
     assert all(value not in str(result) for value in ("unrelated-private-data", "example-secret"))
+
+
+def test_reminder_receipt_and_worker_preserve_the_distinction_from_a_deadline(tasks):
+    from datetime import UTC, datetime
+
+    from daymark.worker import Worker
+
+    tasks = Tasks(tasks.engine, "sample", timezone="Europe/London")
+    draft = tasks.propose("Prepare proof", id="draft", plan="2030-05-02", due="2030-05-10")
+    tasks.add("Sample reviewer", kind="person", id="reviewer")
+    fields = {
+        "action": "remind",
+        "id": "draft",
+        "recipient": "reviewer",
+        "when": "2030-05-03T09:00",
+        "op": "review-reminder",
+    }
+
+    def schedule(**changes):
+        return handle(tasks, tool("daymark_act", **(fields | changes)))["result"]
+
+    incomplete = schedule(when="2030-05-03")
+    assert incomplete["isError"] and tasks.engine.list("sample", kind="reminder") == []
+    response = schedule()
+    assert not response["isError"]
+    data = response["structuredContent"]
+    assert data == {
+        "id": data["id"],
+        "kind": "reminder",
+        "title": "",
+        "status": "open",
+        "version": 1,
+        "task_id": "draft",
+        "channel": "recording",
+        "recipient_id": "reviewer",
+        "reminder_state": "pending",
+        "scheduled_at": "2030-05-03T08:00:00Z",
+    }
+    assert "2030-05-03 09:00 Europe/London" in response["content"][0]["text"]
+    assert schedule() == response
+    assert schedule(when="2030-05-04T09:00")["isError"]
+    assert tasks.get("draft") == draft
+    worker = Worker(tasks.engine)
+    at = datetime(2030, 5, 3, 8, tzinfo=UTC)
+    assert worker.run_once(now=at)["claimed"] == 0
+    tasks.accept("draft")
+    assert worker.run_once(now=at)["recorded"] == 1
+    assert worker.run_once(now=at)["claimed"] == 0
+    assert tasks.get(data["id"])["reminder_state"] == "delivered"
+    assert schedule() == response  # Original schedule receipt; reread for delivery status.
+
+
+def test_missing_tool_input_and_incomplete_service_results_are_distinct(tasks, monkeypatch):
+    missing = handle(tasks, tool("daymark_act", action="note", id="sample"))["result"]
+    assert missing["isError"] and "missing argument text" in missing["content"][0]["text"]
+
+    monkeypatch.setattr(tasks, "show", lambda *_args, **_kwargs: {})
+    failure = handle(tasks, tool("daymark_view", view="show", id="sample", json=True))
+    assert failure["error"] == {"code": -32603, "message": "The request failed"}
+
+
+
+def test_temporary_advice_recovers_from_misplaced_filters(tasks):
+    for fields in ({"minutes": "15"}, {"move": "answer"}):
+        result = handle(tasks, tool("daymark_view", view="advise", **fields))["result"]
+        error = result["structuredContent"]["error"]
+        assert error["code"] == "invalid" and "time-fit.minutes=15" in error["recovery"]

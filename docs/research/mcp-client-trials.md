@@ -42,6 +42,21 @@ and asked what blocked `seal-bin`. The host listed two tools. It made four
 reads and reported the exact blocker ID `check-label`, its title and the
 `dependencies` reason. The fixture had two events before and after the trial.
 
+We repeated the same prompt on a fresh fixture after adding direct blocker
+titles and statuses to show. That single response contained all requested
+facts. The host still made four reads: in each run it issued all four before
+seeing any result. This pair of trials therefore shows a more complete
+individual response, with no observed reduction in call count.
+
+A long-history fixture gave five blockers 100 four-thousand-character notes
+each and gave their dependent task 60 notes. The dependent brief grew from
+1,421 bytes (IDs alone) to 1,724 bytes (IDs, titles and statuses). Five
+separate full blocker details totaled 2,042,621 bytes. After three warm-up
+reads, 15 in-process reads of the named brief had a median of 10.66 ms;
+suppressing the added lookup in the same process yielded 3.61 ms. The run
+used Python 3.14.6 and SQLite 3.53.1. These are fixture measurements, not a
+client latency estimate.
+
 A separate Python SDK 1.30.0 process opened the same read-only surface against
 current and 0.5.0 authenticated HTTP services. Search worked against both.
 Calls to hidden write names and a repeated write attempt were refused in each
@@ -62,6 +77,85 @@ available made three reads: prime, show, and show with `since_version: 1`.
 It reported both quantities and both dates, asked for a fresh decision and
 left the proposal pending at version 2. The event log again contained only
 the fixture’s create and update.
+
+## A two-turn proposal through an authenticated proxy
+
+We configured the client with workspace `local-display` and actor
+`session-label`. The service bound the credential to workspace `sample-lab`
+and actor `shift-agent`. In an initial programmatic trial, a normal capture
+stamped its first note with the client label while a follow-up note and both
+write events recorded the server actor. This led to a change in ordinary HTTP
+captures so the service now stamps the initial note inside the write.
+
+A fresh Claude Code process then ran two turns on the revised surface. The
+first asked it to record one idea as a proposal with an initial note and to
+identify the connection. It reported the authenticated workspace and actor.
+The second said the idea sounded promising and asked who had recorded it,
+whether it was accepted, and who could pick it up. The agent made one read
+in that turn, identified the authenticated note author and reported that the
+proposal was still pending. The database contained one proposed task at
+version 1 and one create event from `shift-agent`.
+
+## Four cold sessions with a changing workspace routine
+
+Four independent Claude Code sessions used all six writable tools against the
+same synthetic workspace. Each received a fresh conversation. Six open tasks
+included decisions estimated at 12, 20 and 45 minutes, a high-priority decision
+with no estimate, and two ordinary tasks that fit a 15-minute sitting. A second
+workspace supplied an isolation check. After each process exited, a separate
+reader inspected the active settings, default advice, memory and task events.
+
+| Session and request | Calls | What persisted after exit |
+| --- | ---: | --- |
+| One decision that fits 15 minutes, for today | 8 | The 12-minute decision was recommended. Default settings stayed at version 0. |
+| The same temporary constraint again. Is this already a standing routine? | 11 | The worker found the default active profile and explained the limits of keyword memory searches. Version stayed at 0. |
+| Save one fitting decision under 15 minutes, falling back to ordinary work | 20 | One workspace settings write produced version 1. Its default advice picked the 12-minute decision. |
+| A different worker requests two options under 25 minutes and one look at the complete queue | 12 | The worker read version 1, guarded the revision by version and saved version 2. It showed all six ready tasks once. Default advice then returned the 12- and 20-minute decisions. |
+
+The six task versions stayed at 1 through all four sessions. No worker added
+a memory and the comparison workspace retained its default settings. On a copy
+with the fitting decisions completed, the original 15-minute routine picked
+the eight-minute ordinary task. This checks the fallback without changing the
+shared trial data.
+
+Two sessions opened four and six full task records to check estimates. The
+structured advice already included estimates for its picks, but structured
+ready rows omitted them, including the candidates a temporary filter excluded.
+Ready and ready-explanation rows now carry each known estimate in minutes.
+An absent estimate still means the duration is unknown. Repeating the first
+prompt with the new projection produced the same selection and eight calls.
+The worker opened two full records, down from four, but also made two invalid
+attempts to pass ready filters directly to advice. Those refusals now show
+the supported temporary settings syntax. This single repeat establishes no
+overall call-count improvement.
+
+## Restart after the write committed and the connection dropped
+
+A loopback HTTP proxy forwarded each operation to an authenticated Daymark
+service, read its successful response, then closed the downstream connection
+before forwarding any bytes. Each tool call ran in a new stdio process with
+the Python MCP SDK 1.30.0. Two operations lost their first reply.
+
+- A task capture included a generated ID, relative due date and attributed
+  initial note. Retrying the same request returned the original ID at version 1.
+  A changed note or a different authenticated actor in the same workspace
+  produced a conflict. Reusing the operation ID in a separate workspace
+  created an independent task there.
+- Releasing a claim included a handoff note in the same batch. The retry
+  returned the unclaimed task at version 4. Changing the handoff text produced
+  a conflict. The final event sequence was create, claim, note, release.
+  The task retained exactly one initial note and one handoff note.
+
+In both cases the client initially reported a transport failure even though
+the server had committed. Client-side failure alone cannot settle what
+happened. Retrying with the original arguments and operation ID recovered the
+original receipt.
+
+A separate trial omitted the optional operation ID. Previously the failure
+offered no key and a retry created a second task. The bridge now generates
+the key before sending the write and includes it in an ambiguous HTTP
+failure. Repeating that cold-session trial with the returned key left one
+task and returned its original ID.
 
 ## Mixed client and service versions
 

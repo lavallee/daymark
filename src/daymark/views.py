@@ -12,7 +12,7 @@ import sqlite3
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from . import plans
+from . import cursors, plans
 from .models import DomainError, Temporal, normalize_now
 from .store import STALE
 
@@ -264,6 +264,8 @@ def ready_record(item, now):
         "claim_until",
     )
     record = {key: item[key] for key in fields}
+    if item.get("estimate_minutes") is not None:
+        record["estimate_minutes"] = item["estimate_minutes"]
     contexts = item.get("context_ids") or []
     if contexts:
         record["context_ids"] = contexts[:3]
@@ -277,37 +279,53 @@ def ready_record(item, now):
     return record
 
 
-def _ready_summaries(store, workspace, top, now):
-    details = {}
-    for start in range(0, len(top), 500):
-        ids = [item["id"] for item in top[start : start + 500]]
-        marks = ",".join("?" * len(ids))
+def _entity_previews(store, workspace, ids):
+    """Fetch bounded titles and small indexed facts, preserving note trails inside SQLite."""
+    found = {}
+    encoding = store._text_encoding()
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        marks = ",".join("?" * len(chunk))
+        table = f" FROM daymark_entities WHERE workspace=? AND id IN ({marks})"
         try:
             rows = store.db.execute(
-                "SELECT id,version,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644), "
-                "json_extract(data,'$.context_ids') "
-                f"FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
-                (workspace, *ids),
+                "SELECT id,status,version,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644),"
+                "json_extract(data,'$.context_ids'),json_extract(data,'$.estimate_minutes')" + table,
+                (workspace, *chunk),
             )
-            details.update(
-                (id, (version, title.decode(errors="ignore"), json.loads(contexts or "[]")))
-                for id, version, title, contexts in rows
-            )
+            for id, status, version, title, contexts, estimate in rows:
+                found[id] = {"title": title.decode(encoding, errors="ignore")[:161], "status": status,
+                             "version": version, "context_ids": json.loads(contexts or "[]"),
+                             "estimate_minutes": estimate}
         except sqlite3.OperationalError as exc:
             if "no such function: json_extract" not in str(exc):
                 raise
-            raw = store.db.execute(
-                f"SELECT id,version,data FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
-                (workspace, *ids),
-            )
-            for id, version, data in raw:
-                current = json.loads(data)
-                details[id] = (version, current["title"][:161], current.get("context_ids", []))
-    result = []
-    for item in top:
-        version, title, contexts = details[item["id"]]
-        result.append(ready_record({**item, "version": version, "title": title, "context_ids": contexts}, now))
-    return result
+            for id, status, version, raw in store.db.execute("SELECT id,status,version,data" + table, (workspace, *chunk)):
+                item = json.loads(raw)
+                found[id] = {"title": item["title"][:161], "status": status, "version": version,
+                             "context_ids": item.get("context_ids", []),
+                             "estimate_minutes": item.get("estimate_minutes")}
+    return found
+
+
+def _ready_summaries(store, workspace, top, now):
+    details = _entity_previews(store, workspace, [item["id"] for item in top])
+    return [ready_record({**item, **details[item["id"]]}, now) for item in top]
+
+
+def blocker_previews(store, workspace, blocked):
+    """Name the first five unresolved prerequisites in the task's own dependency order."""
+    selected = blocked[:5]
+    found = _entity_previews(store, workspace, selected)
+    rows = []
+    for id in selected:
+        if id not in found:
+            rows.append({"id": id, "status": "missing"})
+            continue
+        task = found[id]
+        rows.append({"id": id, "title": task["title"][:160], "status": task["status"],
+                     **({"truncated": True} if len(task["title"]) > 160 else {})})
+    return rows
 
 
 def _readiness_links(store, workspace):
@@ -459,15 +477,22 @@ def activity(store, workspace, *, after=None, limit=20):
     """
     if type(limit) is not int or not 1 <= limit <= 100:
         raise DomainError("invalid", "Activity limit must be between 1 and 100")
-    if after is not None and (type(after) is not int or after < 0):
-        raise DomainError("invalid", "Activity cursor must be a nonnegative integer")
+    saved = after if isinstance(after, str) else None
+    if after is not None:
+        after = cursors.cursor_number(after)
     with store._lock:
         if not _usable(store):
+            if saved:
+                if after or saved != cursors.checkpoint(store, workspace, 0):
+                    raise cursors.mismatch()
+                return {"events": [], "cursor": 0, "head": 0, "checkpoint": saved}
             if after:
                 raise DomainError("conflict", "Cursor is ahead of this empty workspace")
             return {"events": [], "cursor": 0, "head": 0}
     with store._transaction(write=False):
         head = store.head(workspace)
+        if saved and saved != cursors.checkpoint(store, workspace, after):
+            raise cursors.mismatch()
         if after is not None and after > head:
             raise DomainError(
                 "conflict",
@@ -483,7 +508,11 @@ def activity(store, workspace, *, after=None, limit=20):
             ).fetchone()
             after = previous[0] if previous else 0
         items = _activity_items(store, workspace, after, limit)
-    return {"events": items, "cursor": items[-1]["seq"] if items else after, "head": head}
+        cursor = items[-1]["seq"] if items else after
+        page = {"events": items, "cursor": cursor, "head": head}
+        if saved:
+            page["checkpoint"] = cursors.checkpoint(store, workspace, cursor) if items else saved
+        return page
 
 
 def _activity_items(store, workspace, after, limit):
@@ -616,6 +645,7 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
             "review_token": store._review_token(workspace, id),
             **readiness,
             "blocked_by": blocked,
+            **({"blockers": blocker_previews(store, workspace, blocked)} if blocked else {}),
             "dependents": [x["id"] for x in _context_links(store, workspace, id, "depends_on") if x["status"] in LIVE],
             "children": [
                 {"id": x["id"], "title": x["title"], "status": x["status"]}
@@ -632,23 +662,83 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
         }
 
 
+_COUNT_FIELDS = ("ready", "overdue", "today", "next_7_days", "waiting", "proposed")
+
+
+def _count_for_summary(item, counts, now, owner, links):
+    """Count this task's agenda bucket and return its canonical readiness."""
+    bucket, _ = _agenda_bucket(item, now, 7)
+    if bucket:
+        counts["next_7_days" if bucket == "upcoming" else bucket] += 1
+    ready = _is_ready(item, now, owner, *links)
+    if ready:
+        counts["ready"] += 1
+    return ready
+
+
 def summary(store, workspace, *, now=None, scope=None, owner=None, context=None):
     """Counts for a one-glance orientation."""
     now = normalize_now(now)
-    counts = dict.fromkeys(("ready", "overdue", "today", "next_7_days", "waiting", "proposed"), 0)
+    counts = dict.fromkeys(_COUNT_FIELDS, 0)
     fields = ("earliest_start", "planned", "recurrence", "claimed_by", "claim_until", "deadline")
     with store._lock:
         if not _usable(store):
             return counts
         with store._transaction(write=False):
-            blocked, containers = _readiness_links(store, workspace)
+            links = _readiness_links(store, workspace)
             for item in _task_fields(store, workspace, LIVE, fields, scope=scope, context=context):
-                if _is_ready(item, now, owner, blocked, containers):
-                    counts["ready"] += 1
-                bucket, _ = _agenda_bucket(item, now, 7)
-                if bucket:
-                    counts["next_7_days" if bucket == "upcoming" else bucket] += 1
+                _count_for_summary(item, counts, now, owner, links)
     return counts
+
+
+def memory_preview(id, title, scope):
+    fact = {"id": id, "title": title[:160] + ("…" if len(title) > 160 else "")}
+    if scope:
+        fact["scope"] = scope
+    return fact
+
+
+def _orientation_memories(store, workspace):
+    # Same active-memory ID order and cursor as search. Six rows determine
+    # whether five previews have another page, without loading note trails.
+    tail = " FROM daymark_entities WHERE workspace=? AND kind='memory' AND archived=0 ORDER BY id LIMIT 6"
+    try:
+        rows = store.db.execute(
+            "SELECT id,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644),"
+            "json_extract(data,'$.scope')" + tail, (workspace,),
+        )
+        encoding = store._text_encoding()
+        facts = [memory_preview(id, title.decode(encoding, errors="ignore"), scope) for id, title, scope in rows]
+    except sqlite3.OperationalError as exc:
+        if "no such function: json_extract" not in str(exc):
+            raise
+        facts = []
+        for (raw,) in store.db.execute("SELECT data" + tail, (workspace,)):
+            item = json.loads(raw)
+            facts.append(memory_preview(item["id"], item["title"], item["scope"]))
+    return facts[:5], facts[4]["id"] if len(facts) > 5 else None
+
+
+def orientation(store, workspace, *, now=None, owner=None):
+    """Five ready records, five fact previews and exact counts from a single snapshot."""
+    now = normalize_now(now)
+    counts = dict.fromkeys(_COUNT_FIELDS, 0)
+    result = {"summary": counts, "ready": [], "memories": [], "next_memory": None,
+              "activity_cursor": 0, "activity_checkpoint": cursors.checkpoint(store, workspace, 0),
+              "as_of": now.isoformat()}
+    with store._lock:
+        if not _usable(store):
+            return result
+        with store._transaction(write=False):
+            links = _readiness_links(store, workspace)
+            items = _task_fields(store, workspace, LIVE, _READY_FIELDS)
+            eligible = (item for item in items if _count_for_summary(item, counts, now, owner, links))
+            top = heapq.nsmallest(5, eligible, key=lambda item: urgency(item, now)[0])
+            result["ready"] = _ready_summaries(store, workspace, top, now)
+            result["memories"], result["next_memory"] = _orientation_memories(store, workspace)
+            result["activity_cursor"] = store.head(workspace)
+            result["activity_checkpoint"] = cursors.checkpoint(store, workspace, result["activity_cursor"])
+    return result
 
 
 # -- projects and goals: one pass over preloaded records, then pure roll-ups

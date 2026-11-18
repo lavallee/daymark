@@ -100,8 +100,8 @@ Decision date: 2026-11-15. [Architecture](architecture.md) gives the design and
 | S01 Three layers | Kernel, strategies, plugins | The kernel stores facts and enforces invariants. Ways of working live above it and can be swapped per workspace. |
 | S02 Strategies advise | A strategy returns an ordering, notes and suggestions; it never writes | A suggestion becomes a task only through `propose`. A test forbids the strategy package from importing the engine. |
 | S03 Evidence labels | Every strategy states clinical, practitioner, folk or convention | Shown by `daymark strategies`. A label describes the idea, not Daymark's implementation of it. |
-| S04 Plain is the default | With no profile chosen, `advise` equals `ready` | Adopting a way of working is always a choice; `ready` remains the unranked kernel fact for comparison. |
-| S05 Profiles per workspace | Stored as a workspace setting | Settings are configuration: no history, not exported, local callers only (over HTTP `advise` uses `plain`). A stored entry that can no longer be loaded is skipped and reported, never fatal. |
+| S04 Plain is the default | With no profile chosen, `advise` uses the eligibility and order of `ready` | The ordinary ready page defaults to 20 rows and advice inspects at most 1,000. A person explicitly chooses further changes to the order, limits or wording. |
+| S05 Profiles per workspace | Stored as a workspace setting | Settings and their local replay receipts belong to workspace configuration. Entity history and exports omit them. HTTP uses the plain default and supports one-call previews. A stored entry that can no longer be loaded is skipped and reported, never fatal. |
 | S06 Plugins load by name | Entry points in `daymark.strategies`, imported only when a profile names one | Installing a package never runs its code by itself. No hook may rewrite a write. |
 | S07 Conditions | A `condition` kind with a judged state; its status follows the state | A condition belongs to a goal, cannot be proposed, parked or repeated, and a write that sets its status against its state is refused. "Met" reads as completed, so existing dependency rules apply unchanged. Reopening a met condition marks it unmet; bringing back an archived or dropped one keeps its assessment. Frontier and gap are kernel facts; choosing the bottleneck is a strategy's judgement. |
 | S08 Kernel admission | A field enters the kernel when three independent methods or clients need it stored, or an invariant depends on it | Otherwise it is plugin data. Existing fields that fail this test are listed as debt in the architecture document. |
@@ -195,3 +195,29 @@ removed. Resuming is an explicit action. Editing a reason preserves a
 proposal, a closed task and an archived task in their existing state. The
 engine applies this inference after validating an operation receipt so that
 an identical retry of an earlier release's edit returns the recorded result.
+
+
+## Retiring remembered facts
+
+Memory remains shared workspace context. A recorded scope gives the fact
+an area of applicability and is visible in the startup preview. A source
+names where it came from. `forget` checks the target is a memory in the
+same transaction as archiving it. A review token or expected version can
+guard a retirement. Ordinary archive receipts for memories from earlier
+versions still verify and replay. Archive retains the record and its history.
+
+
+The contributor source distribution includes the command guides, skill and
+verification scripts. An installed CLI prints its matching agent skill with
+`onboard --skill`. The project onboarding snippet asks agents to keep other
+trackers authoritative for the commitments they already own.
+
+
+## Resuming after a compact startup
+
+Compact startup includes a portable checkpoint bound to the workspace and
+the event at the returned cursor. Checked activity paging rejects a missing
+or different boundary, including a workspace switch. It can resume after an
+intact native transfer. Integer cursors and their response shape remain
+available. Native import can merge materialized entities independently of
+events, so a fresh read of affected records is required after such a merge.

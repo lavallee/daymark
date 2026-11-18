@@ -29,6 +29,7 @@ class Client:
             raise ValueError("Bearer credential required")
         self.read_only = read_only
         self.legacy_search = False
+        self._legacy_orientation = False
         self._read_params = None
         self._http = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -64,7 +65,8 @@ class Client:
             raise ClientError() from None
 
     def execute(
-        self, operation_id: str, action: str, payload: dict[str, Any], expected_version: int
+        self, operation_id: str, action: str, payload: dict[str, Any], expected_version: int,
+        *, attribute_capture_note: bool = False,
     ) -> Any:
         return self._request(
             "POST",
@@ -74,6 +76,7 @@ class Client:
                 "action": action,
                 "payload": payload,
                 "expected_version": expected_version,
+                **({"attribute_capture_note": True} if attribute_capture_note else {}),
             },
         )
 
@@ -185,6 +188,27 @@ class Client:
             self._require_filter("/v1/explore", "scope")
         return self._request("GET", "/v1/explore", params=self._params(goal=goal, now=now, scope=scope))
 
+    def orientation(self, *, now=None, owner=None):
+        """Use the authenticated worker's snapshot, or compatible reads on older services."""
+        if not self._legacy_orientation:
+            try:
+                return self._request("GET", "/v1/orientation", params=self._params(now=now))
+            except ClientError as exc:
+                if exc.status_code not in {404, 405}:
+                    raise
+                self._legacy_orientation = True
+        from .models import normalize_now
+        from .views import memory_preview
+
+        instant = normalize_now(now)
+        facts = self.search(kind="memory", limit=5)
+        return {
+            "summary": self.summary(now=instant, mine=True, owner=owner),
+            "ready": self.ready(now=instant, limit=5, mine=True, owner=owner, brief=True),
+            "memories": [memory_preview(m["id"], m["title"], m.get("scope")) for m in facts["items"]],
+            "next_memory": facts["next"],
+        }
+
     def summary(
         self, *, now: Any = None, context: str | None = None, scope: str | None = None,
         owner: str | None = None, mine: bool = False,
@@ -257,7 +281,7 @@ class Client:
                 return None
             raise
 
-    def activity(self, *, after: int | None = None, limit: int = 20) -> Any:
+    def activity(self, *, after: int | str | None = None, limit: int = 20) -> Any:
         return self._request("GET", "/v1/activity", params=self._params(after=after, limit=limit))
 
     def events(self, after: int = 0, limit: int = 100, project: str | None = None) -> Any:
@@ -316,6 +340,20 @@ class Client:
                 "expected_version": expected_version,
             },
         )
+
+    def identity(self) -> dict[str, str] | None:
+        """Only this credential's confirmed workspace and actor. A 0.5 service lacks this read."""
+        try:
+            result = self._request("GET", "/v1/identity")
+        except ClientError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(result, dict) or not all(
+            isinstance(result.get(key), str) and result[key] for key in ("workspace", "actor")
+        ):
+            raise ClientError()
+        return {key: result[key] for key in ("workspace", "actor")}
 
     def health(self) -> Any:
         return self._request("GET", "/v1/health")

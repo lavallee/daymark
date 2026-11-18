@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 
 from ..models import DomainError
-from . import SETTING, edit_profile, restore_profile, validate_profile
+from . import (
+    SETTING,
+    edit_profile,
+    has_adjustments,
+    persistent_profile,
+    restore_profile,
+    validate_profile,
+)
 from .profiles import PROFILES
 
 _LIBRARY = "profile.library"
@@ -83,7 +90,7 @@ def select_profile(tasks, name=None, *, settings=(), drops=()):
         }
     else:
         base, source = named_profile(tasks, name)
-    adjusted = bool(settings or drops)
+    adjusted = has_adjustments(settings, drops)
     profile = edit_profile(base, settings, drops) if adjusted else base
     return profile, {**source, "adjusted": adjusted}
 
@@ -98,14 +105,15 @@ def _active_result(tasks, value, version):
 def active_profile(
     tasks, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None
 ):
-    if name is None and not settings and not drops and undo is None:
+    adjusted = has_adjustments(settings, drops)
+    if name is None and not adjusted and undo is None:
         if op is not None or expected_version is not None:
             raise DomainError("invalid", "A read has no operation ID or expected version")
         state = _active_state(tasks)
         return _active_result(tasks, state["value"], state["version"])
 
     operation_id = tasks._op_id(op)
-    if undo is not None and (name is not None or settings or drops):
+    if undo is not None and (name is not None or adjusted):
         raise DomainError("invalid", "Undo restores the previous configuration as recorded")
     request = {
         "action": "active",
@@ -133,7 +141,7 @@ def active_profile(
                     "Drop unavailable strategies explicitly before saving",
                     current["skipped"],
                 )
-            value = validate_profile(current)
+            value = persistent_profile(current)
         tasks.engine.set_setting(*tasks._ws, SETTING, value, expected_version=expected_version)
         after = _active_state(tasks)
         return {
@@ -172,7 +180,7 @@ def _change_saved(tasks, name, candidate, expected_version, previous):
         del entries[name]
         result = {"removed": name, "version": revision}
     else:
-        profile = validate_profile({**candidate, "name": name})
+        profile = persistent_profile({**candidate, "name": name})
         if current and profile == current["profile"]:
             return current
         result = {"name": name, "version": revision, "profile": profile}
@@ -209,7 +217,10 @@ def save_profile(tasks, name, *, profile=None, settings=(), drops=(), expected_v
                     for k, v in config.items()
                     if k not in {"workspace", "version", "operation_id", "undo"}
                 }
-            candidate = edit_profile(validate_profile(config), settings, drops)
+            validated = validate_profile(config)
+            if config.get("skipped"):
+                validated["skipped"] = config["skipped"]
+            candidate = edit_profile(validated, settings, drops)
         else:
             candidate, _ = select_profile(tasks, profile, settings=settings, drops=drops)
         if candidate.get("skipped"):

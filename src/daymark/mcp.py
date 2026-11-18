@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import sys
+import uuid
 
 from . import __version__, render
-from .client import ClientError
+from .client import Client, ClientError
+from .cursors import cursor_number
 from .mcp_views import StructuredView, read_view
 from .models import DomainError
 
@@ -20,14 +22,11 @@ _OP = {"type": "string", "minLength": 1}
 
 _FIELDS = {
     **{key: {"type": "string"} for key in ("due", "plan", "start", "target")},
-    "every": {
-        "type": "string",
-        "description": "day/week/month/year, 2 weeks, weekdays, mon,thu",
-    },
+    "every": {"type": "string", "description": "day/week/month/year, weekdays, mon,thu"},
     "after_completion": {"type": "boolean"},
-    "priority": {"type": "integer", "minimum": 0, "maximum": 4, "description": "1 highest"},
+    "priority": {"type": "integer", "minimum": 0, "maximum": 4},
     "description": {"type": "string"},
-    "after": {"type": "array", "items": {"type": "string"}, "description": "Prerequisite IDs."},
+    "after": {"type": "array", "items": {"type": "string"}, "description": "Prerequisite IDs"},
     "parent": {"type": "string"},
     "contexts": {"type": "array", "items": {"type": "string"}},
     "project": {"type": "string"},
@@ -47,21 +46,21 @@ _DATE_FORMS = "YYYY-MM-DD, YYYY-MM-DDTHH:MM, today, tomorrow, fri, +Nd/+Nw/+Nm."
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "undo", "accept", "dismiss", "claim",
     "release", "take", "note", "wait", "resume", "defer", "block", "unblock", "forget",
-    "focus", "unfocus", "move", "assess", "use_profile",
+    "focus", "unfocus", "move", "assess", "use_profile", "remind",
 ]  # fmt: skip
 
 TOOLS = [
     {
         "name": "daymark_prime",
-        "description": "Start here for workflow.",
+        "description": "Start here.",
         "annotations": {"readOnlyHint": True},
         "inputSchema": {"type": "object", "properties": {"brief": {"type": "boolean"}}},
     },
     {
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
-        "description": "json=true for data. show: id or source, brief/note/before_note/since_version. ready: explain. "
-        "plan: project id. explore: goal id. advise: preview set/drop. profiles: strategy details.",
+        "description": "json=true for data. Known ID/source: show (brief/note/since_version). ready: explain. "
+        "plan: project id. explore: goal id. advise: set/drop. profiles: strategy.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -99,7 +98,7 @@ TOOLS = [
                 "days": {"type": "integer", "minimum": 0, "maximum": 366},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
-                "scope": {"type": "string", "description": 'Only this scope; "" for unscoped.'},
+                "scope": {"type": "string", "description": '"" selects unscoped.'},
                 "by": {"type": "string"},
                 "profile": {"type": "string"},
                 "strategy": {"type": "string"},
@@ -115,17 +114,17 @@ TOOLS = [
     },
     {
         "name": "daymark_add",
-        "description": "Capture work. proposed=true for suggestions. " + _DATES + _DATE_FORMS,
+        "description": "Suggest with proposed=true. " + _DATES + _DATE_FORMS,
         "inputSchema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
                 "proposed": {"type": "boolean"},
                 "note": {"type": "string"},
-                "source": {"type": "string", "description": "Unique system:kind:id."},
+                "source": {"type": "string", "description": "system:kind:id"},
                 "kind": {
                     "type": "string",
-                    "description": "Default task",
+                    "default": "task",
                 },
                 "op": _OP,
                 **_FIELDS,
@@ -135,7 +134,7 @@ TOOLS = [
     },
     {
         "name": "daymark_edit",
-        "description": _DATES + "Empty dates clear. Pass review_token from show.",
+        "description": "Dates as in add; empty clears. Guard with review_token from show.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -151,9 +150,9 @@ TOOLS = [
     },
     {
         "name": "daymark_act",
-        "description": "note/done/release: text; wait: on, until; defer: until; block/unblock: on; "
-        "take: no id; scope/context/minutes. move: stage/place. assess: state/text. "
-        "use_profile: local id=name or set/drop.",
+        "description": "note/done/release: text. wait: on/until. defer: until. block/unblock: on. "
+        "take: omit id. move: stage/place. assess: state/text. "
+        "remind: when + recipient ID, default local recording. use_profile: local id=name or set/drop.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -166,6 +165,8 @@ TOOLS = [
                 "text": {"type": "string"},
                 "on": {"type": "string"},
                 "until": {"type": "string"},
+                "when": {"type": "string", "description": "Local date and time."},
+                "recipient": {"type": "string"},
                 "context": {"type": "string"},
                 "scope": {"type": "string"},
                 "minutes": {"type": "integer"},
@@ -182,10 +183,15 @@ TOOLS = [
     },
     {
         "name": "daymark_remember",
-        "description": "Keep a fact across sessions.",
+        "description": "Remember a fact.",
         "inputSchema": {
             "type": "object",
-            "properties": {"text": {"type": "string"}, "op": _OP},
+            "properties": {
+                "text": {"type": "string"},
+                "scope": {"type": "string"},
+                "source": {"type": "string"},
+                "op": _OP,
+            },
             "required": ["text"],
         },
     },
@@ -219,6 +225,7 @@ _VIEW_ARGS = {
 _ACT_ARGS = {
     "accept": {"expected_version", "review_token"},
     "dismiss": {"expected_version", "review_token"},
+    "forget": {"expected_version", "review_token"},
     "use_profile": {"id", "set", "drop", "expected_version"},
     "take": {"scope", "context", "minutes"},
     "note": {"text"},
@@ -226,6 +233,7 @@ _ACT_ARGS = {
     "release": {"text"},
     "wait": {"on", "until"},
     "defer": {"until"},
+    "remind": {"when", "recipient"},
     "block": {"on"},
     "unblock": {"on"},
     "assess": {"state", "text"},
@@ -255,6 +263,8 @@ def _validate_value(key, value, schema):
 
 
 def _validate_arguments(name, args):
+    if name not in _TOOLS:
+        raise DomainError("not_found", "Unknown tool")
     schema = _TOOLS[name]["inputSchema"]
     for key in schema.get("required", ()):
         if key not in args:
@@ -265,13 +275,18 @@ def _validate_arguments(name, args):
         _validate_value(key, value, schema["properties"][key])
     if name == "daymark_view":
         verb = args["view"]
+        required = ("id",) if verb in {"plan", "goal"} else ()
         allowed = _VIEW_ARGS.get(verb, set()) | {"view", "json"}
         if verb == "activity" and "after" in args:
-            _validate_value("after", args["after"], {"type": "integer", "minimum": 0})
+            cursor_number(args["after"])
         if verb == "find" and "after" in args:
             _validate_value("after", args["after"], {"type": "string"})
     elif name == "daymark_act":
         verb = args["action"]
+        required = {
+            "note": ("text",), "wait": ("on",), "remind": ("when", "recipient"),
+            "defer": ("until",), "block": ("on",), "unblock": ("on",), "assess": ("state",),
+        }.get(verb, ())
         allowed = _ACT_ARGS.get(verb, set()) | {"action", "op"}
         if verb in {"accept", "dismiss"} and "expected_version" in args:
             _validate_value(
@@ -286,6 +301,9 @@ def _validate_arguments(name, args):
             allowed.add("id")
     else:
         return
+    for key in required:
+        if key not in args:
+            raise DomainError("invalid", f"missing argument {key}")
     if extra := args.keys() - allowed:
         raise DomainError("invalid", f"{verb} does not take: {', '.join(sorted(extra))}")
 
@@ -306,7 +324,7 @@ def call(tasks, name, args, *, context=None, read_only=False):
     result = _invoke(tasks, name, args, context=context, read_only=read_only)
     if isinstance(result, StructuredView):
         return result.text or json.dumps(result.data, separators=(",", ":"), ensure_ascii=False)
-    return render.line(result, tasks.now()) if isinstance(result, dict) else result
+    return render.line(result, tasks.now(), timezone=tasks.timezone) if isinstance(result, dict) else result
 
 
 def _invoke(tasks, name, args, *, context=None, read_only=False):
@@ -317,14 +335,14 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
         )
     _validate_arguments(name, args)
     if name == "daymark_prime" and read_only:
-        state = render.prime_text(tasks, context=context, brief=True)
+        state = render.prime_text(tasks, context=context, brief=True, mcp=True)
         return (
             "Read-only Daymark session.\n" + state
             if args.get("brief")
             else _READ_GUIDE + "\n" + state
         )
     if name == "daymark_prime":
-        return render.prime_text(tasks, context=context, brief=args.get("brief", False))
+        return render.prime_text(tasks, context=context, brief=args.get("brief", False), mcp=True)
     if name == "daymark_view":
         return read_view(tasks, args)
     if name in {"daymark_add", "daymark_edit"}:
@@ -333,7 +351,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
             return tasks.add(args.pop("title"), **args)
         return tasks.edit(args.pop("id"), **args)
     if name == "daymark_remember":
-        return tasks.remember(args["text"], op=args.get("op"))
+        return tasks.remember(**args)
     if name == "daymark_act":
         if args["action"] == "use_profile":
             data = tasks.profile(
@@ -343,7 +361,9 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
                 op=args.get("op"),
                 expected_version=args.get("expected_version"),
             )
-            return StructuredView(data, text=render.profile_text(data, database=(context or {}).get("database")))
+            return StructuredView(
+                data, text=render.profile_text(data, database=(context or {}).get("database"))
+            )
         if args["action"] == "take":
             return (
                 tasks.take(
@@ -355,11 +375,9 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
                 or render.EMPTY_TAKE
             )
         action, id, op = args.get("action"), args["id"], args.get("op")
-        if action not in _ACTIONS:
-            raise DomainError("invalid", "Unknown action")
         if action == "note":
             item = tasks.note(id, args["text"], op=op)
-        elif action in {"accept", "dismiss"}:
+        elif action in {"accept", "dismiss", "forget"}:
             item = getattr(tasks, action)(
                 id,
                 expected_version=args.get("expected_version"),
@@ -370,6 +388,8 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
             item = getattr(tasks, action)(id, note=args.get("text"), op=op)
         elif action == "wait":
             item = tasks.wait(id, args["on"], until=args.get("until"), op=op)
+        elif action == "remind":
+            item = tasks.remind(id, args["when"], recipient=args["recipient"], op=op)
         elif action == "defer":
             item = tasks.defer(id, args["until"], op=op)
         elif action in {"block", "unblock"}:
@@ -386,13 +406,22 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
     raise DomainError("not_found", "Unknown tool")
 
 
-def _tool_error(code, message, details, protocol, name, arguments):
+def _tool_error(code, message, details, protocol, name, arguments, *, retry_op=None):
     recovery = {
         "conflict": "Read current state and compare it with the original request before retrying.",
         "forbidden": "Ask the authorized person to decide.",
         "not_found": "Check the workspace and look up the record again.",
-        "remote": "Check the service connection; reuse the same op if retrying the same write.",
+        "remote": "Check the service connection.",
     }.get(code)
+    if (
+        code == "invalid" and name == "daymark_view" and arguments.get("view") == "advise"
+        and (message == "Unknown argument" or message.startswith("advise does not take"))
+    ):
+        recovery = (
+            "Use scope or context to narrow advice. For temporary ranking or time limits, "
+            'use set, for example ["time-fit.minutes=15","decisions-first","shortlist.size=1"]. '
+            "Read view=profiles for available adjustments."
+        )
     if code == "conflict" and name == "daymark_act":
         if arguments.get("action") in {"accept", "dismiss"}:
             recovery = "Read the current proposal; ask the person to review any changed terms."
@@ -401,6 +430,12 @@ def _tool_error(code, message, details, protocol, name, arguments):
         elif arguments.get("action") == "use_profile":
             recovery = "Read daymark_view profiles and compare the current workspace settings."
     error = {"code": code, "message": message}
+    if retry_op is not None:
+        error["operation_id"] = retry_op
+        recovery = (
+            "The service may have committed the write. To retry that same request, "
+            f"keep its arguments and use op={json.dumps(retry_op, ensure_ascii=False)}."
+        )
     if details:
         error["details"] = details
     if recovery:
@@ -464,6 +499,10 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
         return _rpc_error(id, -32602, "tools/call requires a name and an arguments object")
     if name not in _TOOLS:
         return _rpc_error(id, -32602, "Unknown tool. Use tools/list for the available names.")
+    if not read_only and name not in _READ_NAMES and "op" not in arguments and isinstance(tasks.engine, Client):
+        # Keep the receipt key here in case the HTTP service commits the write
+        # but its reply fails before Tasks can return a result.
+        arguments = {**arguments, "op": uuid.uuid4().hex}
     try:
         value = _invoke(tasks, name, arguments, context=context, read_only=read_only)
         result = {"isError": False}
@@ -474,11 +513,15 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
             else:
                 text = json.dumps(value.data, separators=(",", ":"), ensure_ascii=False)
         elif isinstance(value, dict):
-            text = render.line(value, tasks.now())
+            text = render.line(value, tasks.now(), timezone=tasks.timezone)
             if protocol >= "2025-06-18":
                 result["structuredContent"] = {
                     key: value[key] for key in ("id", "kind", "title", "status", "version")
                 }
+                if value["kind"] == "reminder":
+                    result["structuredContent"].update(render.reminder_fields(value))
+                if value.get("archived"):
+                    result["structuredContent"]["archived"] = True
                 if name == "daymark_act" and arguments["action"] in {"take", "claim", "release"}:
                     result["structuredContent"].update(
                         claimed_by=value.get("claimed_by"), claim_until=value.get("claim_until")
@@ -490,12 +533,12 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
         result["content"] = [{"type": "text", "text": text}]
     except DomainError as exc:
         error = _tool_error(exc.code, str(exc), exc.details, protocol, name, arguments)
-    except KeyError as exc:
-        error = _tool_error(
-            "invalid", f"missing argument {exc.args[0]}", [], protocol, name, arguments
-        )
     except ClientError as exc:
-        error = _tool_error(exc.code, str(exc), [], protocol, name, arguments)
+        ambiguous = exc.status_code is None or exc.status_code >= 500
+        error = _tool_error(
+            exc.code, str(exc), [], protocol, name, arguments,
+            retry_op=arguments.get("op") if ambiguous and name not in _READ_NAMES else None,
+        )
     except Exception:  # noqa: BLE001 - never leak stored content through errors
         return _rpc_error(id, -32603, "The request failed")
     else:

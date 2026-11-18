@@ -4,6 +4,14 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+- Compact startup reads now return ready work, exact counts, scoped memory previews, the UTC evaluation instant and a workspace-checked activity checkpoint from one SQLite snapshot. Numeric cursors remain available. HTTP uses one authenticated read with bounded titles.
+- Schedule an existing task’s reminder through MCP. Scheduling receipts show the time, recipient, channel and reminder state.
+
+- Authenticated prime reports the credential’s workspace and actor. Ordinary capture notes receive the same server-side attribution as follow-up notes; native imports and raw historical note authors remain available.
+
+- The wheel includes the agent skill, available with `daymark onboard --skill`. Source distributions include the contributor guides and verification scripts.
+
+- Remembered facts accept scope and source. Startup includes scope in its five previews. `forget` only archives memories, supports `--if-version` and `--if-review`, and labels archived records in detail and write confirmations.
 - Schema upgrade notices give the rollback path. Older releases differ in whether they refuse an upgraded file.
 
 - `mcp --read-only` offers a two-tool review session, opens local SQLite read-only and restricts an HTTP-backed session to read requests.
@@ -40,6 +48,8 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
   with `advise --profile NAME`. Local preference writes accept a retry operation ID.
   Active profiles and saved copies have versions for safe updates. Active changes
   return a command that restores the previous choice at the observed revision.
+  The optional `project-review` strategy names active projects without an open
+  or waiting task and distinguishes projects with proposals awaiting a decision.
   Plain and gentle advice only fetch the ready queue for ordinary-sized lists.
 
 - `daymark --as WORKER take [--scope NAME] [--context ID]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.

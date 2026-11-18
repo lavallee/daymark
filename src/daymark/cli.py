@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any
 
 
+def _activity_cursor(text):
+    from .cursors import numeric_or_checkpoint
+
+    return numeric_or_checkpoint(text)
+
+
 def _json_file(path: str) -> Any:
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
@@ -171,6 +177,7 @@ def _simple_commands(sub) -> None:
     prime.add_argument("--brief", action="store_true", help="Skip the workflow guide")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
     mode = onboard.add_mutually_exclusive_group()
+    mode.add_argument("--skill", action="store_true", help="Print the full agent skill for this installed version")
     mode.add_argument("--write", metavar="FILE", help="Insert or refresh the snippet in FILE")
     mode.add_argument("--check", metavar="FILE", help="Check the snippet without writing (1 if missing or outdated)")
     advise = add("advise", "What to offer and what to mention, by the workspace's profile")
@@ -210,7 +217,7 @@ def _simple_commands(sub) -> None:
     agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
     agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     activity = add("activity", "Recent workspace changes and handoff notes")
-    activity.add_argument("--after", type=int, metavar="CURSOR", help="Read on from a saved cursor")
+    activity.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Read on from a saved cursor")
     activity.add_argument("-n", "--limit", type=int, default=20, help="Events per page (1–100)")
     show = add("show", "One entity with blockers, notes, reminders and history")
     selector = show.add_mutually_exclusive_group(required=True)
@@ -246,8 +253,8 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name in {"accept", "dismiss"}:
-            item.add_argument("--if-version", type=int, metavar="N", help="Decide only the reviewed version")
+        if name in {"accept", "dismiss", "forget"}:
+            item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
             item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
             item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
@@ -290,6 +297,8 @@ def _simple_commands(sub) -> None:
     find.add_argument("--unscoped", action="store_true", help="Only unscoped hits")
     remember = add("remember", "Keep a durable fact for later sessions", writes=True)
     remember.add_argument("text")
+    remember.add_argument("--scope", metavar="NAME", help="Where this preference or fact applies")
+    remember.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Exact source of this fact")
     policy = sub.add_parser("policy", help="Show or set who may accept and dismiss proposals")
     policy.add_argument("--deciders", metavar="NAMES", help="Comma-separated actor names")
     policy.add_argument("--clear", action="store_true", help="Let any writer decide again")
@@ -605,7 +614,12 @@ def _onboard(args) -> int:
         from .onboarding import maintain
 
         return maintain(Path(args.write or args.check), check=args.check is not None)
-    print(ONBOARD, end="")
+    if args.skill:
+        from .onboarding import skill_text
+
+        print(skill_text(), end="")
+    else:
+        print(ONBOARD, end="")
     return 0
 
 
@@ -623,7 +637,7 @@ def _simple(args, engine) -> int:
         _print(value) if as_json else print(text)
 
     def entity(item):
-        out(render.compact(item), render.line(item, now))
+        out(render.compact(item), render.line(item, now, timezone=tasks.timezone))
 
     scope = "" if getattr(args, "unscoped", False) else getattr(args, "scope", None)
 
@@ -632,6 +646,8 @@ def _simple(args, engine) -> int:
         if as_json and args.brief:
             _print(render.brief_session(tasks, context))
         elif as_json:
+            if args.url:
+                context.update(engine.identity() or {})
             _print(
                 {
                     "context": context,
@@ -651,6 +667,7 @@ def _simple(args, engine) -> int:
             out(data, render.strategy_detail(data))
         elif name == "strategies":
             listed = strategies.available()
+            plugins = strategies.installed_plugins()
             out(
                 {
                     "strategies": [
@@ -660,8 +677,9 @@ def _simple(args, engine) -> int:
                         for s in listed
                     ],
                     "profiles": {k: [x["use"] for x in v["strategies"]] for k, v in PROFILES.items()},
+                    **({"installed_plugins": plugins} if plugins else {}),
                 },
-                render.strategies_text(listed, PROFILES),
+                render.strategies_text(listed, PROFILES, plugins=plugins),
             )  # fmt: skip
         elif name == "profile":
             _profile(tasks, args, out)
@@ -671,7 +689,8 @@ def _simple(args, engine) -> int:
             )
             lean = advice.to_dict()
             lean["picks"] = [render.compact(x) for x in advice.picks]
-            out(lean, render.advice_text(advice, now))
+            session = render.session_context(tasks, database=args.db, url=args.url)
+            out(lean, render.advice_text(advice, now, session=session))
     elif name == "ready":
         if args.explain:
             view = tasks.explain_ready(limit=args.limit, move=args.move, scope=scope, context=args.context)
@@ -747,10 +766,10 @@ def _simple(args, engine) -> int:
         entity(item)
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op))
-    elif name in {"accept", "dismiss"}:
+    elif name in {"accept", "dismiss", "forget"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
     elif name in {"skip", "cancel", "reopen", "archive", "undo",
-                  "resume", "forget", "unfocus"}:  # fmt: skip
+                  "resume", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
     elif name == "condition":
         entity(
@@ -797,7 +816,7 @@ def _simple(args, engine) -> int:
             items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
             out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
     elif name == "remember":
-        entity(tasks.remember(args.text, op=op))
+        entity(tasks.remember(args.text, scope=args.scope, source=args.source, op=op))
     elif name == "project":
         _project(args, tasks, out, entity, op)
     elif name == "goal":
@@ -882,9 +901,7 @@ def _profile(tasks, args, out) -> None:
                 raise DomainError("invalid", "Supply a readable JSON profile file") from exc
             if not isinstance(payload, dict):
                 raise DomainError("invalid", "A profile file must contain a JSON object")
-            base = payload.get("profile", payload)
-            if not isinstance(base, dict):
-                raise DomainError("invalid", "A profile file must contain a profile configuration")
+            base = payload
         result = tasks.save_profile(
             args.save_as, profile=base, settings=args.set, drops=args.drop,
             expected_version=0 if args.if_version is None else args.if_version, op=args.op,
@@ -937,7 +954,7 @@ def _project(args, tasks, out, entity, op) -> None:
 
 def _fail(args, code: str, message: str, details=()) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
-    if code == "conflict" and args.command in {"add", "propose"} and getattr(args, "source", None):
+    if code == "conflict" and args.command in {"add", "propose", "remember"} and getattr(args, "source", None):
         details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
     if code == "conflict" and args.command in {"edit", "accept", "dismiss"} and getattr(args, "if_version", None):
         details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]

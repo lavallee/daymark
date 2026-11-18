@@ -23,6 +23,7 @@ from dateutil.relativedelta import relativedelta
 from dateutil.tz import datetime_exists, resolve_imaginary
 
 from . import plans
+from .client import Client
 from .models import DomainError, SourceRef, Temporal, normalize_now
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
@@ -293,7 +294,7 @@ class Tasks:
         self.engine = engine
         self.workspace = workspace
         # The HTTP client is already bound to a workspace by its credential.
-        remote = type(engine).__name__ == "Client"
+        remote = isinstance(engine, Client)
         self._ws = () if remote else (workspace,)
         # Over HTTP the server records its authenticated principal instead.
         self._take_identity = remote or actor is not None
@@ -562,21 +563,30 @@ class Tasks:
             payload["status"] = "waiting"
         if source is not None:
             payload["source_refs"] = [SourceRef.parse_ref(source).model_dump()]
+        capture_options = {}
         if note:
             # Part of the same write, so a retry can never lose or repeat it.
             saved = next(iter(retry["result"]["notes"]), {}) if retry else {}
+            author = self.actor
+            if not self._ws:
+                # An old receipt can contain a historical supplied author.
+                # Fresh capture on a current service is stamped inside the write.
+                # A 0.5 service has no trustworthy way to name its principal here.
+                author = saved.get("author")
+                if not retry and self.engine.identity() is not None:
+                    capture_options["attribute_capture_note"] = True
             payload["notes"] = [
                 {
                     "id": saved.get("id") or uuid.uuid4().hex[:12],
                     "at": normalize_now(saved.get("at")).isoformat(),
-                    "author": self.actor,
+                    "author": author,
                     "text": note,
                 }
             ]
         payload["id"] = id or (retry["result"]["id"] if retry else self._new_id())
         try:
             return self.engine.execute(
-                *self._ws, self._op_id(op), "create", payload, expected_version=0, **self._who
+                *self._ws, self._op_id(op), "create", payload, expected_version=0, **self._who, **capture_options
             )
         except Exception as exc:
             if retry or not op or getattr(exc, "code", None) != "conflict":
@@ -592,15 +602,18 @@ class Tasks:
         """Suggest a task for a person to accept or dismiss. It is not ready work."""
         return self.add(title, proposed=True, **fields)
 
-    def remember(self, text, *, op=None):
-        """Keep a durable fact that ``prime`` hands to every later session."""
-        return self.add(text, kind="memory", op=op)
+    def remember(self, text, *, scope=None, source=None, op=None):
+        """Keep an explicitly supplied fact for later sessions in this workspace."""
+        if not isinstance(text, str) or not text.strip():
+            raise DomainError("invalid", "A remembered fact needs text")
+        return self.add(text, kind="memory", scope=scope, source=source, op=op)
 
     def memories(self):
         return self.engine.list(*self._ws, kind="memory")
 
-    def forget(self, id, *, op=None):
-        return self._act(id, "archive", op=op)
+    def forget(self, id, *, op=None, expected_version=None, review_token=None):
+        """Retire a remembered fact while retaining its archived record and history."""
+        return self._act(id, "forget", op=op, expected_version=expected_version, review_token=review_token)
 
     # -- change
 
@@ -872,14 +885,15 @@ class Tasks:
 
     def profile_catalog(self, *, strategy=None):
         """Discover profiles and adjustment defaults, or inspect one strategy's parameters."""
-        from .strategies import available, describe
+        from .strategies import available, describe, installed_plugins
         from .strategies.profiles import PROFILES
 
         if strategy is not None:
             return describe(strategy)
         saved = self.saved_profiles() if hasattr(self.engine, "setting") else None
-
+        plugins = installed_plugins()
         return {
+            **({"installed_plugins": plugins} if plugins else {}),
             "active": self.profile(),
             "builtins": list(PROFILES),
             "saved": [{k: entry[k] for k in ("name", "version")} for entry in saved]
@@ -901,6 +915,10 @@ class Tasks:
         from .strategies.preferences import remove_profile
 
         return remove_profile(self, name, expected_version=expected_version, op=op)
+
+    def orientation(self):
+        """Read the facts for a returning worker, using one clock and one database snapshot."""
+        return self.engine.orientation(*self._ws, now=self._now, owner=self.actor)
 
     def summary(self, *, context=None, scope=None):
         extra = {} if scope is None else {"scope": scope}

@@ -176,3 +176,9 @@ The final row marks a boundary for product design. A workspace setting can
 show exactly what will run. It supplies no evidence of *why* an individual
 wants it. A host that learns from conversation should preserve that distinction
 when it decides what to remember.
+
+
+The [capture walkthrough](capture-clarification.md) follows five requests
+through capture, revision and later retrieval. A tentative idea with no review
+date exposed a gap between preserving something and asking the person for a
+decision.

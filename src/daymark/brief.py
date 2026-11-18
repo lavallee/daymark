@@ -45,10 +45,11 @@ def _projected_row(store, workspace, id, before_note):
     if row is None:
         raise DomainError("not_found", "Entity not found")
     item = dict(zip(_FIELDS, json.loads(row[0])))
+    encoding = store._text_encoding()
     item.update(
-        title=(row[1] or b"").decode(errors="ignore"),
-        description=(row[2] or b"").decode(errors="ignore"),
-        series_id=(row[4] or b"").decode(errors="ignore"),
+        title=(row[1] or b"").decode(encoding, errors="ignore"),
+        description=(row[2] or b"").decode(encoding, errors="ignore"),
+        series_id=(row[4] or b"").decode(encoding, errors="ignore"),
     )
     count = row[3] or 0
     stop = count
@@ -78,7 +79,7 @@ def _projected_row(store, workspace, id, before_note):
         ).fetchone()
         note_id, at, author = json.loads(info[0])
         notes.append(
-            {"id": note_id, "at": at, "author": author, "text": info[1].decode(errors="ignore")}
+            {"id": note_id, "at": at, "author": author, "text": info[1].decode(encoding, errors="ignore")}
         )
     return item, stop, count - stop, notes
 
@@ -118,6 +119,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
         item, note_count, newer, notes = _source(store, workspace, id, before_note)
         review_token = store._review_token(workspace, id)
         blocked = views.blockers(store, workspace, item)
+        named_blockers = views.blocker_previews(store, workspace, blocked)
         sources = store.db.execute(
             "SELECT system,kind,ref_id FROM daymark_sources WHERE workspace=? AND entity_id=? "
             "ORDER BY system,kind,ref_id",
@@ -141,6 +143,8 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
                 children.append(child_id)
             child_count += 1
     out = {key: item[key] for key in ("id", "kind", "status", "version")}
+    if item["archived"]:
+        out["archived"] = True
     out["review_token"] = review_token
     clipped = []
     for key in ("title", "description", "waiting_on"):
@@ -170,6 +174,8 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
         )
         out["readiness"] = {"ready": not reasons, "reasons": reasons}
     out["blocked_by"] = blocked[:_LINK_LIMIT]
+    if named_blockers:
+        out["blockers"] = named_blockers
     out["active_children"] = children
     for note in notes:
         if len(note["text"]) > _TEXT_LIMIT:

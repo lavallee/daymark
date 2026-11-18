@@ -260,3 +260,49 @@ def test_overdue_only_hard_deadline(tmp_path, monkeypatch):
     assert [x["id"] for x in store.query("w", {"field": "overdue", "op": "eq", "value": True})] == [
         "hard"
     ]
+
+
+@pytest.mark.parametrize("json_available", [False, True])
+def test_reminder_scan_preserves_workspace_order_precise_instants_and_dormant_work(json_available):
+    class EmbeddedConnection(sqlite3.Connection):
+        def execute(self, statement, *args):
+            if not json_available and "json_extract(" in statement:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(statement, *args)
+
+    connection = sqlite3.connect(":memory:", factory=EmbeddedConnection)
+    try:
+        store = Store(connection)
+        def make(ws, id, kind, **attrs):
+            return store.execute(ws, "new-" + id, "create", {"id": id, "kind": kind, **attrs}, 0)
+
+        for ws in ("second", "first"):
+
+            make(ws, "reviewer", "person")
+            make(ws, "proof", "task", status="proposed" if ws == "second" else "open")
+            for id, time in (
+                ("due", "2030-01-01T13:00:00+01:00"),
+                ("future", "2030-01-01T12:00:00.000001Z"),
+            ):
+                make(ws, id, "reminder", task_id="proof", recipient_id="reviewer", scheduled_at=time)
+        first = store.claim_reminders("worker", now=NOW, limit=1)
+        assert [(r["workspace"], r["id"]) for r in first] == [("first", "due")]
+        assert store.claim_reminders("another", now=NOW) == []
+        assert store.tick(now=NOW)["cancelled"] == 0
+        assert store.get("second", "due")["reminder_state"] == "pending"
+        assert store.health("second")["outbox"] == {
+            "pending": 2,
+            "leased": 0,
+            "failed": 0,
+            "delivered": 0,
+        }
+        store.execute("second", "decide", "accept", {"id": "proof"}, 1)
+        next_batch = store.claim_reminders("another", now=NOW + timedelta(microseconds=1))
+        assert [(r["workspace"], r["id"]) for r in next_batch] == [
+            ("second", "due"),
+            ("first", "future"),
+            ("second", "future"),
+        ]
+        assert store.health()["leased"] == 4
+    finally:
+        connection.close()

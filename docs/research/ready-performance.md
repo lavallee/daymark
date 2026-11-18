@@ -65,3 +65,84 @@ used by those summaries lowered median warm process CPU from 29.37 ms to
 to 0.09 MiB. Both ran against the same local SQLite database and returned
 identical bytes. Setup, serialization, native SQLite memory and transport were
 outside the measurements.
+
+## Compact startup under concurrent work
+
+Three independent reads could return a ready count of zero and a ready task
+ID in the same startup response when another writer captured a task between
+the count and the list. The current compact orientation counts and ranks a
+single stream of live tasks, fetches the memory previews, and reads the
+activity cursor within the same SQLite transaction. A two-connection test
+commits changes during that read and checks that the next activity page
+contains both changes. [Snapshot tests](../../tests/test_orientation_snapshot.py)
+
+The benchmark creates 1,000 tasks with twelve notes of 1,024 characters each
+plus twelve memories with 2,000-character titles. It compares one compact
+snapshot with three separate public reads returning equivalent information in
+a quiet workspace. Two runs of seven warm samples each on Linux x86-64,
+Python 3.14.6 and SQLite 3.53.1 gave median process CPU of 40.60 and 88.54 ms
+for the separate reads and 19.79 and 47.89 ms for the snapshot. Median wall
+times were 41.09 and 168.18 ms versus 19.87 and 71.84 ms. Peak traced Python
+allocations were 0.069 MiB and 0.032 MiB, respectively. The machine was also
+running other tests. These measurements exclude setup, HTTP and native SQLite
+allocations. Run `uv run python scripts/bench_orientation.py` to reproduce
+the fixture and parity check. [Benchmark](../../scripts/bench_orientation.py)
+
+A separate local ASGI trial used twelve 2,000-emoji memory titles and twenty
+tasks with 50,000-character descriptions and 8,000-character notes. The three
+responses for the prior workflow totaled 41,802 uncompressed body bytes.
+The authenticated orientation response occupied 4,935 bytes, including
+identity, evaluation instant and activity cursor. A separate run against the
+v0.5.0 service confirmed the fallback still finds a scoped fact in a later
+page; that service supplies views independently and returns no atomic
+checkpoint.
+
+
+### Cost of checking an activity boundary
+
+A checked continuation fingerprints the metadata and both snapshots of one
+event. A local synthetic run used a note edit on a task with 1 KiB, 64 KiB
+and 1 MiB of existing ASCII note text. An in-memory SQLite 3.53.1 database
+on CPython 3.14.6 produced median process CPU times of 0.096, 0.475 and
+4.676 ms respectively over 11 warm reads of the boundary. Peak Python
+allocation measured separately using `tracemalloc` was 6.0, 67.7 and
+67.7 KiB. These samples measure only the fingerprint and read transaction.
+A page that advances checks the incoming boundary and computes the outgoing
+one. Work scales with the two boundary events' size, independent of the
+number of earlier events.
+
+## Listing a portfolio
+
+The existing project-list regression creates 101 projects, 50 people and
+20,000 tasks. Tasks have assignees and cross-project dependencies. On the
+same synthetic SQLite file, seven pairs of fresh Python 3.12 processes
+alternated the previous and revised readers. Median process CPU for
+`projects` fell from 2.67 to 1.04 seconds. Each pair returned identical
+canonical JSON. The reader projects planning fields, groups external
+dependents in one pass and reuses the workspace's lookup of related records.
+
+The four-version test matrix running concurrently exceeded this test's
+four-second wall-clock limit on the loaded host. After the change Python
+3.12 still took 4.64 seconds in one simultaneous run. A separate run of the
+complete suite on that interpreter passed the existing limit. These
+measurements describe this fixture and host. Serving time under load also
+depends on the SQLite and application processes sharing the machine.
+
+## An idle reminder worker with a history
+
+A synthetic workspace contained 1,500 reminders, 40 tasks with long
+descriptions and prior notes, and one recipient. The built-in worker recorded
+the 1,000 due reminders. The other 500 were scheduled for a later date. Seven
+further passes at a fixed earlier instant each returned zero claims, recordings
+and failures. The SQLite file and worker limit were the same for both reads.
+
+| One idle pass | Previous reader | Active-reminder projection |
+| --- | ---: | ---: |
+| Median process CPU, Python 3.12 | 111 ms | 27 ms |
+| Peak traced Python allocations, separate pass | 8.85 MiB | 11 KiB |
+
+The current reader filters on reminder state, reads linked task status within
+the same transaction and fetches full records for the due batch. Ordering
+uses aware datetimes at their stored precision. The measurement includes
+tick, heartbeat, claim and the database commits. It excludes external
+notification services and native SQLite allocations.

@@ -2,6 +2,7 @@
 
 import ast
 import json
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 from daymark import DomainError, Store, Tasks, strategies
 from daymark.cli import main
 from daymark.mcp import handle
-from daymark.render import advice_text
+from daymark.render import advice_text, projects_text
 from daymark.strategies import Advice, Strategy, register
 from daymark.strategies.profiles import PROFILES
 
@@ -332,7 +333,9 @@ def test_a_stale_stored_profile_never_locks_a_workspace_out(tasks):
     tasks.engine.set_setting("w", "profile", broken)
     profile = strategies.stored_profile(tasks)
     assert profile["skipped"] == ["uninstalled-plugin"]
-    assert profile["strategies"] == [{"use": "shortlist", "with": {"size": 1}}]
+    assert profile["strategies"] == [
+        {"use": "shortlist", "with": {"size": 1}, "unavailable_parameters": {"renamed_away": 9}}
+    ]
     advice = strategies.advise(tasks, profile)
     assert "could not be used: uninstalled-plugin" in advice.notes[0].text
     assert "! uninstalled-plugin" in __import__("daymark.render", fromlist=["x"]).profile_text(
@@ -640,6 +643,9 @@ def test_optional_project_review_checks_recorded_work_across_task_scopes_and_con
     tasks.propose("A possible cover", id="cover", project="ideas", scope="home")
     tasks.add("By phone", kind="context", id="phone")
     before = tasks.engine.export("w")
+    rendered = projects_text(tasks.projects())
+    closed = next(line for line in rendered.splitlines() if line.startswith("closed "))
+    assert "completed" in closed
     assert not tasks.advise().notes
     review = tasks.advise(profile="plain", settings=["project-review"], scope="studio")
     assert [n.ids for n in review.notes] == [["empty"], ["ideas"]]
@@ -670,3 +676,85 @@ def test_project_review_limits_named_projects_and_remains_opt_in(tasks, monkeypa
         tasks, "projects", lambda: pytest.fail("A plain listing read project plans")
     )
     assert not tasks.advise().notes
+
+
+def test_ready_recovery_reaches_new_ids_on_the_original_database_workspace_and_actor(
+    tmp_path, monkeypatch, capsys
+):
+    import re
+    import shlex
+
+    first, second = tmp_path / "studio work.sqlite3", tmp_path / "other.sqlite3"
+    with closing(Store(first)) as store:
+        tasks = Tasks(store, "studio", actor="reviewer")
+        tasks.add("By phone", id="phone", kind="context")
+        for i in range(32):
+            tasks.add(f"Proof {i}", id=f"sample-{i:02}", contexts=["phone"], scope="proofs")
+        preview = tasks.advise(
+            profile="plain", settings=["shortlist.size=25"], scope="proofs", context="phone"
+        )
+        assert preview.to_dict()["ready_query"] == {
+            "scope": "proofs",
+            "context": "phone",
+            "limit": 30,
+        }
+        mcp = advice_text(preview, mcp=True)
+        assert 'daymark_view {"view":"ready","scope":"proofs","context":"phone","limit":30}' in mcp
+
+    forward = ["--db", str(first), "--workspace", "studio", "--as", "reviewer", "--tz", "UTC"]
+    assert (
+        main(
+            [
+                *forward,
+                "advise",
+                "--profile",
+                "plain",
+                "--set",
+                "shortlist.size=25",
+                "--scope",
+                "proofs",
+                "--context",
+                "phone",
+            ]
+        )
+        == 0
+    )
+    text = capsys.readouterr().out
+    shown = set(re.findall(r"^(sample-\d+) ", text, re.MULTILINE))
+    command = shlex.split(re.search(r"see `([^`]+)`", text)[1])
+    assert len(shown) == 25 and command[0] == "daymark"
+    monkeypatch.setenv("DAYMARK_DB", str(second))
+    assert main(command[1:]) == 0
+    reached = set(re.findall(r"^(sample-\d+) ", capsys.readouterr().out, re.MULTILINE))
+    assert len(reached) == 30 and len(reached - shown) == 5
+    assert not second.exists()
+
+
+def test_time_window_marks_hidden_hard_deadlines_and_excludes_time_gated_work(tasks):
+    tasks.add("Supplier reply", id="wait", minutes=1, due="today", waiting_on="supplier")
+    tasks.add("Future check", id="future", minutes=1, start="+1d", due="+1d")
+    tasks.add("Due without estimate", id="unknown", due="today")
+    tasks.add("Large proof", id="long", due="today", minutes=45)
+    tasks.add("Short approval", id="sign", due="today", minutes=5, move="answer")
+    tasks.add("Planned only", id="plan", plan="today", minutes=30)
+    tasks.add("Soft target", id="target", target="today", minutes=30)
+    configured = ["time-fit.minutes=5"]
+    advisory = tasks.advise(settings=configured)
+    assert [t["id"] for t in advisory.picks] == ["sign"] and advisory.held_back == 4
+    assert set(advisory.notes[-1].ids) == {"long", "unknown"}
+    assert "hard deadlines today or earlier" in advisory.notes[-1].text
+    broad = tasks.advise(settings=["time-fit.minutes=60"])
+    assert broad.notes[-1].ids == ["unknown"]
+    tomorrow = Tasks(tasks.engine, "w", actor="alice", now=NOW + timedelta(days=1), timezone=ZONE)
+    assert {x["id"] for x in tomorrow.advise(settings=configured).picks} == {"sign", "future"}
+
+
+def test_later_limits_remove_first_steps_of_omitted_tasks_from_all_surfaces(tasks):
+    for id, minutes in (("first", 30), ("second", 5)):
+        tasks.add(id, id=id, minutes=minutes, checklist=[{"id": "check", "text": f"Next for {id}"}])
+    advice = tasks.advise(settings=["first-step", "time-fit.minutes=10"])
+    assert [x["id"] for x in advice.picks] == ["second"] and advice.held_back == 1
+    assert advice.steps == advice.to_dict()["steps"] == {"second": "Next for second"}
+    assert "Next for first" not in advice_text(advice)
+    empty = tasks.advise(settings=["first-step", "time-fit.minutes=2"])
+    assert not empty.steps and not empty.picks

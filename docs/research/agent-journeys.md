@@ -246,3 +246,211 @@ Checking opens SQLite read-only and exits 0 for a passing outcome or 1 for
 a miss. Record the client and version, the answer shown to the person, and
 any interventions alongside the score. A state-based pass alone cannot tell
 whether the reader understood the request or found the experience easy.
+
+## Returning for a project review
+
+The GTD weekly checklist asks people to inspect project outcomes and look for a
+current action. Waiting items and calendars have separate review steps. We took
+the project question alone and ran it against eleven synthetic projects in a
+fresh local wheel. [GTD Weekly Review checklist](https://gettingthingsdone.com/wp-content/uploads/2014/10/Weekly_Review_Checklist.pdf)
+
+Nine open projects belonged to the studio scope, one open project belonged to
+the home scope and one studio project was completed. The studio projects
+included an empty project, one containing only completed work and one containing
+only a proposal. The other six already contained work: a future start, a wait
+on the supplier, an external dependency, another worker's claim, an action in
+the home scope and an ordinary ready task. The home action also carried the
+phone context.
+
+The original project list displayed zero of zero tasks done for both the empty
+studio project and the completed project. It displayed zero of one done for a
+waiting project, another worker's project and the ordinary ready project.
+`projects --json` exposed each project's status, stage counts and proposal
+count. Selecting projects by their own scope required the scoped project
+search as well. Reading every plan individually also distinguished the cases
+but required eleven plan reads. The built-in assistant gave no project review
+prompts. The studio-and-phone ready list was empty.
+
+One call to `advise --profile plain --scope studio --set project-review --set
+shortlist.size=1` named the three studio projects with no open or waiting
+action. It identified the pending proposal. The caller's context-filtered
+request named no projects and explained how to run a whole-project review.
+A new agent process used an explicitly saved `weekly` copy and got the same
+three names. The active setting stayed at `plain`, and the workspace's public
+entity and event export compared equal across those reads and configuration
+changes.
+
+In a subsequent session the fixture supplied three explicit decisions. The
+person added a next action to the empty project, accepted the proposed task,
+and marked the project containing only completed work as done. A later use of
+the saved routine found an open or waiting action in all eight remaining
+studio projects. The study demonstrates how recorded state changes the answer.
+It cannot tell whether a person will choose to review every week or whether
+an existing task is the right next action.
+
+## Revising a preference across sessions
+
+A scripted run on November 18 used 29 fresh CLI processes against one temporary
+database. One worker saved 12 scoped facts in the proofs workspace and a
+different convention in another workspace. A returning worker saw five facts
+with scope labels during startup and recovered all seven others by following
+the ID cursor. It found a fact outside that first page by text and scope,
+inspected it, and replaced its wording at the reviewed revision. An attempted
+retirement using the earlier review token returned a conflict. Supplying a
+task ID returned an invalid-input error and left that task active. Retiring
+the reviewed fact and retrying with the same operation produced one archive
+at version three. Eleven active facts remained in the workspace and the
+separate convention remained in the other workspace.
+
+Before these changes, the dedicated forget verb could archive an unrelated
+task. The text reply and brief for an archived memory also omitted its archive
+state, and startup omitted recorded scope labels. The scripted trial exercises
+recorded state and machine-visible output. It does not measure whether a
+person would choose a given convention or whether a model can infer it.
+[Memory lifecycle regression](../../tests/test_memory_journey.py)
+
+
+## What a short time window leaves out
+
+A fixed-clock read used ready tasks with a past hard deadline and no estimate,
+a 50-minute report due today, a five-minute decision due today, and an
+eight-minute task planned today. Four other tasks were held by a future start,
+a wait, a proposal, or an unmet dependency. All eight carried the selected
+scope and phone context.
+
+| Available minutes | First day's ready picks |
+| --- | --- |
+| 3 | None |
+| 5 | Five-minute decision |
+| 10 | Decision and planned task |
+| 60 | Report, decision and planned task |
+
+On the next day the one-minute task whose start had arrived appeared in every
+window. The waiting, proposed and blocked tasks appeared in none. The
+unestimated task remained outside even the 60-minute window. The earlier
+advice only mentioned a missing estimate. In a repeat from a newly installed
+wheel the note identified the omitted task with a hard deadline. An upcoming
+or held task did not lose its start, dependency or status. The public export
+compared equal across eight previews.
+
+A second case used 32 ready tasks in one scope of a non-default workspace.
+After a 25-pick shortlist, following the earlier plain-read suggestion
+selected the default workspace and found nothing. With the workspace supplied
+manually, the ordinary first page returned 20 tasks, all of them already shown.
+The revised local command carried the database, workspace, actor, time zone
+and scope, and asked for 30 rows. Running it returned five additional IDs.
+The MCP suggestion carries ready arguments for its existing connection.
+This is a fresh bounded read, so intervening task changes can change the order.
+
+## Six requests in installed agent hosts
+
+We ran each of the six portable journeys above in two fresh MCP host sessions
+using the same development tree. The host received only the person's request
+and access to its own synthetic Daymark workspace. The two lookup cases used
+the server's read-only mode. We inspected the final text and scored the
+database after each session.
+
+| Request | Claude Code, Daymark tools enabled | Codex CLI 0.166.0, approval unavailable |
+| --- | --- | --- |
+| Move the plan, preserve the deadline | Passed | Proposed the correct guarded edit. The host declined the call. |
+| Distinguish a planned date and a cutoff | Passed | Selected both fields correctly. The host declined both writes. |
+| Wait for the print shop | Passed | The host declined the wait. |
+| Save a suggestion | Passed | The host declined the capture. |
+| Return one studio option | Passed | Passed |
+| Name the blocking prerequisite | Passed | Passed |
+
+The four unsuccessful Codex writes never reached Daymark. Its final answers
+acknowledged that the requested state had not been recorded. Both clients
+supplied the right ID in the two read-only cases and left the workspace
+unchanged. Host authorization is part of the user's experience. We record
+those outcomes separately from incorrect field choices and from the people
+who may later use the tool.
+
+## A reminder with an actual time and recipient
+
+A fresh session was asked to remind an existing reviewer about a proof at
+09:00 London time on May 3, 2030, while keeping the original plan and
+deadline. The first Claude Code session could find those tasks and dates.
+Its MCP tools offered no scheduling action. It left the records alone and
+suggested creating another task.
+
+After exposing the existing scheduling verb, a second fresh session scheduled
+one reminder for 08:00 UTC, then checked the task and reminder. The task
+stayed at its original version. The answer distinguished a pending local
+recording from sending a notification. Its first call supplied review guards
+for a task edit. Daymark refused those extra fields, and the client recovered
+on the next call. Each trial used one session and a synthetic recipient.
+
+
+## Returning after an extension changes
+
+An isolated environment installed a synthetic third-party wheel through the
+public `daymark.strategies` entry point. Its module wrote an import marker so
+the trial could distinguish metadata discovery from Python execution.
+Installing and listing the package left that marker absent. A one-call preview
+then imported the strategy and returned the expected sample note. A saved
+profile used one sample on the next run. The public task and event export
+compared equal throughout these package and preference changes.
+
+Removing the package produced a skipped-strategy note and preserved the
+stored configuration. An installed replacement with a missing Python
+dependency had previously produced a generic CLI failure. After the change,
+the rest of the advice remained available and named the unavailable strategy.
+A fresh process could list the installed entry-point name before selecting it.
+
+A replacement version then renamed `limit` to `samples` and changed its
+default. The saved revision still held `limit=1`, but the earlier active read
+showed only `samples=3`. Two available sample IDs appeared with no warning.
+The updated active read identifies the saved, unavailable parameter separately
+from the current effective value. A regression exercises an unrelated edit,
+a named export, explicit migration and version-guarded undo. It verifies the
+original value survives until the person explicitly removes it.
+
+The contributor example's Python and TOML blocks were extracted into a wheel.
+Its strategy returned the correct unestimated task against both the public
+v0.5.0 tag and the development checkout in separate environments.
+[Build a strategy package](../strategy-plugins.md)
+
+
+## Resuming after restore or a competing writer
+
+A synthetic worker saved its compact startup checkpoint, another worker
+added a note and changed the title, and we resumed from a SQLite backup and
+a separate native JSON installation. The native destination already had
+events in another workspace, so its internal SQLite row numbers differed.
+Both returned the note and title edit in order with a one-event page limit.
+
+Switching to a workspace with the same numeric head, removing the saved
+boundary event, and replacing its recorded title under the same operation
+ID each produced a conflict on checked continuation. A native merge that
+only added an entity left the event boundary intact. So did an event
+backfill earlier than the checkpoint. Reading a fresh prime exposed the
+newly imported fact. Tests cover both UTF-16 byte orders on caller-provided
+databases and native restore to a UTF-8 installation.
+
+A second file-backed trial held a caller-owned read transaction open. After
+another connection edited a task, the first worker still saw its original
+snapshot. Its attempted note returned a conflict. The application's own
+pending work stayed intact. After the application ended the old transaction,
+the worker could submit the note against the revised title. Another
+connection saw the note only after the application's commit.
+
+
+## Two personal views of the same workspace
+
+Two scripted hosts used one four-task workspace and the same Daymark actor.
+One host always sent a ten-minute window and a one-pick limit. The other
+selected a named decision-first, two-pick review. Five fresh stdio processes
+per SDK repeated the trial with Python MCP clients 1.30.0 and 2.3.0.
+
+| Observation | What each host received |
+| --- | --- |
+| First selections | One eight-minute task for the first host. A decision and the eight-minute task for the second. Each selection took one advice call. |
+| Temporary exception | The second host requested plain order and saw all four tasks. Starting new clients and resending their original selections restored one and two picks. |
+| Shared change | An explicitly requested local `use_profile` adoption changed the default for both hosts. A caller resending its inline preference continued to see one pick. |
+| Later library edit | The named review changed from two to three picks at saved revision 2. A fresh process under a different actor saw the two-pick active copy. Selecting the name explicitly produced three and reported revision 2. |
+
+Both hosts could inspect the same named recipe. The public entity and event
+export compared equal at the beginning and end. The trial supplied the host's
+personal choices directly. Daymark inferred no relationship between the actor,
+session and individual.

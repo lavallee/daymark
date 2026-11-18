@@ -1,11 +1,18 @@
 """Run this outside a checkout against an installed Daymark distribution."""
 
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from daymark import Store
 
 with tempfile.TemporaryDirectory() as directory:
+    skill = subprocess.check_output(
+        [sys.executable, "-I", "-m", "daymark.cli", "onboard", "--skill"], cwd=directory, text=True
+    )
+    assert skill.startswith("---\nname: daymark\n") and "daymark prime" in skill
+    assert not list(Path(directory).iterdir())
     store = Store(Path(directory) / "work.db")
     task = store.execute(
         "demo",

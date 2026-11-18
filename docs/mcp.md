@@ -33,7 +33,18 @@ If the host cannot find `daymark`, set `command` to the installed executable's
 absolute path. Keep the arguments as separate list entries. A client can also
 start `daymark --url URL --token-env DAYMARK_TOKEN mcp` with the optional
 service dependencies installed. The HTTP credential selects the workspace and
-the server records its authenticated principal.
+the server records its authenticated principal. Prime reports the workspace
+and actor confirmed by a current service, even when local `--workspace` and
+`--as` labels differ. `daymark where` explains the selected connection
+without contacting the service.
+
+An initial note on an ordinary authenticated capture records the principal
+handling that write. Separate note operations follow the same rule. Raw API
+creates and native imports can preserve a historical note's supplied author.
+Each write event separately identifies the actor that submitted the change.
+When a 0.5.0 service cannot confirm the principal for a fresh embedded note,
+the current client leaves that note’s author empty. Its create event still
+records the submitting principal.
 
 ## Give a reviewer a read-only connection
 
@@ -123,13 +134,18 @@ Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
 
 A ready row carries its ID, title, current version and the reason for its place.
 Supply `context` with a context entity ID to filter ready work, its explanation, advice or the agenda.
-Capture and edit accept `contexts`, an array of context IDs. Tagged ready rows
+Capture and edit accept `contexts`, an array of context IDs. When advice holds
+ready work back, the text includes a ready-view call for the same connection.
+Structured advice includes `ready_query`. Merge its filters into
+`{"view":"ready","json":true}` to inspect the ordinary order. Tagged ready rows
 show up to three context IDs and a count of any additional ones.
 A search page returns `items` and `next`. To continue, supply `next` as the
 string `after` and keep the original filters. Activity uses a numeric cursor.
 Show accepts exactly one of `id` or `source`. Its brief supplies individual note
 IDs and a cursor to older previews. The full show includes note IDs, authors,
-timestamps and text.
+timestamps and text. Both full show and brief name up to five unresolved
+prerequisites with their titles and current statuses in `blockers`. Their
+`blocked_by` arrays retain the IDs.
 
 ## Change a local working preference
 
@@ -153,6 +169,10 @@ operation and expected version needed to restore the earlier settings. Its
 text includes the exact CLI command for use with the same database. Named
 profile administration remains available through `daymark profile` commands.
 
+Use matching client and service versions for memory retirement. The current
+service verifies the memory’s kind inside the archive transaction and accepts
+the review token returned by its detail view.
+
 ## Mix client and service versions
 
 The stdio MCP process and the HTTP service can run different versions of
@@ -175,6 +195,13 @@ decision when a policy refuses the action. Input types matter. JSON
 `false` is a boolean, and `"false"` is a string. A parameter that belongs to a
 different view or action is refused before the operation runs.
 
+When the HTTP service loses a write response, it may already have committed
+the change. The error carries the operation ID in its text and in
+`structuredContent.error.operation_id`. Repeat the original arguments with
+that value as `op`. If the caller omitted `op`, the HTTP bridge generated one
+before sending the write. Choose your own key before submission when the
+entire stdio process or its response could be lost.
+
 An unknown tool or a malformed request produces a JSON-RPC error. Refresh
 `tools/list` to discover tool names and argument schemas. The server writes one
 JSON-RPC message per stdout line. Diagnostics use stderr.
@@ -186,3 +213,21 @@ Protocol 2024-11-05 clients receive text results.
 [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
 [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
 [MCP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+
+
+## Set a reminder for an existing task
+
+Use `daymark_act` with the task ID, an explicit date and time, and the
+recipient's existing person or principal ID. The session timezone governs
+a local wall time.
+
+```json
+{"action":"remind","id":"draft","when":"2030-05-03T09:00","recipient":"reviewer","op":"draft-review-reminder-01"}
+```
+
+A Europe/London session stores 08:00 UTC on that date. The response gives
+the reminder ID, recipient, scheduled instant, channel and state. At capture
+the state is `pending`. The built-in worker records a delivery locally when
+it runs and the reminder is eligible. An external notification requires a
+configured delivery integration. The task keeps its original plan and
+deadline. A proposal's reminder stays dormant pending acceptance.

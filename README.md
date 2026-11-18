@@ -86,6 +86,9 @@ for task in tasks.ready():
     print(task["id"], task["title"])
 ```
 
+The development version also ships its agent skill inside the CLI package.
+Run `daymark onboard --skill` to read the guide that matches the installed version.
+
 For a short list during a busy afternoon or a standing preference, see
 [working with a person’s preferences](docs/working-preferences.md).
 

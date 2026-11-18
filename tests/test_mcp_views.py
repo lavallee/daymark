@@ -77,6 +77,7 @@ def test_queue_rows_omit_long_records_but_full_show_retains_note_identity(tasks)
     ready = read(tasks, "ready", json=True)["structuredContent"]["items"]
     assert [item["id"] for item in ready] == ["a"]
     assert ready[0]["priority"] == 2
+    assert "estimate_minutes" not in ready[0]
     assert {"notes", "description", "metadata"}.isdisjoint(ready[0])
     detail = read(tasks, "show", id="a", json=True)["structuredContent"]
     note = next(n for n in detail["entity"]["notes"] if n["text"] == text)

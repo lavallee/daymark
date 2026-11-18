@@ -41,6 +41,7 @@ register(
 def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
     minutes = params["minutes"]
     fits, longer, unknown = [], 0, 0
+    due_held = []
     considered = len(advice.picks)
     for item in advice.picks:
         estimate = item["estimate_minutes"]
@@ -50,6 +51,9 @@ def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
             longer += 1
         else:
             fits.append(item)
+            continue
+        if item["deadline"] and _days_until(item["deadline"], view.now) <= 0:
+            due_held.append(item["id"])
     advice.picks = fits
     advice.held_back += longer + unknown
     if fits or longer or unknown:
@@ -63,6 +67,14 @@ def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
         if unknown:
             message += f" {unknown} without an estimate."
         advice.notes.append(Note("time-fit", message))
+    if due_held:
+        count = len(due_held)
+        text = (
+            "One omitted task has a hard deadline"
+            if count == 1
+            else f"{count} omitted tasks have hard deadlines"
+        )
+        advice.notes.append(Note("time-fit", text + " today or earlier.", due_held[:5]))
 
 
 register(

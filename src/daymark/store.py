@@ -7,6 +7,7 @@ or closes it. Path-backed stores serialize writes and commit each operation.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import re
 import sqlite3
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import plans, ranks
+from . import outbox, plans, ranks
 from .models import (
     DomainError,
     Entity,
@@ -241,12 +242,17 @@ class Store:
                 released = True
                 if self._owned and started:
                     self.db.commit()
-            except BaseException:
+            except BaseException as exc:
                 if not released:
                     self.db.execute("ROLLBACK TO " + name)
                     self.db.execute("RELEASE " + name)
                 if self._owned and started:
                     self.db.rollback()
+                if isinstance(exc, sqlite3.OperationalError) and getattr(exc, "sqlite_errorname", "") == "SQLITE_BUSY_SNAPSHOT":
+                    raise DomainError(
+                        "conflict", "Another writer committed after this SQLite snapshot began",
+                        ["End the outer transaction, read current state, then retry the original operation."],
+                    ) from None
                 raise
 
     def close(self):
@@ -460,6 +466,10 @@ class Store:
             "INSERT INTO daymark_event_cursors VALUES(?,?,?)", (workspace, seq, cursor.lastrowid)
         )
 
+    def _text_encoding(self):
+        """SQLite uses the database text encoding when casting TEXT to BLOB."""
+        return self.db.execute("PRAGMA encoding").fetchone()[0].lower()
+
     def head(self, workspace):
         """The workspace's latest event cursor; 0 when nothing has happened."""
         with self._lock:
@@ -668,6 +678,10 @@ class Store:
             or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", name) is None
         ):
             invalid("Setting needs a workspace and a short lowercase name")
+        try:
+            workspace.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("A setting workspace must be UTF-8 text")
         return f"setting:{workspace}:{name}"
 
     def setting_state(self, workspace, name):
@@ -700,10 +714,12 @@ class Store:
             invalid("Expected configuration version must be a nonnegative integer")
         try:
             text = None if value is None else canonical(value)
-        except (TypeError, ValueError):
-            invalid("A setting is plain JSON")
+            if text is not None:
+                text.encode("utf-8")
+        except (TypeError, ValueError, RecursionError):
+            invalid("A setting is plain UTF-8 JSON")
         if text is not None and len(text) > 65_536:
-            invalid("Setting exceeds 64 kB")
+            invalid("Setting exceeds 65,536 JSON characters")
         with self._transaction():
             state = self.setting_state(workspace, name)
             if expected_version is not None and expected_version != state["version"]:
@@ -727,6 +743,10 @@ class Store:
     def _setting_op_key(workspace, operation_id):
         if not isinstance(operation_id, str) or not 1 <= len(operation_id) <= 200:
             invalid("Configuration operation ID must be 1 to 200 characters")
+        try:
+            operation_id.encode("utf-8")
+        except UnicodeEncodeError:
+            invalid("A configuration operation ID must be UTF-8 text")
         # Workspace and operation IDs can contain separators. JSON preserves the pair.
         return "setting-op:" + canonical([workspace, operation_id])
 
@@ -741,8 +761,8 @@ class Store:
         key = self._setting_op_key(workspace, operation_id)
         try:
             digest = hashlib.sha256(canonical([name, request]).encode()).hexdigest()
-        except (TypeError, ValueError):
-            invalid("A configuration request must be plain JSON")
+        except (TypeError, ValueError, RecursionError):
+            invalid("A configuration request must be plain UTF-8 JSON")
         with self._transaction():
             row = self.db.execute(
                 "SELECT value FROM daymark_scheduler WHERE key=?", (key,)
@@ -942,12 +962,21 @@ class Store:
     def _execute(self, workspace, operation_id, action, payload, expected_version):
         if action == "take" and payload.get("owner") != self._actor:
             invalid("Take requires the owner to match the acting worker")
+        forgetting = action == "forget"
+        if forgetting:
+            if "id" not in payload or set(payload) - {"id", "review_token"}:
+                invalid("Forget requires a memory ID")
+            # Forget has always recorded an archive event and receipt. Keep
+            # matching those requests, with a memory-kind check on both paths.
+            action = "archive"
         digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
         if replay is not None:
+            if forgetting and replay.get("kind") != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
             return replay
         if "review_token" in payload:
-            if action not in {"update", "accept", "dismiss"}:
-                invalid("Only an edit or a proposal decision takes a review token")
+            if not forgetting and action not in {"update", "accept", "dismiss"}:
+                invalid("This operation does not support a review token")
             payload = dict(payload)
             token = payload.pop("review_token")
             if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
@@ -1017,6 +1046,8 @@ class Store:
                 self._record(workspace, operation_id, digest, data)
                 return data
             before = self.get(workspace, payload["id"])
+            if forgetting and before["kind"] != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
             if before["version"] != expected_version:
                 raise DomainError("conflict", "Version mismatch")
             raw = {**before, "version": before["version"] + 1, "updated_at": now}
@@ -2163,6 +2194,12 @@ class Store:
 
         return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner)
 
+    def orientation(self, workspace, *, now=None, owner=None):
+        """An atomic startup snapshot including active work and shared memory previews."""
+        from . import views
+
+        return views.orientation(self, workspace, now=now, owner=owner)
+
     def summary(self, workspace, *, now=None, context=None, scope=None, owner=None):
         from . import views
 
@@ -2188,7 +2225,7 @@ class Store:
             raw = self.db.execute(
                 "SELECT after_data FROM daymark_events WHERE seq=?", (row[5],)
             ).fetchone()[0]
-            if raw is None or self._validated(json.loads(raw)) != self.get(workspace, id):
+            if raw is None or canonical(self._validated(json.loads(raw))) != canonical(self.get(workspace, id)):
                 return None
         evidence = ["daymark-review-v1", workspace, id, *row[:4]]
         return hashlib.sha256(canonical(evidence).encode()).hexdigest()[:32]
@@ -2199,6 +2236,9 @@ class Store:
             result = self.receipt(workspace, operation_id)
             if result is None:
                 return None
+            forgetting = action == "forget"
+            if forgetting:
+                action = "archive"
             if not isinstance(result.get("id"), str) or (
                 entity_id is not None and result["id"] != entity_id
             ):
@@ -2210,6 +2250,8 @@ class Store:
             ).fetchone()
             if not row or (actor is not None and row[1] is not None and row[1] != actor):
                 raise DomainError("conflict", "Operation ID belongs to a different request")
+            if forgetting and result.get("kind") != "memory":
+                invalid("Forget requires a remembered fact; use a memory ID")
             return {"before": json.loads(row[0]) if row[0] else None, "result": result}
 
     def receipt(self, workspace, operation_id):
@@ -2230,38 +2272,16 @@ class Store:
                 "INSERT INTO daymark_scheduler VALUES('tick',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (now.isoformat(),),
             )
-            workspaces = [
-                row[0]
-                for row in self.db.execute(
-                    "SELECT DISTINCT workspace FROM daymark_entities WHERE kind='reminder'"
-                )
-            ]
-            cancelled = 0
-            for workspace in workspaces:
-                for item in self.list(workspace, kind="reminder", include_archived=True):
-                    if item["reminder_state"] not in {"pending", "leased", "snoozed", "failed"}:
-                        continue
-                    if not self._dispatchable(item, dormant=True):
-                        before = dict(item)
-                        item.update(
-                            reminder_state="cancelled",
-                            lease_owner=None,
-                            lease_until=None,
-                            lease_token=None,
-                            version=item["version"] + 1,
-                            updated_at=now.isoformat(),
-                        )
-                        self._put(item)
-                        self._event(
-                            workspace,
-                            None,
-                            "reminder.invalidate",
-                            before,
-                            item,
-                            created_at=now.isoformat(),
-                        )
-                        cancelled += 1
-            return {"cancelled": cancelled}
+            expired = [(r.workspace, r.id) for r in outbox.active(self.db) if r.availability == "inactive"]
+            for workspace, id in expired:
+                before = self.get(workspace, id)
+                updated = {
+                    **before, "reminder_state": "cancelled", "lease_owner": None, "lease_until": None,
+                    "lease_token": None, "version": before["version"] + 1, "updated_at": now.isoformat(),
+                }
+                self._put(updated)
+                self._event(workspace, None, "reminder.invalidate", before, updated, created_at=now.isoformat())
+            return {"cancelled": len(expired)}
 
     def heartbeat(self, owner, now=None):
         if not isinstance(owner, str) or not 1 <= len(owner) <= 200:
@@ -2275,23 +2295,9 @@ class Store:
             )
         return {"last_heartbeat": now.isoformat()}
 
-    def _dispatchable(self, reminder, *, dormant=False):
-        """Whether a reminder may fire. ``dormant`` also passes one that is only
-        waiting for its proposed task to be accepted, so a tick does not cancel it."""
-        if reminder["archived"] or reminder["status"] not in {"open", "waiting"}:
-            return False
-        if reminder["task_id"]:
-            try:
-                task = self.get(reminder["workspace"], reminder["task_id"])
-            except DomainError as exc:
-                if exc.code != "not_found":
-                    raise
-                return False
-            if dormant and task["status"] == "proposed" and not task["archived"]:
-                return True
-            if task["archived"] or task["status"] not in {"open", "waiting"}:
-                return False
-        return True
+    def _dispatchable(self, reminder):
+        status = outbox.target_status(self.db, reminder["workspace"], reminder["task_id"])
+        return outbox.availability(reminder["status"], reminder["archived"], reminder["task_id"], status) == "eligible"
 
     def claim_reminders(self, owner, now=None, lease_seconds=60, limit=50):
         if (
@@ -2305,32 +2311,13 @@ class Store:
             invalid("Invalid claim limits or owner")
         now = normalize_now(now)
         with self._transaction():
-            reminders = [
-                json.loads(row[0])
-                for row in self.db.execute(
-                    "SELECT data FROM daymark_entities WHERE kind='reminder' ORDER BY workspace,id"
-                )
-            ]
-            candidates = []
-            for item in reminders:
-                if not self._dispatchable(item):
-                    continue
-                state = item["reminder_state"]
-                if state == "leased":
-                    if item["lease_until"] and normalize_now(item["lease_until"]) > now:
-                        continue
-                elif state not in {"pending", "snoozed", "failed"}:
-                    continue
-                due = max(
-                    normalize_now(item["scheduled_at"]),
-                    normalize_now(item["retry_at"])
-                    if item["retry_at"]
-                    else normalize_now(item["scheduled_at"]),
-                )
-                if due <= now:
-                    candidates.append((due, item["workspace"], item["id"], item))
+            candidates = (
+                (due, row.workspace, row.id) for row in outbox.active(self.db)
+                if (due := row.due(now)) is not None
+            )
             claimed = []
-            for _, workspace, id, item in sorted(candidates, key=lambda x: x[:3])[:limit]:
+            for _, workspace, id in heapq.nsmallest(limit, candidates):
+                item = self.get(workspace, id)
                 token = uuid.uuid4().hex
                 updated = {
                     **item,
@@ -2416,19 +2403,10 @@ class Store:
 
     def health(self, workspace=None):
         with self._lock:
-            rows = self.db.execute(
-                "SELECT data FROM daymark_entities WHERE kind='reminder'"
-                + (" AND workspace=?" if workspace is not None else ""),
-                (workspace,) if workspace is not None else (),
-            ).fetchall()
-            counts = {key: 0 for key in ("pending", "leased", "failed", "delivered")}
-            for row in rows:
-                state = json.loads(row[0])["reminder_state"]
-                if state == "snoozed":
-                    state = "pending"
-                if state in counts:
-                    counts[state] += 1
-            scheduler = dict(self.db.execute("SELECT key,value FROM daymark_scheduler"))
+            counts = outbox.counts(self.db, workspace)
+            scheduler = dict(self.db.execute(
+                "SELECT key,value FROM daymark_scheduler WHERE key IN ('tick','heartbeat')"
+            ))
             return {
                 "outbox": counts,
                 **{key: counts[key] for key in ("pending", "leased", "failed")},

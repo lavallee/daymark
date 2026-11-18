@@ -127,3 +127,14 @@ def test_append_refuses_to_hide_the_snippet_in_an_unclosed_fence(tmp_path):
     target.write_bytes(original)
     assert main(["onboard", "--write", str(target)]) == 5
     assert target.read_bytes() == original
+
+
+
+def test_skill_prints_the_matching_source_without_a_database(tmp_path, monkeypatch, capsys):
+    from pathlib import Path
+
+    expected = Path(__file__).resolve().parents[1] / "skills/daymark/SKILL.md"
+    monkeypatch.chdir(tmp_path)
+    assert main(["onboard", "--skill"]) == 0
+    assert capsys.readouterr().out == expected.read_text(encoding="utf-8")
+    assert list(tmp_path.iterdir()) == []

@@ -7,10 +7,10 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 In an unfamiliar folder, `daymark where` explains which database and workspace you will use. Run `daymark prime` for the session. Check the workspace and actor, then read current
 work and remembered facts. In a returning session, `daymark prime --brief`
-returns five ready and five memory previews. Use `daymark find TEXT --kind memory --page` to retrieve a relevant remembered fact. If it reports no database, choose `daymark init`
+returns up to five ready and five memory previews. Save its `activity_checkpoint` when present to catch subsequent changes with `activity --after CHECKPOINT`. Use `daymark find TEXT --kind memory --page` to retrieve a relevant remembered fact. If it reports no database, choose `daymark init`
 for a per-user database or `daymark init --here` for this folder.
 
-For project onboarding, `daymark onboard --check AGENTS.md` checks whether the startup instructions are current.
+The installed CLI prints this guide with `daymark onboard --skill`. For project onboarding, `daymark onboard --check AGENTS.md` checks whether the startup instructions are current.
 
 Then work in this loop:
 
@@ -25,6 +25,14 @@ Then work in this loop:
    someone else. An edit with `--waiting-on WHO` also parks an open task. Clearing
    the reason keeps it waiting until an explicit `resume ID`.
 
+Record an ongoing fact the person supplied with `remember TEXT`. Use
+`--scope NAME` for where it applies and `--source SYSTEM:KIND:ID` for an
+actual source. Everyone in the workspace can read it. Search existing facts
+with `find TEXT --kind memory --page` before revising a preference. Inspect
+the match with `show ID --brief --json`; use its `--if-review TOKEN` with
+`edit ID --title TEXT` or `forget ID`. Forgetting archives the memory and
+retains its history. Keep one-time requests in the current interaction.
+
 When capturing:
 
 - Use `--due` only for a real cutoff. Use `--plan` for an intention and
@@ -32,6 +40,7 @@ When capturing:
 - Never invent a date or priority. If the person did not give one, leave it out.
 - If the person did not ask for the task, use `daymark propose`. Do not run
   `accept` on their behalf.
+- For a reminder, use `remind ID WHEN --to PERSON` (MCP action `remind` with `when` and `recipient`). Ask for any missing time or recipient. The default worker records locally.
 - For anything that repeats, use `--every`; add `--after-completion` when the
   interval counts from when it was last done.
 
@@ -60,6 +69,8 @@ when the person asks for that workspace preference.
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
 the active profile are shared across callers of this local workspace.
+For a requested project review, `advise --profile plain --set project-review
+--set shortlist.size=1` names open projects with no open or waiting action.
 Use `daymark strategies NAME` to inspect parameters and ranges. The MCP
 profiles view lists adjustment defaults and accepts `strategy` for details.
 For a requested standing change, read `daymark profile --json`, supply its
@@ -75,7 +86,7 @@ retry. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
 At session pickup, `daymark activity` shows recent changes, including handoff
 notes. To continue from a saved workspace cursor, run
 `daymark activity --after CURSOR`. Read more pages while the JSON `cursor`
-is below `head`.
+is below `head`, passing each returned `checkpoint` back as `--after`. If the checkpoint conflicts, review the workspace with `prime --brief`. Older services can return an integer cursor only.
 
 With MCP, call `daymark_prime` first. Each write tool takes `op`: keep it
 for retries of that same write. Read `structuredContent.id` from a successful

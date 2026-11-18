@@ -240,3 +240,14 @@ def test_decision_token_from_another_workspace_refuses_and_cli_replays(tmp_path,
     ]
     assert main(result) == 0 and json.loads(capsys.readouterr().out)["status"] == "open"
     assert main(result) == 0 and json.loads(capsys.readouterr().out)["version"] == 2
+
+
+def test_comparison_preserves_boolean_vs_number_in_nested_custom_data():
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "sample")
+        tasks.add("Check label", id="item", metadata={"checked": [1]})
+        tasks.edit("item", metadata={"checked": [True]})
+        fields = tasks.changes_since("item", version=1)["fields"]
+        assert len(fields) == 1 and fields[0]["field"] == "metadata"
+        assert type(fields[0]["before"]["checked"][0]) is int
+        assert type(fields[0]["after"]["checked"][0]) is bool

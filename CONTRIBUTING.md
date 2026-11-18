@@ -4,14 +4,20 @@ Daymark welcomes focused bug reports, documentation improvements, and small pull
 
 ## Development
 
-Use Python 3.11 or newer and [uv](https://docs.astral.sh/uv/):
+The git checkout and source distribution include the tests, guides and contributor scripts. [AGENTS.md](AGENTS.md) describes the layers and which guides to update when a command changes.
+
+With Python 3.11 or newer and [uv](https://docs.astral.sh/uv/), run
 
 ```sh
 uv sync --frozen --dev
 uv run ruff check src tests
 uv run pytest -q
+uv run python scripts/build_walkthrough.py --check
 uv build
+uv run python scripts/check_sdist.py dist/*.tar.gz
 ```
+
+With a recent pip that supports dependency groups, run `python -m pip install -e . --group dev` inside a virtual environment for an editable contributor install. The dev group includes the optional HTTP dependencies used by the service tests.
 
 The library should remain useful without the optional HTTP service or any delivery provider. Keep imports of optional dependencies out of the core import path. The application owns transactions when it supplies a `sqlite3.Connection`; library changes must preserve that boundary.
 

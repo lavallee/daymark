@@ -57,6 +57,38 @@ head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
 latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
 Goals read as `GET /v1/goals` and `/v1/goals/{id}/plan`, and `GET /v1/tree/{id}?depth=3`
 gives an item with its children in order.
+
+`GET /v1/identity` returns the token’s workspace and actor. An ordinary task
+capture that includes its first note can send `attribute_capture_note: true`
+at the operation level to attribute that note to the authenticated actor.
+Historical note authors supplied on a raw create or native import keep their
+recorded provenance.
+
+`GET /v1/orientation` returns the authenticated workspace and actor, six
+summary counts, the first five ready items, and up to five remembered facts.
+Task and memory titles are limited to 160 characters plus an ellipsis. A
+memory’s supplied scope travels with its preview. One SQLite snapshot supplies
+the results, numeric `activity_cursor` and portable `activity_checkpoint`. The field `as_of` gives the UTC instant used for
+calendar and lease calculations. Continue the memory list with `next_memory`
+and workspace activity with `GET /v1/activity?after=CHECKPOINT`. When connecting to an
+older service the client composes its available views separately. That reply
+has no atomic checkpoint.
+
+A checked activity page returns `checkpoint` for its last delivered event.
+It survives a consistent database backup or native JSON restore that preserves
+the workspace name, event number and that event's metadata and contents.
+A missing or changed boundary event or a different workspace produces HTTP
+409. Reopen the intended workspace and read a fresh compact prime. A zero
+checkpoint is bound only to the workspace name, so it can start any history
+in that workspace. An integer cursor carries only a position.
+
+A checkpoint checks a single event. Backfilled or replaced earlier events,
+new entities restored without events, and materialized state that differs
+while the boundary matches can all escape detection. After a restore or
+merge, read a fresh prime and inspect the affected entities before resuming
+work. Use native export to compare the complete records, events and receipts
+when that level of verification is required.
+
 Imported IDs can contain path punctuation. For an ID such as `crate/07`,
 pass the exact ID as a query parameter, for example
 `GET /v1/context?entity_id=crate%2F07`. The same form works for
@@ -114,7 +146,17 @@ The caller retains Store lifetime/transaction ownership. Synchronous HTTP routes
 run in a thread pool: use `Store(path)` for a standalone server. When passing a
 caller-owned SQLite connection, configure and serialize it for that execution
 context (including SQLite's `check_same_thread` policy); do not share an active
-application transaction across unrelated requests. The synchronous Python
+application transaction across unrelated requests.
+
+On a caller-owned connection a first read can open a transaction. Subsequent
+reads see that snapshot until the embedding application commits or rolls back.
+If a second connection commits in the meantime, SQLite can refuse a write
+from the older snapshot. Daymark reports a conflict and keeps the caller's
+transaction open. Finish that transaction according to your application's
+rules, read current state, then retry the operation if it is still appropriate.
+A Daymark write becomes visible to other connections when the caller commits.
+
+The synchronous Python
 `daymark.client.Client` accepts a base URL and bearer token, and supports context
 manager cleanup. The CLI uses `--url` and a credential from `DAYMARK_TOKEN` (or
 `--token-env`), avoiding credentials in command arguments.

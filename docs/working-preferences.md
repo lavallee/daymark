@@ -24,7 +24,18 @@ Use a one-call adjustment for a visitor's preference or a busy afternoon.
 
 Advice is a list of options to discuss. A five-minute approval can qualify
 for a short list while its `next_move` still says `answer`. An agent looking
-for delegated work should use `daymark ready --move agent`.
+for delegated work should use `daymark ready --move agent`. When a time window
+omits a ready task with a hard deadline today or earlier, the note gives its
+ID (up to five) so the person can decide whether to revisit it. A planned
+day or a soft target alone does not trigger that note.
+
+When advice holds back ready work, follow the plain-read command in the
+output. Local CLI commands carry the same database, workspace and actor.
+In MCP, use the suggested ready view on the same connection. JSON callers can
+pass `ready_query` to `Tasks.ready` or add its fields to `daymark_view` with
+`view="ready"`. The limit requests up to five additional rows beyond a wide
+shortlist. The result uses the ordinary ready order and reflects the time
+and workspace state when that read runs.
 
 A context records an explicit relationship between a task and a place, tool or
 situation. Find context IDs with `daymark find --kind context --page`. A task
@@ -109,7 +120,79 @@ are shared configuration in the local workspace, accessible to callers who can
 read that database. An agent can use a one-call adjustment for a personal
 preference in a shared workspace. Personal workspaces can keep their own saved
 profiles. Entity exports omit settings, so use `--saved NAME --json` when
-moving a profile between installations.
+moving a profile between installations. A full database backup includes settings
+and their replay and undo receipts. A portable profile JSON file records a
+configuration and imports as a new named copy in the destination workspace.
+If an installed extension no longer accepts a saved parameter, advice names
+it and the active profile shows its original value. Other preference edits
+preserve that value. Use `--drop STRATEGY.OLD_PARAMETER` only when the person
+wants to retire it. [Strategy packages](strategy-plugins.md)
+
+## Two people who share the same projects
+
+If someone says “only show two decisions for me,” their mediation software
+can keep that instruction in its own user-specific settings with their consent.
+Send the preference on each advice request for that person.
+
+```json
+{"view":"advise","profile":"plain","set":["decisions-first","shortlist.size=2"]}
+```
+
+Another person can send `{"view":"advise","profile":"plain","set":["time-fit.minutes=10","shortlist.size=1"]}`
+to the same workspace and receive a different list. If either person wants
+the ordinary order once, send `{"view":"advise","profile":"plain"}` that time.
+The next request can resume the host's selected recipe. An actor name identifies
+a Daymark caller for work claims and attribution. Two people can use a host
+with the same actor name.
+
+For a recipe the team can see and reuse, create a named copy. Each host can
+then send `{"view":"advise","profile":"decision-review"}`. The workspace
+library is shared. A later edit to that name changes the next explicit
+selection. Its `profile_source.version` tells the host which revision ran.
+If a person's instruction applied to one particular revision, compare that
+version before presenting the result or send the agreed settings inline.
+
+Use `daymark_act` with `action="use_profile"` only for a requested change
+to the workspace default. That action copies the selected configuration, so
+a subsequent edit to the named copy leaves the active version intact.
+`remember` also writes to shared workspace state. A person's private preference
+belongs in a host setting with the intended audience.
+
+## Review projects that have gone quiet
+
+When someone asks “Which studio projects have no next action written down?”,
+inspect the projects in that scope. This example shows one ready pick followed
+by the review prompts.
+
+```sh
+daymark advise --profile plain --scope studio --set project-review --set shortlist.size=1
+```
+
+The review names open projects that have no open or waiting task anywhere
+in the project. A proposal awaiting a decision appears as such. An action
+that starts next week, depends on someone else, or is claimed by another
+worker already supplies a next action. `daymark plan PROJECT` shows the
+details. The scoped review uses the project's own scope. Use
+`daymark edit PROJECT --scope studio` if the person wants to assign one.
+
+An empty project can mean the next action needs capturing or the outcome is
+already complete. Ask which applies. `daymark add "Check the paper samples"
+--project PROJECT` records a requested action. Use `propose` for a suggested
+one. A later review counts an accepted or waiting task as recorded work.
+A task context such as `phone` describes where someone can act. Omit
+`--context` for a whole-project review.
+
+To keep this routine available for another day, save a named copy and request
+it when needed:
+
+```sh
+daymark profile plain --set project-review --set shortlist.size=1 --save-as weekly
+daymark advise --profile weekly --scope studio
+```
+
+The routine covers one part of a GTD weekly review. The publisher also suggests
+checking calendars, waiting items and other lists. The cadence and scope are
+the person's choices. [GTD Weekly Review checklist](https://gettingthingsdone.com/wp-content/uploads/2014/10/Weekly_Review_Checklist.pdf)
 
 ## Retry or reverse a standing choice
 

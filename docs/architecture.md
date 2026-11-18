@@ -56,7 +56,7 @@ layer is organised around them:
 |---|---|---|
 | rank | urgency scores, "eat the frog", an assistant's batching of decisions | `decisions-first`, `frontier-first` |
 | limit | work-in-progress limits, six tasks a day, capacity checks | `shortlist`, `overbooked`, `time-fit` |
-| hygiene | weekly review, staleness warnings, a missing next action | `stale`, `first-step` |
+| hygiene | weekly review, staleness warnings, a missing next action | `stale`, `first-step`, `project-review` |
 | follow-through | waiting-for lists, nudges | `waiting-check` |
 | anticipate | preparation worked backward from a date | `lookahead` |
 | tone | neutral ageing in place of red overdue badges | `neutral-aging` |
@@ -102,14 +102,16 @@ configuration and a local replay receipt together. An active change retains
 its prior settings for a version-guarded undo. Entity exports omit configuration
 receipts. Existing plugins receive a full strategy snapshot by
 default. A plugin can declare only the additional snapshot fields it reads
-in `Strategy.reads` to avoid unrelated workspace queries.
+in `Strategy.reads` to avoid unrelated workspace queries. Project roll-ups
+are fetched only when a strategy includes the additional `projects` read.
 
 ## Plugins
 
 A plugin is a Python package that offers strategies under the
 `daymark.strategies` entry-point group. One is imported only when a profile
 names it: installing a package never runs its code by itself. A plugin obeys
-the same contract as a built-in.
+the same contract as a built-in. The contributor example builds a wheel and
+shows how to try its method on one review. [Add a strategy](strategy-plugins.md)
 
 Not yet built, in order of need:
 

@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import tempfile
+from importlib.resources import files
 from pathlib import Path
 
 from .models import DomainError
@@ -11,6 +12,14 @@ from .render import ONBOARD
 
 _MARKER = re.compile(rb"<!-- daymark:(begin|end) -->[ \t]*")
 _FENCE = re.compile(rb" {0,3}(`{3,}|~{3,})(.*)")
+
+
+def skill_text():
+    """Read the guide shipped with this version, including an editable checkout."""
+    packaged = files("daymark").joinpath("SKILL.md")
+    if packaged.is_file():
+        return packaged.read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[2] / "skills/daymark/SKILL.md").read_text(encoding="utf-8")
 
 
 def _section(original: bytes):

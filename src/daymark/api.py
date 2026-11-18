@@ -14,6 +14,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .cursors import numeric_or_checkpoint
+
 LOG = logging.getLogger("daymark.api")
 MAX_BODY_BYTES = 1_048_576
 
@@ -30,6 +32,7 @@ class Operation(BaseModel):
     action: str = Field(min_length=1, max_length=80)
     payload: dict[str, Any]
     expected_version: int = Field(ge=0)
+    attribute_capture_note: bool = False
 
 
 class BatchRequest(BaseModel):
@@ -107,6 +110,11 @@ def create_router(store: Any) -> APIRouter:
             )
         return result
 
+    @router.get("/identity", operation_id="daymark_v1_identity")
+    def session_identity(request: Request) -> dict[str, str]:
+        actor = identity(request)
+        return {"workspace": actor.workspace, "actor": actor.principal}
+
     @router.get("/health", operation_id="daymark_v1_health")
     def health(request: Request) -> dict[str, Any]:
         actor = identity(request)
@@ -157,6 +165,11 @@ def create_router(store: Any) -> APIRouter:
     def principal_payload(body: Operation, actor: Identity) -> dict[str, Any]:
         payload = dict(body.payload)
         # The authenticated principal, not the request body, says who is acting.
+        if body.attribute_capture_note:
+            notes = payload.get("notes")
+            if body.action != "create" or not isinstance(notes, list) or len(notes) != 1 or not isinstance(notes[0], dict):
+                raise HTTPException(422, "Attribution requires one note on a capture")
+            payload["notes"] = [{**notes[0], "author": actor.principal}]
         if body.action in {"claim", "release", "take"}:
             payload["owner"] = actor.principal
         elif body.action == "note":
@@ -316,6 +329,12 @@ def create_router(store: Any) -> APIRouter:
     ) -> Any:
         return _invoke(store.explore, identity(request).workspace, goal, now=now, scope=scope)
 
+    @router.get("/orientation", operation_id="daymark_v1_orientation")
+    def orientation(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
+        actor = identity(request)
+        state = _invoke(store.orientation, actor.workspace, now=now, owner=actor.principal)
+        return {**state, "identity": {"workspace": actor.workspace, "actor": actor.principal}}
+
     @router.get("/summary", operation_id="daymark_v1_summary")
     def summary(
         request: Request,
@@ -408,9 +427,9 @@ def create_router(store: Any) -> APIRouter:
 
     @router.get("/activity", operation_id="daymark_v1_activity")
     def activity(
-        request: Request, after: int | None = Query(None, ge=0), limit: int = Query(20, ge=1, le=100)
+        request: Request, after: str | None = Query(None, max_length=80), limit: int = Query(20, ge=1, le=100)
     ) -> Any:
-        return _invoke(store.activity, identity(request).workspace, after=after, limit=limit)
+        return _invoke(store.activity, identity(request).workspace, after=numeric_or_checkpoint(after), limit=limit)
 
     @router.get("/events/head", operation_id="daymark_v1_events_head")
     def events_head(request: Request) -> Any:

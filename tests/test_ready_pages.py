@@ -110,11 +110,12 @@ def test_ready_summary_is_bounded_on_the_wire_and_uses_authenticated_claims():
     try:
         owner = Tasks(store, "sample", actor="worker")
         title = "📝\x00" * 200
-        owner.add(title, id="proof", move="agent", priority=1, note="Context belongs in show.")
+        owner.add(title, id="proof", move="agent", priority=1, minutes=12, note="Context belongs in show.")
         owner.claim("proof")
         brief = owner.ready_summary()
         assert brief[0]["title"] == title[:160] + "…"
         assert brief[0]["claimed_by"] == "worker"
+        assert brief[0]["estimate_minutes"] == 12
         assert "description" not in brief[0] and "notes" not in brief[0]
         assert owner.ready()[0]["title"] == title
         app = create_app(

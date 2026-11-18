@@ -87,6 +87,18 @@ class Advice:
     profile_source: dict | None = None
     context: str | None = None
 
+    def ready_query(self) -> dict:
+        """A bounded plain read that reaches past the choices already displayed."""
+        query = {}
+        if self.scope is not None:
+            query["scope"] = self.scope
+        if self.context is not None:
+            query["context"] = self.context
+        limit = min(READY_LIMIT, len(self.picks) + min(self.held_back, 5))
+        if limit > 20:  # The normal first page may contain only picks already shown.
+            query["limit"] = limit
+        return query
+
     def to_dict(self) -> dict:
         return {
             "profile": self.profile,
@@ -97,6 +109,7 @@ class Advice:
             "notes": [{"strategy": n.strategy, "text": n.text, "ids": n.ids} for n in self.notes],
             "suggestions": self.suggestions,
             "held_back": self.held_back,
+            **({"ready_query": self.ready_query()} if self.held_back else {}),
             "tone": self.tone,
             "steps": self.steps,
         }
@@ -139,15 +152,38 @@ def get(name: str) -> Strategy:
 
     if name in _REGISTRY:
         return _REGISTRY[name]
+    entries = _plugin_entries(name)
+    if len(entries) > 1:
+        raise DomainError("conflict", "Multiple installed packages provide this strategy", [name])
+    if entries:
+        try:
+            loaded = entries[0].load()
+        except Exception as error:
+            # Importing a named extension is a package boundary. Installed
+            # versions may have missing dependencies or invalid entry points.
+            raise DomainError(
+                "invalid",
+                "Could not load the installed strategy",
+                [name, "Check the plugin and its dependencies in Daymark's Python environment."],
+            ) from error
+        if not isinstance(loaded, Strategy) or loaded.name != name:
+            raise DomainError("invalid", "Plugin does not provide a strategy of that name")
+        return register(loaded)
+    raise DomainError("not_found", "Unknown strategy", [f"See `daymark strategies` for {name!r}."])
+
+
+def _plugin_entries(name=None):
     from importlib.metadata import entry_points
 
-    for entry in entry_points(group="daymark.strategies"):
-        if entry.name == name:
-            loaded = entry.load()
-            if not isinstance(loaded, Strategy) or loaded.name != name:
-                raise DomainError("invalid", "Plugin does not provide a strategy of that name")
-            return register(loaded)
-    raise DomainError("not_found", "Unknown strategy", [f"See `daymark strategies` for {name!r}."])
+    options = {"group": "daymark.strategies"}
+    if name is not None:
+        options["name"] = name
+    return list(entry_points(**options))
+
+
+def installed_plugins() -> list[str]:
+    """Entry-point names only. Listing installed packages never calls their code."""
+    return sorted({entry.name for entry in _plugin_entries()})
 
 
 def available() -> list[Strategy]:
@@ -160,7 +196,14 @@ def describe(name: str) -> dict:
     """Inspect one registered strategy without importing unselected plugins."""
     found = next((strategy for strategy in available() if strategy.name == name), None)
     if found is None:
-        raise DomainError("not_found", "No registered strategy with that name")
+        if isinstance(name, str) and _plugin_entries(name):
+            return {
+                "name": name,
+                "installed_plugin": True,
+                "summary": "Installed plugin. To load its code, explicitly preview or select it.",
+                "preview": {"set": [name]},
+            }
+        raise DomainError("not_found", "No registered or installed strategy with that name")
     return {
         "name": found.name,
         "kind": found.kind,
@@ -210,36 +253,97 @@ def validate_profile(profile: Any) -> dict:
         or len(profile["strategies"]) > 30
     ):
         raise DomainError("invalid", "A profile needs a name and a list of strategies")
+    skipped = profile.get("skipped", [])
+    if not isinstance(skipped, list) or any(
+        not isinstance(name, str) or not name for name in skipped
+    ):
+        raise DomainError("invalid", "Unavailable strategies must be listed by name")
     stages = []
     for stage in profile["strategies"]:
         if (
             not isinstance(stage, dict)
-            or set(stage) - {"use", "with"}
+            or set(stage) - {"use", "with", "unavailable_parameters"}
             or not isinstance(stage.get("use"), str)
             or not stage["use"]
         ):
             raise DomainError("invalid", "Each profile entry needs `use` and optional `with`")
         strategy = get(stage["use"])
-        stages.append({"use": strategy.name, "with": resolve(strategy, stage.get("with"))})
+        retired = stage.get("unavailable_parameters", {})
+        if not isinstance(retired, dict) or any(not isinstance(key, str) for key in retired):
+            raise DomainError("invalid", "Unavailable parameters must be named in an object")
+        params = resolve(strategy, stage.get("with"))
+        if set(retired) & set(strategy.params):
+            raise DomainError(
+                "invalid", "A parameter available here belongs in the strategy's with object"
+            )
+        stages.append(
+            {
+                "use": strategy.name,
+                "with": params,
+                **({"unavailable_parameters": dict(retired)} if retired else {}),
+            }
+        )
     return {"name": profile.get("name") or "custom", "strategies": stages}
+
+
+def persistent_profile(profile: dict) -> dict:
+    """Keep older parameter values in stored configurations for compatible installations."""
+    resolved = validate_profile(profile)
+    for stage in resolved["strategies"]:
+        stage["with"].update(stage.pop("unavailable_parameters", {}))
+    return resolved
+
+
+def has_adjustments(settings, drops) -> bool:
+    """Validate one-call or persistent edits before deciding whether this is a read."""
+    if any(
+        not isinstance(values, (tuple, list)) or any(not isinstance(x, str) for x in values)
+        for values in (settings, drops)
+    ):
+        raise DomainError("invalid", "Strategy settings and removals must be lists of strings")
+    if sum(len(text) for values in (settings, drops) for text in values) > 65_536:
+        raise DomainError("invalid", "Profile adjustments exceed 65,536 characters")
+    return bool(settings or drops)
 
 
 def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
     """Apply ``strategy.param=value`` settings and removals to a copy of a profile."""
     import json
 
-    if any(
-        not isinstance(values, (tuple, list)) or any(not isinstance(x, str) for x in values)
-        for values in (settings, drops)
-    ):
-        raise DomainError("invalid", "Strategy settings and removals must be lists of strings")
-    stages = [{"use": s["use"], "with": dict(s.get("with") or {})} for s in profile["strategies"]]
+    has_adjustments(settings, drops)
+    stages = [
+        {
+            **s,
+            "with": dict(s.get("with") or {}),
+            **(
+                {"unavailable_parameters": dict(s["unavailable_parameters"])}
+                if s.get("unavailable_parameters")
+                else {}
+            ),
+        }
+        for s in profile["strategies"]
+    ]
     skipped = list(profile.get("skipped") or [])
     for name in drops:
         if name in skipped:
             skipped.remove(name)
         elif not any(stage["use"] == name for stage in stages):
-            raise DomainError("not_found", "That strategy is not in the profile", [name])
+            matches = [
+                (s, k)
+                for s in stages
+                for k in s.get("unavailable_parameters", {})
+                if name == f"{s['use']}.{k}"
+            ]
+            if not matches:
+                raise DomainError(
+                    "not_found",
+                    "That strategy or unavailable parameter is not in the profile",
+                    [name],
+                )
+            for stage, key in matches:
+                del stage["unavailable_parameters"][key]
+                if not stage["unavailable_parameters"]:
+                    del stage["unavailable_parameters"]
         stages = [stage for stage in stages if stage["use"] != name]
     for setting in settings:
         target, equals, raw = setting.partition("=")
@@ -338,8 +442,9 @@ def advise(
     """Run a profile over the current state. Reads only; returns advice."""
     from .profiles import PROFILES
 
-    skipped = list((profile or {}).get("skipped") or [])
-    profile = validate_profile(profile or PROFILES["plain"])
+    requested = PROFILES["plain"] if profile is None else profile
+    profile = validate_profile(requested)
+    skipped = requested.get("skipped", [])
     stages = [(get(stage["use"]), stage["with"]) for stage in profile["strategies"]]
     reads = {name for strategy, _ in stages for name in strategy.reads}
     view = snapshot(tasks, scope=scope, context=context, reads=reads)
@@ -349,6 +454,22 @@ def advise(
             Note("profile", "The profile names strategies that could not be used: "
                  + ", ".join(skipped) + ". Fix with `daymark profile`.", [])
         )  # fmt: skip
+    retired = [
+        f"{s['use']}.{key}"
+        for s in profile["strategies"]
+        for key in s.get("unavailable_parameters", {})
+    ]
+    if retired:
+        shown = ", ".join(retired[:8]) + (
+            f" and {len(retired) - 8} more" if len(retired) > 8 else ""
+        )
+        advice.notes.append(
+            Note(
+                "profile",
+                f"Saved parameters unavailable in this installation: {shown}. "
+                "Advice uses the installed strategy's effective parameters.",
+            )
+        )
     if len(view.ready) == READY_LIMIT:
         total = tasks.summary(scope=scope, context=context)["ready"]
         if total > READY_LIMIT:
@@ -357,6 +478,13 @@ def advise(
             )
     for strategy, params in stages:
         strategy.apply(view, advice, params)
+    if advice.steps:
+        # A later stage can narrow the picks after first-step supplied text.
+        advice.steps = {
+            item["id"]: advice.steps[item["id"]]
+            for item in advice.picks
+            if item["id"] in advice.steps
+        }
     return advice
 
 
@@ -367,9 +495,9 @@ def stored_profile(tasks) -> dict:
     parameter is renamed. Such entries are left out and listed under
     ``skipped`` so the workspace keeps working and the person can see why.
     """
-    reader = getattr(tasks.engine, "setting", None)
-    saved = reader(*tasks._ws, SETTING) if reader else None
-    return restore_profile(saved)
+    from .preferences import select_profile
+
+    return select_profile(tasks)[0]
 
 
 def restore_profile(saved) -> dict:
@@ -382,8 +510,16 @@ def restore_profile(saved) -> dict:
     for stage in saved["strategies"]:
         try:
             strategy = get(stage["use"])
-            known = {k: v for k, v in (stage.get("with") or {}).items() if k in strategy.params}
-            stages.append({"use": strategy.name, "with": resolve(strategy, known)})
+            configured = stage.get("with") or {}
+            known = {k: v for k, v in configured.items() if k in strategy.params}
+            retired = {k: v for k, v in configured.items() if k not in strategy.params}
+            stages.append(
+                {
+                    "use": strategy.name,
+                    "with": resolve(strategy, known),
+                    **({"unavailable_parameters": retired} if retired else {}),
+                }
+            )
         except (DomainError, KeyError, TypeError, AttributeError):
             skipped.append(str(stage.get("use") if isinstance(stage, dict) else stage))
     profile = {"name": str(saved.get("name") or "custom"), "strategies": stages}
@@ -391,9 +527,10 @@ def restore_profile(saved) -> dict:
 
 
 def store_profile(tasks, profile: dict) -> dict:
+    """Compatibility helper for hosts implementing only the raw setting adapter."""
     writer = getattr(tasks.engine, "set_setting", None)
     if writer is None:
         raise DomainError("invalid", "Profiles are set on a local database")
-    profile = validate_profile({k: v for k, v in profile.items() if k != "skipped"})
+    profile = persistent_profile({k: v for k, v in profile.items() if k != "skipped"})
     writer(*tasks._ws, SETTING, profile)
-    return profile
+    return restore_profile(profile)

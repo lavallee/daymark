@@ -179,6 +179,7 @@ def read_view(tasks, args):
             + ", ".join(catalog["builtins"])
             + "\n"
             + available
+            + ("\nInstalled plugins: " + ", ".join(catalog["installed_plugins"]) if catalog.get("installed_plugins") else "")
             + "\nAdjustments (defaults shown; use strategy for details): "
             + ", ".join(
                 f"{name}.{key}={value}" if key else name
@@ -199,7 +200,7 @@ def read_view(tasks, args):
             return StructuredView(
                 {**advice.to_dict(), "picks": [_summary(x, now) for x in advice.picks]}
             )
-        return render.advice_text(advice, now)
+        return render.advice_text(advice, now, mcp=True)
 
     if view == "agenda":
         data = tasks.agenda(

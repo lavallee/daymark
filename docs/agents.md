@@ -3,6 +3,13 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
+An installed CLI includes its matching agent skill. `daymark onboard --skill`
+prints the full Markdown with its skill name and description. Use this when
+the agent host accepts a skill file. For project instructions, `daymark
+onboard` prints a short startup snippet and `daymark onboard --write AGENTS.md`
+maintains its marked section. Commitments owned by another tracker can stay
+there. Capture related work in Daymark with a source reference.
+
 ## Start of a session
 
 ```sh
@@ -11,7 +18,7 @@ daymark prime
 
 `prime` starts with the active session, counts, up to five ready tasks and up
 to five remembered facts, then prints the command guide. For a returning
-session use `daymark prime --brief`. It includes up to five ready titles and five remembered facts, with a 160-character preview of each title. Use the memory ID with `show` for the full fact. For a program use `daymark prime --json`.
+session use `daymark prime --brief`. It includes up to five ready titles and five remembered facts, with a 160-character preview of each title. Use the memory ID with `show` for the full fact. On a current service or local database, `prime --brief --json` samples counts, ready work, memory previews and the workspace event cursor in one read. Save `activity_checkpoint` and use `activity --after CHECKPOINT` to read subsequent changes in this workspace. `as_of` gives the UTC instant used for dates and leases. Older services supply separate reads and omit the snapshot cursor. For a program use `daymark prime --json`.
 Local sessions identify the database, workspace, actor and timezone. HTTP
 sessions identify the endpoint and use the workspace and actor bound to the
 credential. The ready count includes the current actor's claims.
@@ -112,7 +119,7 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | `edit ID [--title T] [--due D] ...` | Change fields. `--due ""` clears a date. |
 | `block ID --on OTHER` / `unblock ID --on OTHER` | Add or remove a dependency. Cycles are refused. |
 | `accept ID` / `dismiss ID` | Decide a proposal. This is the person's decision. |
-| `remind ID "tomorrow 08:00" --to PERSON` | Schedule a reminder for a person entity. |
+| `remind ID "tomorrow 08:00" --to PERSON` | Schedule a timed reminder for an existing person or principal. Check its recipient, channel and pending state. The default worker records locally. |
 | `remember "fact"` / `forget ID` | Keep or retire a durable fact shown by `prime`. |
 | `cancel`, `reopen`, `archive`, `undo ID` | Lifecycle and one-step undo. Undo restores the previous fields; it never removes a note or another actor's claim. |
 
@@ -211,7 +218,7 @@ should treat it as read-only. Do not set or clear it without the person.
 
 ## Ways of working
 
-`daymark ready` is the plain fact: everything that can be done now. A
+`daymark ready` lists eligible work in its ordinary order, 20 rows by default. A
 workspace can also have a **profile**, a bundle of strategies that shapes what
 you offer the person:
 
@@ -246,6 +253,9 @@ When someone asks to reuse a configuration occasionally, `daymark profile
 change or remove an existing copy, pass the version you just read using
 `--if-version N`. MCP's `daymark_view` accepts `view="profiles"` with an
 optional `profile` name for inspection. The catalog lists available adjustments.
+For an occasional project review, try `advise --profile plain --set project-review
+--set shortlist.size=1`. It identifies open projects without an open or waiting
+task and distinguishes proposal-only projects. Review all contexts together.
 Use `daymark strategies NAME` or the MCP profiles view with `strategy=NAME`
 to inspect a parameter, its default, and its supported range.
 
@@ -356,6 +366,11 @@ For a status check or review, `daymark mcp --read-only` advertises only
 `daymark_prime` and `daymark_view`. Direct write calls are refused. This opens
 a local database read-only and also works with an HTTP-backed MCP session.
 
+For a service connection, prime shows the workspace and actor supplied by the
+authenticated service. A capture note and a follow-up note record that actor
+regardless of a local display label. An older service can identify the actor in
+the create event while leaving a new capture note unattributed.
+
 For a workspace-bound client configuration, a handoff example, write receipts
 and retry behavior, see [Use Daymark from an MCP client](mcp.md).
 
@@ -406,6 +421,39 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
   [operations guide](operations.md).
 
 
+## Remember what the person actually said
+
+A remembered fact belongs to the whole workspace. Every worker using that
+workspace can read it. Use the person’s words and include who or what the
+preference concerns when that matters. A scope such as `print` records where
+the fact applies and appears beside its startup preview. It grants no privacy.
+Use a separate workspace when the audience should differ.
+
+For “Use a short legend on printed proofs from now on,” record the stated
+convention. Include a source reference only when you have an actual source.
+
+```sh
+daymark remember "Use a short legend on printed proofs" --scope print --source review:request:42
+daymark find "short legend" --kind memory --scope print --page
+```
+
+Prime previews five active facts in ID order. Follow its cursor or search all
+active facts by text and scope. A repeated phrase in a single conversation,
+a guess about someone’s personality and a one-time request supply different
+evidence from a stated ongoing preference. For “show two choices this time,”
+use a one-call view setting. For a request to change how future advice is
+ranked, use the workspace profile. A memory provides context in prose.
+
+When the person corrects the convention, inspect the matching fact with
+`show ID --brief --json`, then edit its title with the returned
+`--if-review TOKEN`. Keeping the same ID preserves its history. If the
+person retires the convention, `forget ID --if-review TOKEN` archives that
+memory. A concurrent correction causes a conflict so the latest wording can
+be reviewed. Archived facts leave startup and ordinary search. Their text,
+source references and history remain inspectable by ID or exact source, and
+remain in native exports and existing backups. A request for permanent
+erasure requires separate handling.
+
 ## Hand off unfinished work
 
 Give concurrent workers distinct actor names. A claim hides the task from other
@@ -433,15 +481,19 @@ action.
 first. Each line identifies the task, change and recorded actor. A note
 includes the start of its text. Use `daymark show ID` for the full record.
 
-Keep the cursor printed at the end. On your next visit, run
-`daymark activity --after CURSOR`. Set `--limit N` for 1–100 changes per
-page. In JSON, continue from `cursor` while it is below `head`. Starting
-without a cursor shows the latest page. Use `--after 0` to read from the
-beginning. A cursor belongs to the database and workspace it came from.
+Save the `activity_checkpoint` from `prime --brief --json`. Pass it to
+`daymark activity --after CHECKPOINT --json`, then keep the returned
+`checkpoint` for the next page or session. While `cursor` is below `head`,
+more events are ready. Set `--limit N` for 1–100 events per page. If the
+workspace or the checkpoint's event changed, run `prime --brief` to review
+current work and save a new checkpoint.
 
-Python callers use `tasks.activity(after=cursor, limit=20)`. HTTP exposes
-`GET /v1/activity?after=CURSOR`. In MCP use `daymark_view` with
-`{"view":"activity","after":42}`.
+Python callers pass the string as `tasks.activity(after=checkpoint)`. HTTP
+accepts it in `GET /v1/activity?after=CHECKPOINT`. In MCP pass it as the
+`after` string to the `activity` view. Existing integer cursors still work.
+Use `--after 0` to read from the beginning, or omit `--after` for the latest
+page. Save the workspace identity alongside an integer cursor. An older
+service may support only the integer form.
 
 ### Let several workers take from one queue
 
@@ -504,6 +556,10 @@ For an embedding application that needs a bounded ready list,
 plus the task's title, version, scope, next move, dates, priority and live
 claim. Titles longer than 160 characters carry an ellipsis. Over HTTP use
 `GET /v1/ready?brief=true&mine=true`.
+
+Both `show` and `show --brief` name the first five unresolved prerequisites
+in dependency order and report their statuses. Use the returned IDs for full
+detail. A brief reports the number of additional prerequisites.
 
 ### Decide what was actually proposed
 

@@ -17,12 +17,22 @@ details { border-block-end: 1px solid var(--border); padding-block: var(--sp-3);
 summary { cursor: pointer; font-family: var(--font-ui); font-weight: 600; padding-block: var(--sp-2); }
 summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 nav { display: flex; flex-wrap: wrap; gap: var(--sp-4); }
+.situations { border: 1px solid var(--border); padding: var(--sp-4); border-radius: var(--radius-sm); }
+.situations legend { font-weight: 600; padding-inline: var(--sp-2); }
+.situations label { display: inline-block; cursor: pointer; padding: var(--sp-2) var(--sp-3) var(--sp-2) 0; }
+.situations input { accent-color: var(--accent); }
+.situation-result { display: none; margin-top: var(--sp-3); }
+#choose-all:checked ~ #result-all, #choose-quick:checked ~ #result-quick, #choose-decide:checked ~ #result-decide { display: block; }
+.situation-result ul { padding-inline-start: 1.25rem; }
+.situation-result li { padding-block: var(--sp-1); }
+.situation-result li span { display: inline-block; padding-inline-start: .5rem; font-size: .88em; }
+@media (max-width: 40rem) { .situations label { width: calc(100% - 2.5rem); } }
 </style>
 </head>
 <body>
 <header class="article-masthead"><a class="article-masthead__name" href="#walkthrough">Daymark</a><span class="article-masthead__label">Python · SQLite · MIT</span></header>
 <main class="article">
-<div class="article-header"><h1>What can we do now?</h1><p class="article-dek">Daymark keeps a person's commitments across agent sessions. A deadline, a day you hope to work, and an idea awaiting your decision each get their own place.</p><nav aria-label="Project links"><a href="#walkthrough">Try the walkthrough</a><a href="#start">Install Daymark</a><a href="https://github.com/lavallee/daymark">Source</a><a href="https://github.com/lavallee/daymark/blob/main/docs/agents.md">Agent guide</a><a href="llms.txt">llms.txt</a></nav></div>
+<div class="article-header"><h1>What can we do now?</h1><p class="article-dek">Daymark keeps a person's commitments across agent sessions. A deadline, a day you hope to work, and an idea awaiting your decision each get their own place.</p><nav aria-label="Project links"><a href="#walkthrough">Try the walkthrough</a><a href="#situation">Try a short afternoon list</a><a href="#start">Install Daymark</a><a href="https://github.com/lavallee/daymark">Source</a><a href="https://github.com/lavallee/daymark/blob/main/docs/agents.md">Agent guide</a><a href="llms.txt">llms.txt</a></nav></div>
 <!-- daymark:walkthrough -->
 <section aria-labelledby="walkthrough"><h2 id="walkthrough">Plan an event</h2>
 <p>It is May 1. The venue needs a deposit by May 8. The invitation needs a draft and an approval. Someone has suggested a poster. Explore the same workspace from four points of view.</p>
@@ -54,6 +64,32 @@ PROPOSED, awaiting a decision (1)
 $ daymark ready --move person
 deposit  Pay venue deposit  [due 2030-05-08; move:person]
 approve  Approve invitation  [move:person; after draft]</code></pre></details>
+</section>
+<section aria-labelledby="situation"><h2 id="situation">What fits this afternoon?</h2>
+<p>You have print files due today, a cover to approve, and a room list to check. An agent can answer each request from the same three commitments.</p>
+<fieldset class="situations"><legend>Choose what to ask your agent</legend>
+<input type="radio" name="situation" id="choose-all" aria-controls="result-all" checked><label for="choose-all">Everything ready</label>
+<input type="radio" name="situation" id="choose-quick" aria-controls="result-quick"><label for="choose-quick">I have ten minutes</label>
+<input type="radio" name="situation" id="choose-decide" aria-controls="result-decide"><label for="choose-decide">I can make a decision</label>
+<div class="situation-result" id="result-all" role="region" aria-label="Everything ready"><ul>
+<li>Send the print files <span>45 min · Due today</span></li>
+<li>Approve the cover <span>5 min</span></li>
+<li>Check the room list <span>10 min</span></li>
+</ul>
+<details><summary>See the command</summary><pre><code>daymark ready</code></pre></details></div>
+<div class="situation-result" id="result-quick" role="region" aria-label="I have ten minutes"><ul>
+<li>Approve the cover <span>5 min</span></li>
+<li>Check the room list <span>10 min</span></li>
+</ul>
+<p>2 individually estimated at 10 min or less. 1 estimated longer. </p>
+<p>One omitted task has a hard deadline today or earlier. Send the print files</p>
+<details><summary>See the command</summary><pre><code>daymark advise --profile plain --set time-fit.minutes=10</code></pre></details></div>
+<div class="situation-result" id="result-decide" role="region" aria-label="I can make a decision"><ul>
+<li>Approve the cover <span>5 min</span></li>
+</ul>
+<details><summary>See the command</summary><pre><code>daymark ready --move answer</code></pre></details></div>
+</fieldset>
+<p>These choices apply to this answer. If the person asks to keep a routine, the agent can save it for a later session. This example uses the development checkout.</p>
 </section>
 <!-- /daymark:walkthrough -->
 <section aria-labelledby="start"><h2 id="start">Try it in an empty folder</h2><p>Install the CLI with uv and Python 3.11 or newer. The example stores its tasks in a SQLite file in the current folder.</p><pre><code>uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.5.0"

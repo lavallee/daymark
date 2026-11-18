@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from contextlib import closing
 
 import pytest
 from fastapi.testclient import TestClient
@@ -231,3 +232,27 @@ def test_brief_identifies_period_and_the_date_that_really_advances():
         assert tasks.brief("post.1")["deadline"]["date"] == "2030-04-15"
     finally:
         store.close()
+
+
+def test_blocker_previews_keep_dependency_order_and_exclude_notes_and_finished_work():
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "sample")
+        for i in range(8):
+            tasks.add(
+                f"Prerequisite {i}" + ("📝" * 300 if i == 4 else ""),
+                id=f"p{i}",
+                note="Detached details " * 450,
+                waiting_on="sample reading" if i == 6 else None,
+            )
+        tasks.done("p7")
+        tasks.archive("p5")
+        tasks.add("Review result", id="result", after=[f"p{i}" for i in reversed(range(8))])
+        brief, full = tasks.brief("result"), tasks.show("result")
+        assert brief["blockers"] == full["blockers"]
+        assert [row["id"] for row in brief["blockers"]] == ["p6", "p4", "p3", "p2", "p1"]
+        assert brief["blockers"][0]["status"] == "waiting"
+        assert len(brief["blockers"][1]["title"]) == 160 and brief["blockers"][1]["truncated"]
+        assert brief["omitted"]["blocked_by"] == 1
+        assert full["blocked_by"][-1] == "p0"
+        assert "Detached details" not in json.dumps(brief["blockers"])
+        assert "p6  Prerequisite 6 [waiting]" in brief_text(brief)

@@ -3,6 +3,7 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 
@@ -360,10 +361,190 @@ def test_catalog_discovers_a_time_window_and_inspects_bounds_without_loading_plu
             {"view": "profiles", "profile": "plain", "strategy": "time-fit"},
         )
 
-        def unexpected_plugin_import(*args, **kwargs):
-            pytest.fail("Strategy discovery evaluated an installed package")
+        class Installed:
+            name = "proof-review"
 
-        monkeypatch.setattr("importlib.metadata.entry_points", unexpected_plugin_import)
+            def load(self):
+                pytest.fail("Strategy discovery executed an installed package")
+
+        def entry_points(*, group, name=None):
+            return (
+                [Installed()]
+                if group == "daymark.strategies" and name in (None, "proof-review")
+                else []
+            )
+
+        monkeypatch.setattr("importlib.metadata.entry_points", entry_points)
+        assert tasks.profile_catalog()["installed_plugins"] == ["proof-review"]
+        assert tasks.profile_catalog(strategy="proof-review")["preview"] == {
+            "set": ["proof-review"]
+        }
         fails("not_found", tasks.profile_catalog, strategy="not-loaded")
     finally:
         store.close()
+
+
+def test_import_of_a_partly_unavailable_profile_requires_an_explicit_drop(tmp_path):
+    with closing(Store(tmp_path / "config.db")) as store:
+        tasks = Tasks(store)
+        config = {"name": "previous", "strategies": [], "skipped": ["missing-plugin"]}
+        fails("invalid", tasks.save_profile, "review", profile=config)
+        assert tasks.saved_profiles() == []
+        saved = tasks.save_profile("review", profile=config, drops=["missing-plugin"])
+        assert saved["profile"] == {"name": "review", "strategies": []}
+        for bad in (None, "missing", [3], [""]):
+            fails("invalid", tasks.save_profile, "broken", profile={**config, "skipped": bad})
+        fails("invalid", tasks.advise, settings=["x" * 65_537])
+
+
+def test_database_backup_preserves_profile_replay_and_guarded_undo_while_entity_export_omits_it(
+    tmp_path, capsys
+):
+    source = tmp_path / "source.sqlite3"
+    backup = tmp_path / "backup.sqlite3"
+    restored = tmp_path / "restored.sqlite3"
+    with closing(Store(source)) as store:
+        tasks = Tasks(store, "studio")
+        tasks.add("Sample proof", id="proof")
+        entities = store.export("studio")
+        active = tasks.profile("gentle", expected_version=0, op="choose")
+        named = tasks.save_profile("quiet", expected_version=0, op="copy")
+        assert store.export("studio") == entities
+        assert main(["--db", str(source), "backup", "--file", str(backup)]) == 0
+        tasks.profile("dense", expected_version=1, op="later")
+    assert main(["--db", str(restored), "restore", "--file", str(backup)]) == 0
+    capsys.readouterr()
+    with closing(Store(restored, read_only=True)) as store:
+        reader = Tasks(store, "studio")
+        assert reader.profile()["name"] == "gentle" and reader.saved_profiles("quiet") == named
+        assert (
+            reader.advise(settings=["project-review"]).notes[-1].text
+            == "No open projects to review."
+        )
+        assert reader.profile_catalog(strategy="time-fit")["parameters"]["minutes"]["default"] == 30
+        assert "shortlist" in call(reader, "daymark_view", {"view": "profiles"}, read_only=True)
+        fails(
+            "forbidden",
+            call,
+            reader,
+            "daymark_act",
+            {"action": "use_profile", "id": "dense"},
+            read_only=True,
+        )
+        assert store.db.total_changes == 0
+    with closing(Store(restored)) as store:
+        tasks = Tasks(store, "studio")
+        assert tasks.profile("gentle", expected_version=0, op="choose") == active
+        assert tasks.profile(undo="choose", expected_version=1, op="restore")["version"] == 2
+        assert tasks.profile()["name"] == "plain"
+        assert store.export("studio") == entities
+    with closing(Store(source)) as store:
+        assert Tasks(store, "studio").profile()["name"] == "dense"
+
+
+def test_empty_invalid_adjustments_are_not_treated_as_reads_or_saved(tmp_path):
+    with closing(Store(tmp_path / "validation.db")) as store:
+        tasks = Tasks(store)
+        for method in (tasks.profile, tasks.advise):
+            fails("invalid", method, settings={})
+            fails("invalid", method, drops="")
+        fails("invalid", tasks.save_profile, "changed", settings=None)
+        assert tasks.profile()["version"] == 0 and not tasks.saved_profiles()
+
+
+def test_plain_profile_helpers_preserve_minimal_host_adapter_and_return_shapes():
+    from daymark import strategies
+    from daymark.strategies.profiles import PROFILES
+
+    class Settings:
+        def __init__(self):
+            self.values = {}
+            self.writes = 0
+
+        def set_setting(self, workspace, name, value):
+            self.values[workspace, name] = value
+            self.writes += 1
+
+        def setting(self, workspace, name):
+            return self.values.get((workspace, name))
+
+    engine = Settings()
+    tasks = Tasks(engine, "studio")
+    assert strategies.stored_profile(tasks) == PROFILES["plain"] and not engine.writes
+    result = strategies.store_profile(
+        tasks, {"name": "daily", "strategies": [], "skipped": ["gone"]}
+    )
+    assert result == {"name": "daily", "strategies": []}
+    assert strategies.stored_profile(tasks) == result == tasks.profile()
+    assert engine.writes == 1
+
+
+def test_installed_strategy_with_a_missing_dependency_keeps_active_advice_available(
+    tmp_path, monkeypatch
+):
+    from daymark import strategies
+
+    class Broken:
+        name = "sample-proof-warnings"
+
+        def load(self):
+            raise ModuleNotFoundError("Optional sample library unavailable")
+
+    def entries(*, group, name=None):
+        return [Broken()] if group == "daymark.strategies" and name in (None, Broken.name) else []
+
+    monkeypatch.setattr("importlib.metadata.entry_points", entries)
+    with closing(Store(tmp_path / "plugins.db")) as store:
+        tasks = Tasks(store)
+        tasks.add("Check samples", id="samples")
+        raw = {"name": "editor", "strategies": [{"use": Broken.name}, {"use": "shortlist"}]}
+        store.set_setting("default", "profile", raw)
+        before = store.setting_state("default", "profile")
+        advice = tasks.advise()
+        assert [task["id"] for task in advice.picks] == ["samples"]
+        assert any(Broken.name in n.text for n in advice.notes)
+        assert store.setting_state("default", "profile") == before
+        fails("invalid", tasks.advise, profile="plain", settings=[Broken.name])
+        monkeypatch.setattr("importlib.metadata.entry_points", lambda **kw: [Broken(), Broken()])
+        fails("conflict", strategies.get, Broken.name)
+
+
+def test_retired_parameters_remain_visible_and_survive_unrelated_edits_until_explicitly_removed(
+    tmp_path,
+):
+    from daymark.render import profile_text
+
+    with closing(Store(tmp_path / "parameters.db")) as store:
+        tasks = Tasks(store, "studio")
+        tasks.add("First", id="first")
+        original = {
+            "name": "review",
+            "strategies": [{"use": "shortlist", "with": {"former_size": 1}}],
+        }
+        store.set_setting("studio", "profile", original)
+        current = tasks.profile()
+        stage = current["strategies"][0]
+        assert stage["with"] == {"size": 6} and stage["unavailable_parameters"] == {
+            "former_size": 1
+        }
+        assert "shortlist.former_size=1" in profile_text(current)
+        assert any("shortlist.former_size" in n.text for n in tasks.advise().notes)
+        assert store.setting("studio", "profile") == original
+        adjusted = tasks.profile(settings=["neutral-aging"], expected_version=1, op="adjust")
+        assert adjusted["strategies"][0]["unavailable_parameters"] == {"former_size": 1}
+        saved = tasks.save_profile("portable", profile=adjusted)
+        assert saved["profile"]["strategies"][0]["with"]["former_size"] == 1
+        # Independent changes keep the old setting in raw data and their guarded undo restores it.
+        assert store.setting("studio", "profile")["strategies"][0]["with"]["former_size"] == 1
+        resolved = tasks.profile(
+            drops=["shortlist.former_size"],
+            settings=["shortlist.size=1"],
+            expected_version=2,
+            op="repair",
+        )
+        assert resolved["strategies"][0] == {"use": "shortlist", "with": {"size": 1}}
+        assert not any("unavailable" in n.text for n in tasks.advise().notes)
+        assert tasks.profile(undo="repair", expected_version=3)["strategies"][0][
+            "unavailable_parameters"
+        ] == {"former_size": 1}
+        assert tasks.saved_profiles("portable") == saved

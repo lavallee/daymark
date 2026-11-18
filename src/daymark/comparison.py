@@ -39,6 +39,19 @@ def _candidates(store, workspace, id, version):
                         yield item
 
 
+def _same_value(left, right):
+    # JSON true and 1 compare equal in Python, but can be different reviewed terms.
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _same_value(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_same_value(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def _display(value):
     if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -115,7 +128,7 @@ def read(store, workspace, id, version):
             for raw in _candidates(store, workspace, id, version):
                 item = store._validated(raw)  # Historical releases may lack today's default fields.
                 if item["created_at"] != current["created_at"] or (
-                    original is not None and item != original
+                    original is not None and not _same_value(item, original)
                 ):
                     return {**result, "available": False, "reason": "ambiguous_history"}
                 original = item
@@ -124,7 +137,7 @@ def read(store, workspace, id, version):
     changes = [
         _change(key, original.get(key), current.get(key))
         for key in sorted((current.keys() | original.keys()) - _BOOKKEEPING)
-        if original.get(key) != current.get(key)
+        if not _same_value(original.get(key), current.get(key))
     ]
     result.update(available=True, fields=changes)
     if original["notes"] != current["notes"]:
