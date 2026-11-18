@@ -9,6 +9,7 @@ from __future__ import annotations
 import heapq
 import json
 import sqlite3
+from collections import deque
 
 from . import cursors, plans
 from .models import DomainError, Temporal, day_offset, normalize_now, start_has_arrived
@@ -319,6 +320,44 @@ def blocker_previews(store, workspace, blocked):
     return rows
 
 
+def blocker_cycle(store, workspace, item, *, held):
+    """Return one short, verified circular wait leading back to this live task.
+
+    This is a bounded detail-view diagnostic. The queue's readiness rule does
+    not depend on whether this search finds a witness.
+    """
+    if not held or item["kind"] != "task" or item["archived"] or item["status"] not in ("open", "waiting"):
+        return None
+    start = item["id"]
+    seen = {start}
+    queue = deque([(start, [])])
+    # Bound candidate index entries before joining entity state, including
+    # inbound references of other kinds. No entity JSON crosses this query.
+    sql = """
+        SELECT 'prerequisite', e.id FROM (
+            SELECT target_id FROM daymark_refs
+            WHERE workspace=? AND source_id=? AND field='depends_on' ORDER BY target_id LIMIT 8
+        ) r JOIN daymark_entities e ON e.workspace=? AND e.id=r.target_id
+        WHERE e.kind='task' AND e.archived=0 AND e.status IN ('open','waiting')
+        UNION ALL
+        SELECT 'child', e.id FROM (
+            SELECT source_id,field FROM daymark_refs
+            WHERE workspace=? AND target_id=? ORDER BY source_id,field LIMIT 8
+        ) r JOIN daymark_entities e ON e.workspace=? AND e.id=r.source_id
+        WHERE r.field='parent_id' AND e.kind='task' AND e.archived=0 AND e.status IN ('open','waiting')
+    """
+    while queue:
+        node, path = queue.popleft()
+        for relation, other in store.db.execute(sql, (workspace, node, workspace) * 2):
+            step = {"relation": relation, "id": other}
+            if other == start:
+                return [*path, step]
+            if len(path) < 5 and len(seen) < 20 and other not in seen:
+                seen.add(other)
+                queue.append((other, [*path, step]))
+    return None
+
+
 def _readiness_links(store, workspace):
     # An unfinished (or missing) target blocks its source. Select only the
     # affected source IDs; a dense graph need not materialize every edge.
@@ -613,7 +652,7 @@ def _context_links(store, workspace, id, field, *json_fields):
         yield dict(zip(fields, row))
 
 
-def context(store, workspace, id, *, history=10, now=None, owner=None):
+def context(store, workspace, id, *, history=10, now=None, owner=None, actor=None):
     """One entity with what surrounds it: blockers, dependents, children, reminders, history."""
     now = normalize_now(now)
     with store._lock:
@@ -634,7 +673,11 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
                       and not x["archived"] and x["status"] in ("open", "waiting")]
             reasons = list(_readiness_reasons(item, now, owner, blocked=blocked, has_children=active))
             readiness = {"readiness": {"ready": not reasons, "reasons": reasons, "active_children": active}}
+            if cycle := blocker_cycle(store, workspace, item, held=blocked or active):
+                readiness["readiness"]["cycle"] = cycle
         return {
+            **({"decision_access": store.decision_access(workspace, actor)}
+               if actor is not None and item["status"] == "proposed" else {}),
             "entity": item,
             "review_token": store._review_token(workspace, id),
             **readiness,
@@ -1106,7 +1149,7 @@ def plan(store, workspace, project_id, *, now=None):
 # Portfolio summaries need project declarations and a task's planning fields.
 # Notes, descriptions and recurrence histories can dwarf the summaries they produce.
 _PORTFOLIO_FIELDS = (
-    "title", "project_id", "created_at", "rank", "goal_id", "assignee_id", "parent_id",
+    "title", "scope", "project_id", "created_at", "rank", "goal_id", "assignee_id", "parent_id",
     "milestone_id", "milestone", "type", "stage", "values", "depends_on", "estimate_minutes",
     "earliest_start", "planned", "latest_target", "deadline",
 )
@@ -1145,17 +1188,30 @@ def _everything(store, workspace, *, portfolio=False):
     return rows, by_id, tasks
 
 
-def projects(store, workspace, *, now=None):
+def projects(store, workspace, *, now=None, scope=None):
     """Every unarchived project with its facts, stages, roll-up and health, read in
     one pass over the workspace."""
     now = normalize_now(now)
+    if scope is not None and (not isinstance(scope, str) or len(scope) > 100):
+        raise DomainError("invalid", "Scope must be text of at most 100 characters")
     with store._transaction(write=False):
         _read(store)
         rows, by_id, tasks = _everything(store, workspace, portfolio=True)
         people, labels, goals = _named(store, workspace, rows)
         out = []
-        for project in (x for x in rows if x["kind"] == "project" and not x["archived"]):
+        for project in (x for x in rows if x["kind"] == "project" and not x["archived"] and in_scope(x, scope)):
             view = _build(project, tasks.get(project["id"], []), by_id, people, labels, goals, now)
+            facts = view["facts"]
+            scoped = {}
+            if scope is not None:
+                scoped["scope"] = project["scope"]
+                outside = []
+                for key, ref in (("goal", project["goal_id"]), ("lead", project["assignee_id"])):
+                    if ref and (ref not in by_id or not in_scope(by_id[ref], scope)):
+                        facts[key] = None
+                        outside.append(key)
+                if outside:
+                    scoped["outside_scope"] = outside
             out.append(
                 {
                     "id": project["id"],
@@ -1163,12 +1219,15 @@ def projects(store, workspace, *, now=None):
                     "description": project["description"],
                     "status": project["status"],
                     "managed_by": project["managed_by"],
-                    "facts": view["facts"],
+                    "facts": facts,
                     "stages": view["stages"],
                     "rollup": view["rollup"],
                     "health": view["health"],
+                    **scoped,
                 }
             )
+        if scope is not None:
+            return {"projects": out, "scope": scope, "member_scope": "whole_project"}
         return {"projects": out, "cursor": store.head(workspace)}
 
 
@@ -1308,6 +1367,26 @@ def tree(store, workspace, root_id, *, depth=3):
         return node(root, 0)
 
 
+def _explore_refs(store, workspace, ids, scope):
+    """Retain global eligibility facts while limiting which link IDs may be shown."""
+    statuses = _statuses(store, workspace, ids)
+    if scope is None:
+        return statuses, set(ids)
+    visible = set()
+    for chunk in _id_pages(store, sorted(statuses)):
+        where = " FROM daymark_entities WHERE workspace=? AND id IN ({})".format(",".join("?" * len(chunk)))
+        args = (workspace, *chunk)
+        try:
+            rows = store.db.execute("SELECT id,json_extract(data,'$.scope')" + where, args)
+            visible.update(id for id, name in rows if (name or "") == scope)
+        except sqlite3.OperationalError as exc:
+            if "no such function: json_extract" not in str(exc):
+                raise
+            rows = store.db.execute("SELECT id,data" + where, args)
+            visible.update(id for id, data in rows if in_scope(json.loads(data), scope))
+    return statuses, visible
+
+
 def explore(store, workspace, goal_id=None, *, now=None, scope=None):
     """Conditions and the work moving them, for one goal or the whole workspace.
 
@@ -1317,9 +1396,12 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
     of a finished or shelved goal are on no frontier. Which frontier
     condition is the real bottleneck is a judgement; this only states the facts.
     """
-    with store._lock:
+    if scope is not None and not isinstance(scope, str):
+        raise DomainError("invalid", "Scope must be a name or an empty string")
+    selected_scope = {"scope": scope} if scope is not None else {}
+    with store.read_snapshot():
         if not _usable(store):
-            return {"goal": None, "conditions": [], "frontier": [], "gaps": [], "unassessed": []}
+            return {"goal": None, "conditions": [], "frontier": [], "gaps": [], "unassessed": [], **selected_scope}
         goal = None
         if goal_id is not None:
             goal = store.get(workspace, goal_id)
@@ -1331,30 +1413,42 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
             if (goal_id is None or c["goal_id"] == goal_id) and in_scope(c, scope)
         ]
         requires = {c["id"]: list(c["depends_on"]) for c in conditions}
-        statuses = _statuses(store, workspace, [r for refs in requires.values() for r in refs])
-        # A finished or shelved goal has no frontier: nothing is "next" for it.
-        goals = _statuses(store, workspace, [c["goal_id"] for c in conditions])
-        advancing: dict[str, list] = {c["id"]: [] for c in conditions}
-        if conditions:
+        links = {id for refs in requires.values() for id in refs} | {c["goal_id"] for c in conditions}
+        statuses, visible = _explore_refs(store, workspace, links, scope)
+        advancing = {c["id"]: [] for c in conditions}
+        outside_advancing = {c["id"]: {} for c in conditions}
+        for chunk in _id_pages(store, sorted(advancing)):
             rows = store.db.execute(
-                "SELECT r.target_id, e.data FROM daymark_refs r JOIN daymark_entities e ON "
+                "SELECT r.target_id,e.data FROM daymark_refs r JOIN daymark_entities e ON "
                 "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
-                "r.field='advances' AND e.archived=0 ORDER BY e.id",
-                (workspace,),
-            ).fetchall()
+                "r.field='advances' AND e.archived=0 AND r.target_id IN ({}) ORDER BY e.id".format(
+                    ",".join("?" * len(chunk))
+                ), (workspace, *chunk),
+            )
             for target, data in rows:
-                if target in advancing:
-                    task = json.loads(data)
-                    advancing[target].append(
-                        {"id": task["id"], "title": task["title"], "status": task["status"]}
-                    )
+                task = json.loads(data)
+                if in_scope(task, scope):
+                    advancing[target].append({key: task[key] for key in ("id", "title", "status")})
+                else:
+                    counts = outside_advancing[target]
+                    counts[task["status"]] = counts.get(task["status"], 0) + 1
     out, frontier, gaps, unassessed = [], [], [], []
     for item in sorted(conditions, key=lambda c: (c["created_at"], c["id"])):
-        live = item["status"] == "open" and goals.get(item["goal_id"]) not in DONE
+        live = item["status"] == "open" and statuses.get(item["goal_id"]) not in DONE
         waiting_on = [r for r in requires[item["id"]] if statuses.get(r) not in DONE]
         on_frontier = live and not waiting_on
         # A proposed move counts: someone has already suggested what to do here.
-        moving = [t for t in advancing[item["id"]] if t["status"] in LIVE]
+        other = outside_advancing[item["id"]]
+        moving = any(t["status"] in LIVE for t in advancing[item["id"]]) or any(status in LIVE for status in other)
+        dependencies = requires[item["id"]]
+        outside = {
+            key: value for key, value in {
+                "goal": item["goal_id"] not in visible,
+                "requires": sum(id not in visible for id in dependencies),
+                "waiting_on": sum(id not in visible for id in waiting_on),
+                "advancing": other,
+            }.items() if value
+        }
         if on_frontier:
             frontier.append(item["id"])
             if not moving:
@@ -1366,16 +1460,18 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
                 "id": item["id"],
                 "title": item["title"],
                 "state": "dropped" if item["status"] == "cancelled" else item["condition"],
-                "goal_id": item["goal_id"],
-                "requires": requires[item["id"]],
-                "waiting_on": waiting_on,
+                "goal_id": item["goal_id"] if item["goal_id"] in visible else None,
+                "requires": [id for id in dependencies if id in visible],
+                "waiting_on": [id for id in waiting_on if id in visible],
+                **({"outside_scope": outside} if outside else {}),
                 "frontier": on_frontier,
                 "advancing": advancing[item["id"]],
                 "evidence": [n["text"] for n in item["notes"][-3:]],
             }
         )
-    lean = {k: goal[k] for k in ("id", "title", "status")} if goal else None
+    lean = {k: goal[k] for k in ("id", "title", "status")} if goal and in_scope(goal, scope) else None
     return {
+        **selected_scope,
         "goal": lean,
         "conditions": out,
         "frontier": frontier,

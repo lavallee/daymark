@@ -177,7 +177,7 @@ def test_the_strategy_layer_reads_only_the_public_surface():
     assert ".db." not in source and "_rows" not in source and "engine.execute" not in source
 
 
-def test_command_line_and_mcp(tmp_path, monkeypatch, capsys):
+def test_command_line_and_mcp(open_store, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "s.sqlite3"))
     monkeypatch.setenv("DAYMARK_TZ", ZONE)
 
@@ -199,7 +199,7 @@ def test_command_line_and_mcp(tmp_path, monkeypatch, capsys):
     assert (shown["profile"], shown["held_back"], len(shown["picks"])) == ("gentle (edited)", 2, 2)
     assert cli("profile", "nope")[0] == 3
     assert cli("profile", "--set", "shortlist.size=0")[0] == 5
-    tasks = Tasks(Store(str(tmp_path / "s.sqlite3")), timezone=ZONE)
+    tasks = Tasks(open_store(str(tmp_path / "s.sqlite3")), timezone=ZONE)
     reply = handle(tasks, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": "daymark_view", "arguments": {"view": "advise"}}})  # fmt: skip
     assert "(2 more ready" in reply["result"]["content"][0]["text"]
@@ -382,11 +382,64 @@ def test_explore_ignores_finished_goals_and_counts_a_proposed_move(tasks):
     assert tasks.edit("work", advances="")["advances"] == [] and task["advances"] == ["need"]
 
 
+def test_frontier_first_identifies_proposal_only_conditions_without_exposing_other_scopes(tasks):
+    tasks.goal("Press ready", id="press")
+    tasks.add("By phone", kind="context", id="phone")
+    for condition in ("slot", "paper", "binding", "delivery"):
+        tasks.add(condition, kind="condition", id=condition, goal="press", condition="unmet",
+                  scope="studio" if condition != "delivery" else "offsite")
+    tasks.propose("Offsite proposal", id="secret-record", scope="offsite",
+                  advances=["slot", "paper", "binding", "delivery"])
+    tasks.add("Supplier contacted", id="supplier", waiting_on="press", advances=["binding"])
+    tasks.add("Prior action", id="prior", advances=["slot"])
+    tasks.done("prior")
+    before = tasks.engine.head("w")
+    result = tasks.advise(scope="studio", settings=["frontier-first.gaps=1"]).to_dict()
+    assert not result["picks"] and not result["suggestions"]
+    finding, = result["notes"]
+    assert "2 next conditions have only proposed work" in finding["text"]
+    assert len(finding["ids"]) == 1 and finding["ids"][0] in {"slot", "paper"}
+    assert all(word not in json.dumps(result) for word in ("secret-record", "Offsite proposal", "delivery"))
+    assert not tasks.advise(scope="studio", context="phone", settings=["frontier-first"]).notes
+    assert not tasks.advise(scope="studio", settings=["frontier-first.gaps=0"]).notes
+    assert tasks.engine.head("w") == before
+    tasks.accept("secret-record")
+    assert not tasks.advise(scope="studio", settings=["frontier-first"]).notes
+
+
 def test_lookahead_stays_bounded(tasks):
     for index in range(30):
         tasks.add(f"Due soon {index}", id=f"d{index:02d}", due="+3d")
     notes = run(tasks, ("lookahead", {"limit": 4})).notes
     assert len(notes) == 5 and "26 more due soon" in notes[-1].text
+
+
+def test_lookahead_warns_when_even_the_earliest_planned_work_is_after_the_cutoff(tasks):
+    def add(key, plan, due, **fields):
+        tasks.add(key, id=key, plan=plan, due=due, **fields)
+
+    due = {"date": "2030-04-04", "timezone": "America/New_York"}
+    add("late-day", "2030-04-06", due, start="2030-04-05")
+    add("same-day", "2030-04-04", due)
+    add("early", "2030-04-03", due)
+    # Local dates differ, but April 5 in Tokyo begins during April 4 in New York.
+    add("overlap", {"date": "2030-04-05", "timezone": "Asia/Tokyo"}, due)
+    add("after-midnight", "2030-04-05T04:00:00Z", due)
+    add("before-midnight", "2030-04-05T03:59:59Z", due)
+    plan = {"date": "2030-04-05", "timezone": "America/Los_Angeles"}
+    add("same-label-late", plan, "2030-04-05T06:59:59Z")
+    add("possible", plan, "2030-04-05T07:00:00Z")
+    add("exact", "2030-04-05T09:00:00Z", "2030-04-05T09:00:00Z")
+    add("waiting", "2030-04-06", due, waiting_on="printer")
+    add("far", "2030-05-05", "2030-05-04")
+    add("missing", None, due)
+    before = tasks.engine.head("w")
+    notes = run(tasks, ("lookahead", {})).notes
+    late = {n.ids[0] for n in notes if "planned work falls after" in n.text}
+    assert late == {"late-day", "after-midnight", "same-label-late"}
+    assert {n.ids[0] for n in notes} == late | {"missing"}
+    assert "late-day" not in {row["id"] for row in tasks.ready()}
+    assert tasks.engine.head("w") == before
 
 
 def test_a_0_4_0_database_upgrades_in_place(tmp_path):
@@ -508,7 +561,7 @@ def test_time_fit_uses_only_individual_recorded_estimates(tasks):
     assert advice.held_back == 2
     assert (
         advice.notes[0].text
-        == "2 individually estimated at 20 min or less. 1 estimated longer. 1 without an estimate."
+        == "2 tasks have individual estimates of 20 minutes or less. 1 task needs more time. 1 task has no estimate."
     )
     assert len(tasks.ready(scope="")) == 4
     empty = tasks.advise(profile="plain", settings=["time-fit.minutes=5"], scope="")
@@ -781,14 +834,70 @@ def test_waiting_check_respects_the_recorded_return_and_reports_only_task_update
         clock += timedelta(days=2)
         writer.note("proof", "Attachment filed.")
         due_day = Tasks(store, "studio", timezone=ZONE, now=datetime(2030, 4, 5, 8, tzinfo=UTC))
-        waiting, = due_day.agenda()["waiting"]
+        (waiting,) = due_day.agenda()["waiting"]
         assert waiting["id"] == "proof" and waiting["deadline"]["date"] == "2030-04-05"
         before = Tasks(store, "studio", timezone="UTC", now=opens - timedelta(microseconds=1))
         assert run(before, ("waiting-check", {"days": 5})).notes == []
         assert [x["id"] for x in before.agenda()["overdue"]] == ["proof"]
         assert not before.ready()
         at_return = Tasks(store, "studio", timezone="UTC", now=opens)
-        note, = run(at_return, ("waiting-check", {"days": 5})).notes
+        (note,) = run(at_return, ("waiting-check", {"days": 5})).notes
         assert note.ids == ["proof"] and "Waiting on the print shop." in note.text
         assert f"No task update in {(opens - clock).days} days." in note.text
         assert not at_return.ready()
+
+
+def test_decision_batches_count_ready_work_but_name_only_visible_decisions(tasks):
+    for i in range(6):
+        tasks.add(f"Choose proof {i}", id=f"d{i}", move="answer", minutes=30 if i < 3 else 5)
+    tasks.add("Check unconfirmed slot", id="future", move="answer", start="+2d")
+    tasks.add("Review fixture", id="read", move="agent", due="today")
+    batch = ("decisions-first", {"limit": 2})
+    shortlist = ("shortlist", {"size": 1})
+    time = ("time-fit", {"minutes": 5})
+    first = run(tasks, batch, shortlist)
+    assert first.notes[0].ids == ["d0"] and first.picks[0]["id"] == "d0"
+    assert first.notes[0].text == (
+        "Of 7 ready tasks reviewed, 6 need the person's answer. 1 offered for discussion in this batch."
+    )
+    # Earlier stages may leave no decision, or remove the first two originally ranked decisions.
+    narrowed = run(tasks, shortlist, batch)
+    assert narrowed.picks[0]["id"] == "read" and narrowed.notes[0].ids == []
+    assert "6 need" in narrowed.notes[0].text and "0 offered" in narrowed.notes[0].text
+    timed = run(tasks, batch, time)
+    discussion = next(n for n in timed.notes if n.strategy == "decisions-first")
+    assert discussion.ids == ["d3", "d4"] and "2 offered" in discussion.text
+    # A separate deadline advisory can still name a task outside the picks.
+    assert any(n.strategy == "time-fit" and n.ids == ["read"] for n in timed.notes)
+    tasks.profile("plain", settings=["decisions-first.limit=2"])
+    assert tasks.advise().notes[0].ids == ["d0", "d1"]
+
+
+def test_capacity_distinguishes_ready_dates_focus_and_blocked_plans_without_writing(tasks):
+    tasks.add("Fold pages", id="fold", minutes=30, plan="today")
+    tasks.add("Compare drafts", id="focus", minutes=80, plan="+7d")
+    tasks.focus("focus")
+    tasks.add("Await press", id="hold", waiting_on="press")
+    tasks.add("Send proof", id="send", after="hold", minutes=100, plan="today")
+    shape = tasks.engine.export("w")
+    strategy = "overbooked"
+    default = run(tasks, (strategy, {"capacity_minutes": 60}))
+    (note,) = default.notes
+    assert note.ids == ["focus", "fold"] and "about 110 min" in note.text
+    assert (
+        "30 min are due or planned" in note.text
+        and "Focus alone adds 80 min from 1 task" in note.text
+    )
+    dated = tasks.advise(
+        profile="plain",
+        settings=["overbooked.capacity_minutes=60", "overbooked.include_focus=false"],
+    )
+    assert not dated.notes
+    assert {x["id"] for x in tasks.agenda()["today"]} == {"fold", "send"}
+    tight = run(tasks, (strategy, {"capacity_minutes": 15, "include_focus": False}))
+    assert tight.notes[0].ids == ["fold"] and "about 30 min" in tight.notes[0].text
+    assert tasks.engine.export("w") == shape
+    assert (
+        tasks.profile_catalog(strategy=strategy)["parameters"]["include_focus"]["default"] is True
+    )
+    code("invalid", tasks.advise, settings=["overbooked.include_focus=yes"])

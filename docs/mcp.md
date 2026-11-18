@@ -2,7 +2,9 @@
 
 Daymark gives a client six tools over stdio. Start with `daymark_prime` to see the
 database, workspace, actor, local date and current work. Use `{"brief":true}` when
-the client already knows the commands.
+the client already knows the commands. The full startup guide uses
+the tools this client can call. Pass a named scope on the first read. Use
+`show` directly when the person supplied a record ID or exact source.
 
 ## Connect a workspace
 
@@ -134,13 +136,20 @@ A search in just one kind can miss another match. The write
 receipt includes `assignee_id`. A claim concerns temporary work pickup and
 can be held independently. Keep the ID for retries if the display name changes.
 
+To check whether an external source belongs to a particular working scope,
+use `{"view":"find","source":"catalog:proof:Q-41","scope":"studio","json":true}`.
+The reply contains at most one compact hit. A matching source in another
+scope produces an empty page. The normal kind, status, archive and claim
+filters still apply. A title search does not search source references.
+Use `show` when you need the matched record’s detail and relationships.
+
 ## Read only the detail you need
 
 By default, views return the same short text an operator sees in the CLI.
 Use `json:true` on any `daymark_view` to get named fields. Modern clients read
 `structuredContent`. The text block identifies where to find it so the payload
 appears once on the wire. A host that only displays text can omit `json`.
-Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
+Clients using the 2024-11-05 or 2025-03-26 revision receive the JSON in `content[0].text`.
 
 | Question | `daymark_view` arguments |
 | --- | --- |
@@ -151,8 +160,12 @@ Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
 | What did the last worker record? | `{"view":"show","id":"sample","brief":true,"json":true}` |
 | Which task came from this external reference? | `{"view":"show","source":"samples:sheet:Q-41","brief":true,"json":true}` |
 | Can I read the whole note? | `{"view":"show","id":"sample","note":"NOTE_ID","json":true}` |
+| Which goal conditions can move in this scope? | `{"view":"explore","scope":"workshop","json":true}` |
+| Which tasks await acceptance? | `{"view":"find","status":"proposed","json":true}` |
 | Where is the saved fact? | `{"view":"find","kind":"memory","text":"metric","limit":5,"json":true}` |
 | Which tasks changed after my cursor? | `{"view":"activity","after":10,"limit":5,"json":true}` |
+
+For `explore`, scope selects conditions. Linked work in other scopes still counts toward gaps and blocked conditions. A condition’s optional `outside_scope` reports aggregate links without identifying those other records.
 
 A ready row carries its ID, title, current version and the reason for its place.
 Supply `context` with a context entity ID to filter ready work, its explanation, advice or the agenda.
@@ -167,7 +180,9 @@ Show accepts exactly one of `id` or `source`. Its brief supplies individual note
 IDs and a cursor to older previews. The full show includes note IDs, authors,
 timestamps and text. Both full show and brief name up to five unresolved
 prerequisites with their titles and current statuses in `blockers`. Their
-`blocked_by` arrays retain the IDs.
+`blocked_by` arrays retain the IDs. For a circular wait witnessed in task detail,
+`readiness.cycle` lists the child or prerequisite steps that lead back to
+the requested task. Confirm the intended relationship before changing it.
 
 ## Use a workspace preference
 
@@ -188,8 +203,19 @@ Use the version actually returned by the read. An unconfigured workspace
 starts at version zero. Supply `set` or `drop` without `id` to adjust the
 active profile. The receipt identifies the workspace, new version, and the
 operation and expected version needed to restore the earlier settings. Its
-text includes the exact CLI command for use with the same database. Named
-profile administration remains available through local `daymark profile` commands.
+text includes the exact CLI command for use with the same database. For an
+MCP-only correction, pass the receipt's `restore_call` directly to
+`tools/call`. It names the profile operation, its resulting revision and a
+retry ID. A later preference change produces a conflict. For example, the
+restore call from the first change above has these arguments:
+
+```json
+{"action":"restore_profile","id":"choose-plain-01","expected_version":1,"op":"choose-plain-01:restore-profile"}
+```
+
+The `undo` action addresses an entity ID. Profile restoration addresses an
+operation ID through `restore_profile`. Named profile administration remains
+available through local `daymark profile` commands.
 
 An HTTP-backed MCP session reads active and named profiles from its credential's
 workspace. The service evaluates built-in stages. The advice result identifies
@@ -198,7 +224,8 @@ stages are listed in `profile_source.skipped`. To run an extension installed
 on the MCP client, explicitly use a built-in base and name the extension in
 `set`. This one-call preview reports `execution="client-preview"`.
 On a v0.5.0 service the workspace profile is unavailable. The current client
-uses a labeled plain default and still accepts built-in previews.
+uses a labeled plain default and still accepts built-in previews. Upgrade both
+the stdio process and the HTTP service for remote workspace preferences.
 
 Use matching client and service versions for memory retirement. The current
 service verifies the memory’s kind inside the archive transaction and accepts
@@ -229,6 +256,15 @@ edit causes a conflict. To restore one earlier field while preserving later
 work, inspect event history and a version comparison, then submit a guarded
 edit for that field.
 
+When inspecting a proposal, full or brief detail includes `decision_access`.
+`actor` is the authenticated principal on the HTTP connection or the named
+local actor. `policy_allows` reports whether the workspace permits this
+actor to accept or dismiss. `rule` identifies the policy as
+`named_deciders` or `any_writer`. MCP marks `session_read_only:true`
+on read-only connections. A missing policy signal from an older service
+appears as `policy_allows:null`. The person's decision still determines
+whether to act. The write checks the current policy again.
+
 ## Handle refusals
 
 An invalid date, a live claim held by another actor, or a missing task produces
@@ -256,10 +292,14 @@ An unknown tool or a malformed request produces a JSON-RPC error. Refresh
 `tools/list` to discover tool names and argument schemas. The server writes one
 JSON-RPC message per stdout line. Diagnostics use stderr.
 
-The server negotiates the dated tools/stdio revisions 2024-11-05, 2025-06-18
-and 2025-11-25. An unrecognized revision receives the newest one Daymark
-supports, allowing the client to continue if it supports that revision.
-Protocol 2024-11-05 clients receive text results.
+Daymark negotiates the tools/stdio revisions 2024-11-05, 2025-03-26,
+2025-06-18 and 2025-11-25. An unrecognized revision receives the newest one
+Daymark supports. The two earliest revisions return text results. March 2025
+also accepts JSON-RPC batches after initialization. The current TypeScript v2
+client connects through its default legacy handshake or its automatic fallback
+to 2025-11-25. A client pinned to 2026-07-28 requires a different revision.
+[March 2025 base protocol](https://modelcontextprotocol.io/specification/2025-03-26/basic),
+[TypeScript client guide](https://ts.sdk.modelcontextprotocol.io/v2/clients/connect),
 [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
 [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools),
 [MCP transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
@@ -281,3 +321,9 @@ the state is `pending`. The built-in worker records a delivery locally when
 it runs and the reminder is eligible. An external notification requires a
 configured delivery integration. The task keeps its original plan and
 deadline. A proposal's reminder stays dormant pending acceptance.
+
+
+To revisit an archived task, proposal or remembered fact, read its exact
+record with a brief show, then call `daymark_act` with action `unarchive`,
+`id`, `review_token` and a stable `op`. Restoration retains its recorded
+status. An archived proposal requires restoration before a fresh acceptance.

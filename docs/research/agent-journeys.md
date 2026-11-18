@@ -239,13 +239,30 @@ uv run python scripts/agent_journey.py check /tmp/example-plan-trial
 ```
 
 The available scenarios cover a plan with a hard deadline, two kinds of
-dates, waiting for someone, a suggestion, a one-time scoped choice, and a
-blocked task. Run `start --help` for their names. For the last two, supply
-the ID the reader actually reported with `check DIRECTORY --answer ID`.
+dates, waiting for someone, a suggestion, a one-time scoped choice, a
+blocked task and a standing workspace preference. Run `start --help` for their
+names. For `blocked` and `one-option`, supply the ID the reader actually
+reported with `check DIRECTORY --answer ID`.
 Checking opens SQLite read-only and exits 0 for a passing outcome or 1 for
 a miss. Record the client and version, the answer shown to the person, and
 any interventions alongside the score. A state-based pass alone cannot tell
 whether the reader understood the request or found the experience easy.
+
+In `standing-window`, the person asks for up to two options that each fit a
+15-minute gap, as a standing choice for the workspace. Neutral wording is
+already active and a separate weekly review is saved. The scorer opens a new
+session with a different actor and asks for advice across the workspace and in
+two scopes. One scope contains a 15-minute task alongside longer and
+unestimated tasks. The other has three short tasks. The scorer checks the
+choices, wording, saved review, task records and event history. Its strategy
+evaluation uses the built-in methods distributed with Daymark.
+
+Six scripted CLI controls exercised this rubric. The standing adjustment that
+retained neutral wording and took two choices after checking their estimates
+passed. A one-call preview, limiting choices before checking estimates,
+replacing the existing tone, a 14-minute window and a 16-minute window each
+failed. These controls exercise the scorer. They provide no measure of how
+often a person or model will choose the right action unaided.
 
 ## Returning for a project review
 
@@ -382,6 +399,36 @@ for a task edit. Daymark refused those extra fields, and the client recovered
 on the next call. Each trial used one session and a synthetic recipient.
 
 
+## Which work counts against an hour?
+
+A synthetic day held 30 minutes of ready work planned today and a
+100-minute planned task blocked on a reply. A separate 80-minute task was in
+focus. The agenda contained 130 planned minutes. The capacity check previously
+reported that “Today holds about 110 min” because it counted the focus item
+and the ready plan. It had no setting for someone's choice to use focus
+across multiple days.
+
+The revised warning identifies the 30 dated minutes and the additional 80
+from focus. With a 60-minute capacity and focus excluded, it raises no
+warning. With a 15-minute capacity it reports the 30 ready minutes and names
+that task. Neither preview alters the focus order, the blocked plan or any
+task fact. The original default still counts focused ready work. A tagged v0.5.0
+profile edit subsequently removed the unfamiliar option. The configuration
+revision advanced, guarded undo refused to overwrite that edit, and the
+current client reapplied only the missing option using an earlier receipt.
+The unrelated shortlist change survived. [Mixed-version recovery](../operations.md#setting-revisions-on-schema-6)
+
+## One question at a time
+
+In a synthetic queue with 50 decisions and one delegated task, a two-decision
+ranking followed by a one-pick shortlist offered a single decision. The
+previous follow-up note still told the agent to ask all 50 questions together
+and returned all 50 IDs. The revised response keeps the aggregate count and
+names only the visible discussion batch. A regression switches the order of
+the stages and applies a time filter that removes the first ranked decisions.
+The final batch reflects the surviving picks. An independent deadline note
+still identifies an omitted task.
+
 ## One workspace seen through a service
 
 A synthetic local workspace contained four ready tasks. Its standing review
@@ -402,17 +449,36 @@ workspace's profile. The service reported that skipped stage and ran the
 shortlist. No marker appeared on either side until the caller selected the
 extension with an explicit built-in base. Only the client marker appeared.
 The older service returned four picks with a labeled client-side plain fallback.
-Its explicit one-call previews still worked. These are transport, execution and
+Its explicit one-call previews still worked. The tagged v0.5.0 CLI on the current
+service also returned four because that client computes its own advice. These
+are transport, execution and
 version checks on two SDK releases.
 
 The first service implementation transferred full task bodies to the MCP
 bridge. On a second synthetic fixture, 40 tasks each carried roughly 10 KB
 of description and 10 KB of note text. The full advice response transferred
-838,649 JSON bytes; the structured MCP result took 3,169. The bridge's compact
-request transferred 3,169 bytes on that fixture and returned the same forty
+838,692 JSON bytes. The structured MCP result took 3,212. The bridge's compact
+request transferred 3,212 bytes on that fixture and returned the same forty
 IDs in order. A separate case retained estimates, the next checklist step,
 the live claim and a count of additional task contexts. Callers asking for
-full Python results still receive full task records.
+full Python results still receive full task records. A simulated client clock
+six minutes ahead had erased a five-minute service claim from the MCP result.
+Using the service's evaluation instant retained the same claim on both reads.
+
+Another fixture used 120 open tasks with note and description text. Ten were
+in the studio scope and five of those also carried the phone context. An
+explicit client extension reading open work originally received all 120 full
+records before local filtering. Pushing the predicates into the service's
+entity query reduced that response from 690,691 bytes to 57,566 for the
+studio, or 28,801 with the phone context. It returned the same selected IDs.
+These sizes measure response bodies before rendering.
+
+A fresh scoped startup used to download a 31,518-byte OpenAPI document to
+check filter support. The compact projection of the same routes and query
+names was 3,125 bytes in an installed development wheel. A tagged v0.5.0
+service returned its full 14,252-byte schema and the client declined the
+unsupported scoped startup before reading task data. Separate scoped
+extension queries returned the matching task on both services.
 
 A separate two-connection test completed a project's only task between its
 ready read and project review. Before grouping the local reads, the same
@@ -505,3 +571,70 @@ Both hosts could inspect the same named recipe. The public entity and event
 export compared equal at the beginning and end. The trial supplied the host's
 personal choices directly. Daymark inferred no relationship between the actor,
 session and individual.
+
+## Asking what still matters after a week away
+
+Epstein and colleagues interviewed 22 people and surveyed past and present
+self-trackers of activity, finances and location. Their model includes
+stopping and sometimes resuming, with different reasons for returning.
+That work concerned self-tracking. We used its treatment of resumption
+to frame a question for task software. What does someone want to know
+on returning, before making a new plan? [A Lived Informatics Model of Personal Informatics](https://pmc.ncbi.nlm.nih.gov/articles/PMC12435389/)
+
+A synthetic workspace contained 160 tasks planned a week earlier, 36
+ordinary waits, and five potentially relevant items. The person requested
+only agreed hard deadlines already past or due within two days, including
+whether someone owed a reply. A correct answer identified the late paper
+sizes and the print authorization due tomorrow at 16:00 UTC, waiting for
+printer confirmation. The other three items had a soft target, were still
+a proposal, or had a deadline beyond the requested window.
+
+At checkpoint `864515a`, a cold Claude Code session took 16 MCP reads and a
+cold Codex session took six. Both returned the correct two records and left
+the workspace unchanged. The general text agenda was 14,669 bytes. The
+structured result in the actual sessions differed in size from the text
+agenda. These are observations of two individual runs on one fixture.
+
+We repeated the same request in fresh sessions after adding a hard-deadline
+agenda. Both hosts asked for the two-day deadline view on their second
+call. Claude used seven reads overall and Codex used four. Both identified
+the same two records, correctly named the outstanding confirmation, and
+left the workspace unchanged. A direct call on this same fixture returned
+185 UTF-8 bytes of text, including both IDs, deadlines and the wait reason.
+The complete compact JSON envelopes measured 243 bytes for text output and
+449 bytes for structured output. Extra verification reads were the hosts'
+choices. Each configuration ran once per host.
+
+## Returning to archived work after a transfer
+
+Eight seeded workloads each ran 80 transitions on seven same-titled,
+source-identified tasks with two workers and three scopes. At step 30 the
+trial forked the current workspace four ways. One continued in place, one
+used the CLI SQLite backup and restore, one restored shuffled native JSON,
+and one restored entities with partial events before merging the complete
+history. The two JSON destinations already contained another workspace.
+
+An independent model tracked status, archive flag, waiting reason, claimed
+worker, scope, prerequisite and version. After each transition the trial
+compared records and the two actors' ready, claimed and archived search
+results, both across the workspace and inside each scope. All four paths
+accepted the pre-transfer activity checkpoint. The 960 historical operation
+replays after transfer returned the original results. These transitions used
+live claims within one run. They did not simulate arbitrary lease expiry or
+an external notification receiver.
+
+A separate interrupted handoff reproduced a problem. One worker completed a
+waiting prerequisite, making its dependent ready. A delayed resume from
+the earlier worker then reopened the finished prerequisite. The dependent
+disappeared from the ready queue. A delayed wait also moved cancelled work
+back to waiting. The plain verbs now report the current closed or archived
+state. An interleaving regression completes the prerequisite from another
+connection after resume reads it and before its write.
+
+The recording worker trial also exposed two restore issues. Archiving a
+delivered reminder had relabelled its delivery as cancelled. A native
+snapshot taken directly after a scheduler write failed to merge into the
+same database because two equivalent UTC encodings compared differently.
+Regression cases now cover preserved terminal outcomes, cancelled retries,
+receipt replay on restart and transfer, and atomic refusal when an incoming
+attempt count actually differs.

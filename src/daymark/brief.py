@@ -108,7 +108,7 @@ def _source(store, workspace, id, before_note):
         )
 
 
-def read(store, workspace, id, *, now=None, owner=None, before_note=None):
+def read(store, workspace, id, *, now=None, owner=None, before_note=None, actor=None):
     """The current state and a short note trail, with exact references to read further."""
     now = normalize_now(now)
     if before_note is not None and (
@@ -121,6 +121,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
     with store._transaction(write=False):
         item, note_count, newer, notes = _source(store, workspace, id, before_note)
         review_token = store._review_token(workspace, id)
+        access = store.decision_access(workspace, actor) if item["status"] == "proposed" and actor is not None else None
         reminder = {}
         if item["kind"] == "reminder":
             reminder = {key: item[key] for key in outbox.DETAIL_FIELDS}
@@ -157,11 +158,14 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
             if child_count < _LINK_LIMIT:
                 children.append(child_id)
             child_count += 1
+        cycle = views.blocker_cycle(store, workspace, item, held=blocked or child_count)
     out = {key: item[key] for key in ("id", "kind", "status", "version")}
     out.update(reminder)
     if item["archived"]:
         out["archived"] = True
     out["review_token"] = review_token
+    if access:
+        out["decision_access"] = access
     clipped = []
     for key in ("title", "description", "waiting_on"):
         value = item.get(key) or ""
@@ -189,6 +193,8 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
             views._readiness_reasons(item, now, owner, blocked=blocked, has_children=child_count)
         )
         out["readiness"] = {"ready": not reasons, "reasons": reasons}
+        if cycle:
+            out["readiness"]["cycle"] = cycle
     out["blocked_by"] = blocked[:_LINK_LIMIT]
     if named_blockers:
         out["blockers"] = named_blockers

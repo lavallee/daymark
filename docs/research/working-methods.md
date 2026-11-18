@@ -93,7 +93,7 @@ principal's behalf or for working to energy patterns.
 |---|---|---|---|---|
 | Knowing what to do but not doing it at the moment it matters | Clinical theory (Barkley), read second-hand | Put the cue where and when the task happens | An app that must be opened to help | [qualitative study](https://arxiv.org/abs/2603.17258) |
 | Time blindness and underestimation | Clinical: a pooled meta-analysis; adult evidence scarce | Record estimate against actual; plan backward | Lists with no dates or durations | [Marx et al.](https://eprints.soton.ac.uk/456003), [CHADD](https://chadd.org/wp-content/uploads/2018/06/ATTN_10_15_BeatingTimeBlindness.pdf) |
-| Organisation and planning | Clinical trials of skills training: one calendar and one list reviewed daily, tasks broken into steps, "good enough" | Offer the first step only | Many lists; a large undifferentiated backlog | [Safren et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC3874265) |
+| Organisation and planning | A clinical trial evaluated a multicomponent therapy program. Its skills include breaking a problem into steps. | Daymark can display a person's next recorded step. | A long backlog may make the next action harder to see. | [Sprich et al., description and demonstration](https://pmc.ncbi.nlm.nih.gov/articles/PMC3874265/) · [Safren et al., randomized trial](https://pubmed.ncbi.nlm.nih.gov/20736471/) |
 | Starting | Small laboratory studies of if-then plans, in children | Phrase as "when X, do Y" | Bare titles | [Gawrilow et al.](https://www.socmot.uni-konstanz.de/publications/implementation-intentions-facilitate-response-inhibition-adhd-children) |
 | Shame from overdue piles | Qualitative; vendor writing | Neutral ageing; a bulk reset | Red overdue badges | [qualitative study](https://arxiv.org/abs/2603.17258) |
 | Reminders fade | Qualitative | Vary the channel; escalate or stop | An identical repeating notification | same |
@@ -102,6 +102,12 @@ principal's behalf or for working to energy patterns.
 | Perfectionism and procrastination | Meta-analysis, a modest correlation | State what "done" means | Open-ended tasks | [Sirois et al.](https://eprints.whiterose.ac.uk/id/eprint/112533/1/Sirois%20et%20al%20in%20press%20EJP%20Procrastination%20%26%20Perfectionism%20meta-analysis.pdf) |
 | Variable energy | Folk metaphor ("spoons") | Fit the plan to stated capacity | A fixed daily load | [Cleveland Clinic](https://health.clevelandclinic.org/spoon-theory-chronic-illness) |
 | Highly organised, wants density | No source; our inference | Full views, nothing trimmed | Forced simplification | |
+
+The trial enrolled 86 adults who still had symptoms while taking medication.
+It evaluated the program as a whole. Showing the next unchecked item and
+prompting after two days are Daymark design choices. This source gives no
+estimate of either feature's effect on starting or completing work.
+[Trial design and population](https://pubmed.ncbi.nlm.nih.gov/20736471/)
 
 The clinical guidance page (NICE NG87) could not be fetched. "Interest-based
 nervous system", "wall of awful", dopamine menus and novelty decay were not
@@ -182,3 +188,23 @@ The [capture walkthrough](capture-clarification.md) follows five requests
 through capture, revision and later retrieval. A tentative idea with no review
 date exposed a gap between preserving something and asking the person for a
 decision.
+
+### A preference with an end date
+
+We gave a fresh Claude Code session an invented proofreader and a shared
+print workspace with four ready tasks. The proofreader wanted two choices
+through Friday. A collaborator wanted the ordinary list. A second request,
+in a fresh workspace, explicitly asked to adopt a two-choice default for
+the whole collective.
+
+With scoped startup alone, the first host delivered two choices and kept
+the shared default at four, but also wrote a workspace memory naming the
+proofreader and the temporary preference. Its text said when to stop. Every
+caller could read it. We repeated both requests after changing the startup
+guidance to name the audience for memories and settings and to apply
+personal, time-limited choices per request. That host showed two, left
+the entity export and settings revision untouched, and explained that a
+future session needs the host or the person to supply the preference again.
+Both versions honored the explicit collective request, installing a guarded
+standing rule that yielded two picks for a fresh caller. Each prompt ran
+once per variant. No individual's preferences were inferred from real work.

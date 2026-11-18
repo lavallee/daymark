@@ -3,13 +3,31 @@
 import json
 import sqlite3
 import unicodedata
+from typing import get_args
 
-from .models import DomainError, normalize_now
+from .models import DomainError, Entity, SourceRef, normalize_now
 from .views import _usable, claim_holder
 
 
-def _fold(text):
+def fold_text(text):
     return unicodedata.normalize("NFC", text.casefold())
+
+
+_KINDS = get_args(Entity.model_fields["kind"].annotation)
+_STATUSES = get_args(Entity.model_fields["status"].annotation)
+
+
+def validate_kind_status(kind, status):
+    if kind not in _KINDS:
+        if kind == "proposal":
+            raise DomainError("invalid", "For task proposals, use kind=task and status=proposed")
+        if kind == "decision":
+            raise DomainError("invalid", "Use ready move=answer for decisions, or find status=proposed for proposals")
+        raise DomainError("invalid", "Unknown search kind. Choose one of " + ", ".join(_KINDS))
+    if status is not None and status not in _STATUSES:
+        if status == "done":
+            raise DomainError("invalid", "For finished work, use status=completed")
+        raise DomainError("invalid", "Unknown search status. Choose one of " + ", ".join(_STATUSES))
 
 
 def validate_filters(text, kind, status, scope, after, limit):
@@ -22,15 +40,17 @@ def validate_filters(text, kind, status, scope, after, limit):
     ):
         if value is not None and (not isinstance(value, str) or len(value) > maximum):
             raise DomainError("invalid", f"{name} must be text of at most {maximum} characters")
-    if not kind:
-        raise DomainError("invalid", "A search needs an entity kind")
+    validate_kind_status(kind, status)
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise DomainError("invalid", "Limit must be between 1 and 1000")
 
 
-def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now, *, archived):
+def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now, *, archived, source=None):
     sql = " FROM daymark_entities WHERE workspace=? AND kind=? AND archived=?"
     args = [workspace, kind, int(archived)]
+    if source is not None:
+        sql += " AND id=(SELECT entity_id FROM daymark_sources WHERE workspace=? AND system=? AND kind=? AND ref_id=?)"
+        args.extend([workspace, source.system, source.kind, source.id])
     if status is not None:
         sql += " AND status=?"
         args.append(status)
@@ -48,9 +68,15 @@ def _rows(store, workspace, kind, status, scope, after, search_description, clai
             else ""
         )
         claim_filter = " AND json_extract(data,'$.claimed_by')=?" if claimed_by else ""
+        scope_filter = " AND coalesce(json_extract(data,'$.scope'),'')=?" if scope is not None else ""
+        bindings = [*args]
+        if claimed_by:
+            bindings.append(claimed_by)
+        if scope is not None:
+            bindings.append(scope)
         cursor = store.db.execute(
-            "SELECT " + columns + description + claim_fields + sql + claim_filter + " ORDER BY id",
-            [*args, claimed_by] if claimed_by else args,
+            "SELECT " + columns + description + claim_fields + sql + claim_filter + scope_filter
+            + " ORDER BY id", bindings,
         )
     except sqlite3.OperationalError as error:
         if "no such function: json_extract" not in str(error):
@@ -74,14 +100,13 @@ def _rows(store, workspace, kind, status, scope, after, search_description, clai
     for row in cursor:
         if claimed_by and claim_holder({"claimed_by": row[7], "claim_until": row[8]}, now) is None:
             continue
-        if scope is None or (row[5] or "") == scope:
-            yield row
+        yield row
 
 
 def _matches(rows, needle, limit, *, archived=False):
     out = []
     for id, kind, state, version, title, scope, description, *claim in rows:
-        if needle and needle not in _fold(title) and needle not in _fold(description):
+        if needle and needle not in fold_text(title) and needle not in fold_text(description):
             continue
         if len(out) == limit:
             return {"items": out, "next": out[-1]["id"]}
@@ -96,13 +121,30 @@ def _matches(rows, needle, limit, *, archived=False):
     return {"items": out, "next": None}
 
 
-def legacy_page(client, text, *, kind, status, scope, after, limit):
-    """An older HTTP server only supplies entity queries. Preserve the public page shape."""
-    validate_filters(text, kind, status, scope, after, limit)
+def entity_filters(kind, status, *, scope=None, context=None):
+    """Push full-record selection to the owner of the data, including older query services."""
+    validate_kind_status(kind, status)
     clauses = [{"field": "kind", "op": "eq", "value": kind}]
     if status is not None:
         clauses.append({"field": "status", "op": "eq", "value": status})
-    items = client.query({"and": clauses})
+    if scope is not None:
+        if not isinstance(scope, str) or len(scope) > 100:
+            raise DomainError("invalid", "scope must be text of at most 100 characters")
+        clauses.append(
+            {"field": "scope", "op": "eq", "value": scope} if scope
+            else {"field": "scope", "op": "in", "value": [None, ""]}
+        )
+    if context is not None:
+        if not isinstance(context, str) or not 1 <= len(context) <= 128:
+            raise DomainError("invalid", "Context must be a nonempty entity ID of at most 128 characters")
+        clauses.append({"field": "context_ids", "op": "contains", "value": context})
+    return {"and": clauses}
+
+
+def legacy_page(client, text, *, kind, status, scope, after, limit):
+    """An older HTTP server only supplies entity queries. Preserve the public page shape."""
+    validate_filters(text, kind, status, scope, after, limit)
+    items = client.query(entity_filters(kind, status, scope=scope))
     rows = (
         (
             item["id"],
@@ -117,7 +159,7 @@ def legacy_page(client, text, *, kind, status, scope, after, limit):
         if (after is None or item["id"] > after)
         and (scope is None or (item["scope"] or "") == scope)
     )
-    return _matches(rows, _fold(text or ""), limit)
+    return _matches(rows, fold_text(text or ""), limit)
 
 
 def page(
@@ -131,6 +173,7 @@ def page(
     after=None,
     limit=50,
     archived=False,
+    source=None,
     claimed_by=None,
     now=None,
 ):
@@ -145,17 +188,20 @@ def page(
         raise DomainError("invalid", "Choose either archived records or live claims")
     if claimed_by is not None and kind != "task":
         raise DomainError("invalid", "Only tasks have work claims")
+    ref = SourceRef.parse_ref(source) if source is not None else None
     instant = normalize_now(now) if claimed_by else None
-    needle = _fold(text or "")
+    needle = fold_text(text or "")
     with store._lock:
         if _usable(store):
             rows = _rows(
                 store, workspace, kind, status, scope, after, bool(needle), claimed_by, instant,
-                archived=archived,
+                archived=archived, source=ref,
             )
             result = _matches(rows, needle, limit, archived=archived)
         else:
             result = {"items": [], "next": None}
+    if ref is not None:
+        result["source"] = ref.model_dump()
     if archived:
         # Even an empty remote page must confirm it searched the archive.
         result["archived"] = True

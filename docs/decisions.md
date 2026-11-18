@@ -131,6 +131,10 @@ an inspected upstream test is a proof of all interleavings or deployment behavio
 
 ## Starting a session
 
+The full MCP primer describes native tool arguments. The CLI primer describes
+shell commands. Initialization names the first scoped read so a request about
+one setting can stay there from the start. [Cold client comparison](research/mcp-client-trials.md#choosing-the-first-read)
+
 Show the current workspace, actor and live work before the command guide.
 A returning session can opt into a brief view. Over HTTP the credential selects
 the workspace and actor. Ready counts and task listings use the same claim
@@ -225,6 +229,12 @@ events, so a fresh read of affected records is required after such a merge.
 
 ## Interpreting a one-off local clock reading
 
+An explicit Daymark timezone (Python, `--tz` or `DAYMARK_TZ`) must be an IANA
+zone. A typo previously let the environment setting silently select the host
+zone. This could attach a reminder to a different instant. The CLI now gives
+an actionable error before capturing work. Host timezone discovery still
+handles systems whose generic `TZ` value is a POSIX expression.
+
 An explicit local clock reading denotes one instant. If a timezone
 transition skips it, the person chooses an existing time. If the clock
 repeats it, the person chooses the numeric offset. A dated input with an
@@ -263,3 +273,38 @@ Automatically repeating the action against the new head would reverse a
 different event. A matching successful receipt still replays exactly.
 For an earlier field change, the caller can inspect history and submit a
 guarded edit after checking intervening work.
+
+
+## Restoring visibility
+
+Unarchive is a plain verb for a versioned update of the archive flag. It
+retains lifecycle status, completion time, waiting reason and source identity.
+A fresh restoration of a visible record returns a conflict. Identical retries
+return their original result. A fresh acceptance requires a visible proposal.
+Existing accepted-operation receipts replay and the decider policy still
+governs both acceptance and dismissal. Unarchive uses existing record and
+event fields, including the recorded update in activity history.
+
+A delayed wait or resume refuses finished and archived work at the version
+being changed. Restarting a finished task requires an explicit reopen.
+Receipts for earlier successful waits and resumes still replay.
+
+
+## Correcting a recurring occurrence
+
+Fresh skip and completion of a recurring round require a visible unfinished
+occurrence. A one-off task can be cancelled. A successful skip from an older
+release remains replayable under its original operation ID. Reopening or
+undoing the outcome of an earlier round preserves every materialized later
+round, with its distinct occurrence identity, notes, claims and reminders.
+The next slot already reserved by a later round stays reserved after a
+correction or deletion.
+
+
+A new recurring task without an explicit first date uses the first rule
+match on or after the current local day. The same default applies when an
+undated one-off joins a series. An explicit first plan or deadline is
+preserved and counts as the first occurrence even if it falls off-pattern.
+For Tuesday January 1, 2030 followed by Fridays with COUNT=2, the final
+round is Friday January 4. Existing materialized records and receipts
+keep their dates. [Calendar trial](research/recurring-work.md)

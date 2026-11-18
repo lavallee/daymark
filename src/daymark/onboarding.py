@@ -1,5 +1,6 @@
 """Maintain Daymark's marked section in an existing project instruction file."""
 
+import errno
 import os
 import re
 import stat
@@ -79,15 +80,41 @@ def maintain(path: Path, *, check: bool) -> int:
         )
         return 1
 
-    # Write beside the target so an interrupted refresh leaves the original intact.
+    # Keep partial output out of the target, even on an interrupted write.
+    changed = DomainError(
+        "conflict", "The instruction file changed during the update",
+        ["Review the current file and run onboard --write again."],
+    )
     tmp = None
     try:
         with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as handle:
             tmp = Path(handle.name)
-            if existed:
-                os.fchmod(handle.fileno(), stat.S_IMODE(target.stat().st_mode))
             handle.write(updated)
-        tmp.replace(target)
+        if path.resolve() != target:
+            raise changed
+        if existed:
+            try:
+                if target.read_bytes() != original:
+                    raise changed
+                tmp.chmod(stat.S_IMODE(target.stat().st_mode))
+            except FileNotFoundError:
+                raise changed from None
+            tmp.replace(target)
+        else:
+            # Linking the complete temp file publishes it only if the name is still free.
+            try:
+                os.link(tmp, target)
+            except FileExistsError:
+                raise changed from None
+            except OSError as exc:
+                if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
+                    raise
+                try:
+                    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                except FileExistsError:
+                    raise changed from None
+                with os.fdopen(fd, "wb") as output:
+                    output.write(updated)
     finally:
         if tmp:
             tmp.unlink(missing_ok=True)

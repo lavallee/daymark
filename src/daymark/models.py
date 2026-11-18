@@ -26,6 +26,24 @@ class DomainError(ValueError):
         super().__init__(message)
 
 
+def require_active_round(record, action):
+    """Do not turn a shelved or settled occurrence into new calendar work."""
+    if action == "skip" and (record["kind"] != "task" or not record["recurrence"]):
+        raise DomainError("invalid", "Skip requires a recurring task. Use cancel to retire a one-off task.")
+    if not record["recurrence"]:
+        return
+    if record["archived"]:
+        raise DomainError("conflict", "This occurrence is archived. Unarchive it before advancing the series.")
+    if record["status"] in ("completed", "cancelled"):
+        raise DomainError("conflict", f"This occurrence is {record['status']}. Reopen it before changing the recorded outcome.")
+
+
+def require_visible_proposal(record):
+    """Approval requires an explicit restoration of a shelved proposal."""
+    if record["status"] == "proposed" and record["archived"]:
+        raise DomainError("conflict", "Unarchive the proposal before accepting it")
+
+
 class Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -216,13 +234,24 @@ def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: dat
     Reaching a search limit raises recurrence_limit; it does not end the series.
     Completion-based COUNT uses occurrence_index, persisted by the materializer.
     """
+    return _calendar_slot(recurrence, current, completed_at, mode=recurrence.mode)
+
+
+def first_occurrence(recurrence: Recurrence):
+    """First matching slot on or after an implicit starting day, within the rule's limits."""
+    return _calendar_slot(recurrence, recurrence.anchor, None, mode="initial")
+
+
+def _calendar_slot(recurrence, current, completed_at, *, mode):
     zone = ZoneInfo(recurrence.timezone)
     anchor = recurrence.anchor.local().replace(tzinfo=None)
     cursor = current.local().astimezone(zone).replace(tzinfo=None)
     parts = dict(part.split("=", 1) for part in recurrence.rule.split(";"))
     count = int(parts.pop("COUNT")) if "COUNT" in parts else None
     ending = _until(parts.pop("UNTIL")) if "UNTIL" in parts else None
-    if recurrence.mode == "after_completion":
+    if mode != "initial" and count == 1:
+        return None  # The explicitly captured occurrence consumes the first place.
+    if mode == "after_completion":
         if count is not None and recurrence.occurrence_index + 1 >= count:
             return None
         anchor = aware(completed_at).astimezone(zone).replace(tzinfo=None)
@@ -241,21 +270,25 @@ def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: dat
     body = ";".join(f"{key}={item}" for key, item in parts.items())
     rule = rrulestr(body, dtstart=anchor).replace(until=limit)
     following = None
-    instant_cursor = completed_at if recurrence.mode == "after_completion" else current.at
+    instant_cursor = completed_at if mode == "after_completion" else current.at
     for ordinal, candidate in enumerate(rule, start=1):
-        if recurrence.mode == "fixed" and count is not None and ordinal > count:
+        if mode == "fixed" and count is not None and ordinal == 1 and candidate > anchor:
+            # An explicit first day may fall outside a BY selector. Its stored
+            # round already used one place before the first matching date.
+            count -= 1
+        if mode == "fixed" and count is not None and ordinal > count:
             return None
-        if candidate > cursor:
+        if candidate > cursor or (mode == "initial" and candidate == cursor):
             local = candidate.replace(tzinfo=zone, fold=0)
             if not datetime_exists(local):
                 local = resolve_imaginary(local)
             # A later wall time can still be an earlier instant in the second fold.
-            if instant_cursor is None or local.astimezone(UTC) > aware(instant_cursor).astimezone(
+            if mode == "initial" or instant_cursor is None or local.astimezone(UTC) > aware(instant_cursor).astimezone(
                 UTC
             ):
                 following = local
                 break
-        if recurrence.mode == "fixed" and count == ordinal:
+        if mode == "fixed" and count == ordinal:
             return None
     if following is None:
         if artificial_limit and limit < datetime.max:

@@ -42,3 +42,24 @@ a distinct operation ID per intent.
 > Use `add` for agreed actions. Set `--move agent` when the person expressly delegates the action to you. Use `propose` for an idea they want to decide on and `edit` to revise its wording before the decision. Leave acceptance and dismissal to the person. Use `remember` for durable reference that belongs in session context. A proposal appears under decisions, even if it has no date. If a someday idea needs keeping without a decision, use an agreed reference destination or explain Daymark’s proposal behavior and ask where they want it kept. Leave dates and priority unset unless supplied. When the wording is ambiguous, ask one focused question if the answer determines whether there is a commitment or who acts next.
 
 The current `prime` already names proposals, memory, date defaults and the agent next-move flag. A scripted read against these five examples found that it leaves three choices implicit: how to revise a proposal, when to use the agent flag, and what “just keep it” costs in the agenda or startup context. The suggested block makes those choices explicit. The CLI runs tested the resulting command paths, while the side-by-side wording assessment was author judgment. No person or model performed these five captures. The earlier [command-selection](agent-journeys.md) and [MCP handoff](mcp-client-trials.md) trials used different prompts.
+
+## Keeping an idea out of the working queue
+
+We tried the same “keep this around” request with an existing Daymark
+mechanism. The person selected a separate reference workspace. A synthetic
+studio workspace already contained a decision about a cover. Saving “Try
+a paper zine with foldout maps” as a memory in the reference workspace left
+studio counts, ready items, memory previews and activity checkpoint
+unchanged. A search for “foldout” in the reference workspace found it.
+Opening that workspace intentionally also made its memories available to
+the primer.
+
+Later the person asked to consider a mockup. We created a proposal in the
+studio workspace with the idea's source reference. Each workspace resolved
+that source to its own record. Replaying the capture returned the existing
+memory, and a second studio proposal using that source was refused.
+Acceptance put the mockup into the ready queue. Retiring the reference
+subsequently left the accepted work intact. The studio had three events and
+the reference workspace two. A scope within a shared workspace does not
+give an unfiltered primer this separation. A local database owner can
+access both workspaces. HTTP workspace selection follows the credential.

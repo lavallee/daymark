@@ -3,6 +3,17 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
+For a first integration, start with the session and reading sections below.
+For common follow-up requests, use these entry points.
+
+| The person asks | Read |
+| --- | --- |
+| “What still matters after a week away?” | [Reading](#reading) and [handing off unfinished work](#hand-off-unfinished-work) |
+| “Just give me two options this afternoon.” | [Ways of working](#ways-of-working) and [personal choices with an end date](working-preferences.md#let-a-personal-choice-expire) |
+| “Who has the next move?” | [Writing](#writing) and [goals and conditions](#goals-and-what-must-be-true) |
+| “Can you recover my archived item?” | [Bring an archived record back](#bring-an-archived-record-back) |
+| “Did that write go through?” | [Retrying safely](#retrying-safely) |
+
 ## Start of a session
 
 In an unfamiliar directory, `daymark where --json` reports the selected
@@ -10,13 +21,20 @@ database, selection rule and whether the file exists. It opens no database
 and makes no network request. If there is no database, use `daymark init`
 for a per-user database or `daymark init --here` for the current folder.
 
+Set `--tz` or `DAYMARK_TZ` to the person's IANA timezone when their local
+day differs from the host's. An unrecognized explicit zone gives an error.
+
 Run `daymark prime` to see the workspace, actor, counts, up to five ready
 tasks and five remembered facts, followed by the command guide. A returning
 worker can use `daymark prime --brief` for the same session view without the
 guide. Titles are limited to 160 characters plus an ellipsis. Use an ID with
 `show` for the complete record. Local sessions identify the database and
 timezone. An HTTP session uses the workspace and actor bound to its credential.
-The ready count includes work claimed by the current actor.
+The ready count includes work claimed by the current actor. The full MCP primer gives native tool arguments.
+For an exact ID or source, a direct `show` can answer the first question.
+Memories and settings are shared within the workspace. Keep a personal
+or time-limited display choice with the current request or its authorized
+host until the person agrees to share it.
 
 For a machine-readable pickup use `daymark prime --brief --json`. On a local
 database or current service the counts, ready work, memory previews and
@@ -56,6 +74,7 @@ Use a source reference for the related Daymark task.
 | `daymark ready [-n N] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. |
 | `daymark agenda [--days N] [--deadlines]` | Overdue, today, each coming day, waiting, proposed. With `--deadlines`, show only accepted live tasks whose hard deadline is overdue, today or within the horizon. |
 | `daymark show ID` | One entity with its dates, blockers, dependents, children, reminders, notes and history. For tasks it explains each fact keeping the item out of this actor’s ready list. |
+| `daymark find --status proposed` | Pending task proposals. Use `ready --move answer` for tasks awaiting a decision. |
 | `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. Add `--archived` for archived records only. |
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
 | `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
@@ -97,10 +116,20 @@ weekly task with a fresh deadline each week, give it just the recurring due
 date. If the person asks for both dates to move independently, clarify their
 intended schedule before adding the series. [Recurring work examples](research/recurring-work.md)
 
+After several missed fixed slots, confirm which rounds actually happened.
+A skip advances one round. A completion-based series schedules from the
+actual completion. Reminders belong to one occurrence. Schedule a new
+notice on the successor when requested. To correct a completed or skipped
+round, inspect its record and the following occurrence. Reopening the earlier
+record keeps the later occurrence and its evidence.
+
 Adding a waiting reason to an open task with `edit ID --waiting-on WHO` parks
 that task immediately. A proposal keeps its waiting reason for acceptance.
 Changing or clearing the reason on a waiting task keeps it waiting. Use
-`resume ID` when the person says the wait has ended.
+`resume ID` when the person says the wait has ended. A delayed wait or resume
+on completed, cancelled or archived work returns a conflict. Check the
+current handoff before restarting work. Use `unarchive` to restore visibility
+or `reopen` to explicitly restart a finished task.
 
 ## Writing
 
@@ -120,15 +149,15 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | `claim ID [--minutes N]` / `release ID [--note TEXT]` | Take or give back a task. A claim lapses on its own (default 60 minutes), so a crashed session cannot hold work forever. |
 | `note ID "text"` | Append a progress note with your actor name and the time. Notes cannot be rewritten. |
 | `done ID [--note T]` | Complete. A repeating task creates its next round when the rule supplies one. Its event in `activity` gives the actual ID, including when a usual round name was already in use. |
-| `skip ID` | Pass over one round of a repeating task. Nothing is recorded as completed. |
+| `skip ID` | Pass over one visible open or waiting round of a recurring task. Use `cancel ID` to retire a one-off task. |
 | `wait ID --on WHO [--until D]` / `resume ID` | Park on a person or event. `resume` makes the task actionable now, lifting a start date that is still ahead. |
 | `defer ID D` | Hide until a date. The deadline does not move. |
 | `edit ID [--title T] [--due D] ...` | Change fields. `--due ""` clears a date. |
-| `block ID --on OTHER` / `unblock ID --on OTHER` | Add or remove a dependency. Cycles are refused. |
+| `block ID --on OTHER` / `unblock ID --on OTHER` | Add or remove a dependency. A loop of explicit dependency links is refused. |
 | `accept ID` / `dismiss ID` | Decide a proposal. This is the person's decision. |
 | `remind ID "tomorrow 08:00" --to PERSON` | Schedule a timed reminder for an existing person or principal. Check its recipient, channel and pending state. The default worker records locally. |
 | `remember "fact"` / `forget ID` | Keep or retire a durable fact shown by `prime`. |
-| `cancel`, `reopen`, `archive`, `undo ID` | Lifecycle and one-step undo. Undo restores the previous fields; it never removes a note or another actor's claim. |
+| `cancel`, `reopen`, `archive`, `unarchive`, `undo ID` | Lifecycle, status-preserving restoration and one-step undo. Undo restores the previous fields; it never removes a note or another actor's claim. |
 
 After scheduling, use `daymark show REMINDER_ID --brief` to see its time,
 recipient, channel and worker state. A pending reminder tied to a proposal
@@ -151,7 +180,11 @@ Full `show --json` includes a `temporal` object with stored dates or instants,
 the IANA zone and any recorded expression.
 
 **Repeats** accept `day`, `week`, `month`, `year`, `2 weeks`, `weekdays`,
-`mon,thu`, or an RRULE body such as `FREQ=MONTHLY;BYMONTHDAY=1`.
+`mon,thu`, or an RRULE body such as `FREQ=MONTHLY;BYMONTHDAY=1`. Without an
+explicit first plan or deadline, a new recurring task starts on the first
+matching local day on or after today. Editing an undated one-off with
+`--every` enrolls its existing ID as the first round. An explicit off-pattern
+first date counts toward a finite `COUNT`.
 
 **Priority** runs from 1 (most important) to 4; 0 means not set.
 
@@ -248,9 +281,8 @@ daymark profile gentle --set shortlist.size=2             # save it for this wor
 daymark advise                # picks, then what the strategies noticed
 ```
 
-`advise` never writes. Its notes are things to raise with the person ("3
-waiting on a decision; ask them together", "due in 9 days with no day planned
-for it"), and a note names the tasks it is about. If the profile holds tasks
+`advise` never writes. Its notes are things to raise with the person (how many tasks need a decision and which fit this discussion batch, or a deadline
+in nine days with no day planned for it), and a note names the tasks it is about. If the profile holds tasks
 back it says how many. Choose or change a profile only when the person asks:
 it is their way of working, not yours.
 
@@ -259,6 +291,11 @@ It also accepts a named profile or one-call adjustment. Service advice runs
 built-in strategies and lists any saved stages it could not use. A v0.5.0
 service cannot return its profile. The current client labels its plain fallback.
 Standing preferences are written on the local database.
+
+A capacity warning considers ready tasks due or planned through today and,
+by default, other focused ready work. The note identifies the contribution
+from focus. Use `overbooked.include_focus=false` for someone who uses focus
+across days. The agenda retains plans that are blocked.
 
 A pick can be a decision for the person. Consult its recorded next move before
 acting. To select work explicitly delegated to an agent, use `ready --move agent`.
@@ -288,7 +325,8 @@ Once the person asks for a standing change, pass the active `--if-version`
 from `daymark profile --json` and a fresh `--op`. The result identifies the
 workspace and new version and includes a guarded undo command. Retrying the
 same request returns the recorded result. Re-read the active profile for its
-current value. Named saves and removals accept replay IDs as well.
+current value. An MCP-only agent can submit the exact `restore_call` from
+the preference receipt. Named saves and removals accept replay IDs as well.
 
 ## Goals and what must be true
 
@@ -301,6 +339,7 @@ daymark condition "Keys are in hand" --goal move --requires buyer
 daymark add "Chase the solicitor" --advances buyer
 daymark assess buyer met --evidence "Contract countersigned"
 daymark explore move
+daymark explore move --scope studio
 ```
 
 `explore` marks each condition met `[x]`, partly `[~]`, unmet `[ ]` or unknown
@@ -338,13 +377,27 @@ pass the supplied name as given so both kinds are checked. If multiple records
 match, ask which ID the person intends. The assignment persists through later claims and releases.
 An empty assignee clears the link.
 
+To check who may decide a pending proposal from this connection, inspect
+`show ID` or its brief. It reports whether the workspace policy allows your
+current actor to accept or dismiss, and whether the policy restricts decisions
+to named deciders. A read-only MCP session also marks its transport restriction.
+Other deciders’ identities stay out of these views. Keep the proposal pending
+until the person has actually made the decision.
+
+To ask whether a known external source belongs in a particular scope, use
+`daymark find --source catalog:proof:Q-41 --scope studio --json`. The same
+filter works in MCP `view=find`. An empty page means no record matched all the
+filters. Use `--kind memory` for a remembered fact and `--archived` when the
+question concerns a retired record. `show --source` gives full detail when
+that is within the requested scope of work.
+
 ## Retrying safely
 
 Each write verb takes `--op NAME`. Repeating a command with the same `--op`
 and the same underlying change returns the first result. A reused key on a
 different entity, action or kernel payload returns `conflict`. Daymark checks
 the original actor where event history records one. Use a fresh key for each
-new intent and a stable entity ID for assignees you expect to retry. Without `--op`, each invocation is a new write.
+new intent and a stable entity ID for assignees you expect to retry. If a remote write’s outcome is uncertain, the CLI provides the operation ID in its error details and in JSON `error.operation_id`. Repeat the same command and flags against the same workspace and credential with that ID as `--op`. A new invocation without the key starts a new write. Supply your own key before the call when the caller could lose the entire CLI output.
 `--source system:kind:id` gives a second protection for captured items: a
 source can belong to only one entity, so capturing the same message twice is
 refused with `conflict`. Recover that record with
@@ -502,11 +555,47 @@ source references and history remain inspectable by ID or exact source, and
 remain in native exports and existing backups. A request for permanent
 erasure requires separate handling.
 
+## Bring an archived record back
+
+When a person wants to revisit an idea, recover the exact record. If it has
+a source, run `daymark show --source proofs:cover:07 --brief --json`. Use its
+returned `id` and `review_token` with `daymark unarchive ID --if-review TOKEN`.
+If the record has changed, read it again. If a sparse native restore left
+its review token empty, recover the original event history when the exact
+revision matters. A shared title alone is insufficient
+to identify the person's original request.
+
+Unarchive restores visibility. A proposal returns to the proposal list for
+a separate acceptance or dismissal. Accepting a hidden proposal produces a
+conflict. A designated person can still dismiss it while archived. A waiting
+task retains its reason and remains waiting. Completed and cancelled tasks
+keep their status. Use `reopen` when the person intends to restart work.
+
+Restoring an unfinished prerequisite can block its dependents again. Archiving
+clears claims and focus and cancels pending reminders about the task. To
+resume those arrangements, claim the task, focus it, or schedule a new
+reminder as the person requests. Restoring a forgotten memory makes its
+recorded fact available to the workspace again. Unarchive preserves notes,
+source references and history. Archiving a reminder that already recorded a delivery,
+acknowledgment or dismissal preserves that outcome. A failed delivery still
+has a pending retry. Archiving it cancels the retry and keeps the recorded
+failure, attempt count and delivery history.
+
+Python uses `tasks.unarchive(id, review_token=token, op=operation_id)`. MCP
+uses `daymark_act` with action `unarchive`, the exact ID and the same optional
+guards as `accept`. Both use a versioned update of the archive flag. A new
+client can restore by ID and version on a 0.5.0 service and refuses a hidden
+acceptance there. An older service may require an upgrade to verify an
+identical retry. Inspect the current record before taking further action.
+
 ## Hand off unfinished work
 
 Give concurrent workers distinct actor names. A claim hides the task from other
 actors’ ready lists until its holder releases it or the lease expires. Anyone
 who knows the ID can read the holder, expiry and progress in `daymark show ID`.
+The holder coordinates pickup. Other workspace writers can still edit, park or
+complete the task by ID. When a returning worker sees a new holder, read the
+handoff and coordinate with that holder before changing the work.
 
 ```sh
 daymark --as writer claim draft
@@ -522,6 +611,19 @@ completion together. Retry either write with the same `--op` value if its
 reply is lost. In MCP, pass the note as `text` to the `release` or `done`
 action.
 
+
+Before an interruption, record the last check someone could verify, where
+to find its evidence and the next specific action. For example, “Sheet 6
+measures 14 mm with gauge K-17. On sheet 7 align the overlay at F3. The
+inner margin is still unmeasured.” Use `note ID TEXT` while the work is
+underway so an unexpected stop still leaves a trace.
+
+Returning to one task? Start with `show ID --brief` or `show --source REF
+--brief`. Read earlier notes with the returned `--before-note` cursor and
+open a truncated note with `--note NOTE_ID`. Check later corrections before
+acting. Report who holds the claim separately from what the notes say was
+checked. If the record gives no stopping point, say so and ask the worker
+or inspect the referenced artifact.
 
 ### Pick up changes across sessions
 
@@ -594,6 +696,21 @@ next move and dates. It previews the title, description and three latest notes
 at up to 240 characters each. Each note carries its original ID, author and
 timestamp. The view shows up to five unresolved dependency IDs and five
 active child IDs, with counts for anything omitted.
+
+When a task’s outstanding prerequisite or unfinished child leads back to the
+task, detail can also show a circular wait. For example, `bind → child collate
+→ prerequisite dry → prerequisite bind` means each of those tasks is holding
+up the previous one. Check the recorded relationships with the person. If
+drying the ink can start before binding, `daymark unblock dry --on bind`
+removes just that prerequisite. If the containment is incorrect, change the
+parent instead.
+
+The `readiness.cycle` field carries one witnessed path, with each step naming
+its relation and destination ID. The search follows visible open or waiting
+tasks across scopes in this workspace. It visits at most 20 tasks, follows
+at most six links, and samples the first eight references in each direction
+at a visited task. When another link needs investigation, open that task’s
+detail. Ordinary ready and take use their usual eligibility rules.
 
 ```sh
 daymark show proof --brief --json
@@ -675,5 +792,5 @@ stays blocked even if its prerequisite belongs to another context. Use
 In a context-filtered advice request, picks, stale-work reviews and waiting
 checks cover tasks carrying that context. The assistant profile can promote
 matching tasks that move the next condition for a goal. For goal gaps and
-unassessed conditions, use `daymark explore`. A gap alone supplies no evidence
+unassessed conditions, use `daymark explore`. Add `--scope NAME` to keep condition and linked-record names in that scope, or `--unscoped` for records with no scope. Work elsewhere still affects the answer. The view counts its statuses and outstanding prerequisites without displaying those records’ IDs or titles. A gap alone supplies no evidence
 about where its first task could happen.

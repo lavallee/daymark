@@ -36,7 +36,21 @@ class StructuredView:
     text: str | None = None
 
 
-def read_view(tasks, args):
+def _proposal_detail(data, status, read_only):
+    if status != "proposed":
+        return data
+    reported = data.get("decision_access")
+    access = {"policy_allows": None}
+    if isinstance(reported, dict) and type(reported.get("policy_allows")) is bool and isinstance(reported.get("actor"), str):
+        access = {key: reported[key] for key in ("actor", "policy_allows")}
+        if reported.get("rule") in ("any_writer", "named_deciders"):
+            access["rule"] = reported["rule"]
+    if read_only:
+        access = {**access, "session_read_only": True}
+    return {**data, "decision_access": access}
+
+
+def read_view(tasks, args, *, read_only=False):
     """Each branch executes the same read for either format."""
     view = args["view"]
     structured = args.get("json", False)
@@ -62,7 +76,7 @@ def read_view(tasks, args):
         return render.listing(items, now, "Nothing is ready.")
 
     if view == "find":
-        if structured or {"kind", "status", "scope", "after", "claimed", "archived"} & args.keys():
+        if structured or {"kind", "status", "scope", "after", "claimed", "archived", "source"} & args.keys():
             page = tasks.search(
                 args.get("text"),
                 kind=args.get("kind", "task"),
@@ -72,20 +86,11 @@ def read_view(tasks, args):
                 limit=args.get("limit", 50),
                 claimed=args.get("claimed", False),
                 archived=args.get("archived", False),
+                source=args.get("source"),
             )
             if structured:
                 return StructuredView(page)
-            lines = []
-            for item in page["items"]:
-                line = f"{item['id']}  {item['title']}  [{item['status']}]"
-                if item.get("archived"):
-                    line += "  [archived]"
-                if item.get("claimed_by"):
-                    line += f"  claimed by {item['claimed_by']} until {item['claim_until']}"
-                lines.append(line)
-            if page["next"] is not None:
-                lines.append("next: " + page["next"])
-            return "\n".join(lines) or "No matches."
+            return render.search_text(page, mcp=True)
         return render.listing(
             tasks.find(args.get("text"), limit=args.get("limit", 50)), now, "No matches."
         )
@@ -103,11 +108,13 @@ def read_view(tasks, args):
             raise DomainError("invalid", "Choose a single note or a brief")
         if args.get("brief") or "before_note" in args:
             data = tasks.brief(id, before_note=args.get("before_note"), source=source)
+            data = _proposal_detail(data, data["status"], read_only)
             return StructuredView(data) if structured else render.brief_text(data, timezone=tasks.timezone)
         if "note" in args:
             data = tasks.read_note(id, args["note"], source=source)
             return StructuredView(data) if structured else render.note_text(data)
         data = tasks.show(id, source=source)
+        data = _proposal_detail(data, data["entity"]["status"], read_only)
         if structured:
             return StructuredView(render.detail_data(data, attributed_notes=True))
         return render.show_text(data, now)
@@ -148,7 +155,7 @@ def read_view(tasks, args):
             + ("\nClient plugins (preview on an explicit built-in base): " + ", ".join(catalog["client_plugins"]) if catalog.get("client_plugins") else "")
             + "\nAdjustments (defaults shown; use strategy for details): "
             + ", ".join(
-                f"{name}.{key}={value}" if key else name
+                f"{name}.{key}={render.parameter_text(value)}" if key else name
                 for name, params in catalog["adjustments"].items()
                 for key, value in (params.items() or [(None, None)])
             )
@@ -165,7 +172,7 @@ def read_view(tasks, args):
         )
         if structured:
             return StructuredView(
-                {**advice.to_dict(), "picks": [_summary(x, now) for x in advice.picks]}
+                {**advice.to_dict(), "picks": [_summary(x, advice.as_of or now) for x in advice.picks]}
             )
         return render.advice_text(advice, now, mcp=True)
 
@@ -220,7 +227,7 @@ def read_view(tasks, args):
         return StructuredView(data) if structured else render.activity_text(data, mcp=True, limit=args.get("limit", 20))
 
     if view == "explore":
-        data = tasks.explore(args.get("id"))
+        data = tasks.explore(args.get("id"), scope=args.get("scope"))
         return StructuredView(data) if structured else render.explore_text(data)
 
     raise DomainError("invalid", "Unknown view")

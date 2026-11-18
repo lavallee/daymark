@@ -17,9 +17,16 @@ To try the adjustable examples, install the checkout containing this guide.
 | “Just two things from the studio list today.” | `daymark advise --profile plain --scope studio --set shortlist.size=2` shows at most two ready studio tasks with a count of the rest. |
 | “I have my phone and 20 minutes.” | After tagging phone tasks with an existing context ID, `daymark advise --profile plain --context phone --set time-fit.minutes=20` offers tagged tasks with a recorded estimate that fits. |
 | “I have 20 minutes before the meeting. What could I finish?” | `daymark advise --profile plain --set time-fit.minutes=20` shows ready tasks individually estimated at 20 minutes or less. It counts longer tasks and tasks missing an estimate separately. |
-| “I have an hour for the tasks planned today.” | `daymark advise --set overbooked.capacity_minutes=60` checks the day's estimated work against that hour. The note identifies the assumed duration for items without estimates. |
+| “I have one hour for ready work that is due or planned by today.” | `daymark advise --set overbooked.capacity_minutes=60 --set overbooked.include_focus=false` warns if that work exceeds the hour. It identifies any assumed duration. |
 | “I like the short list. Please use it every time in this workspace.” | `daymark profile --set shortlist.size=2` saves that change on the current profile. |
 | “Show the ordinary ready list this time.” | `daymark ready` gives the underlying order. `daymark profile` shows the saved configuration. |
+
+“Show me two options through Friday” has a person and an end date. Apply
+the limit to this person's current request. A host that identifies the
+person and keeps their preferences privately can reapply it through Friday,
+then stop. With only the shared workspace available, explain that a future
+session needs the preference supplied again. A shared memory shows up for
+other callers and its text cannot enforce an expiry.
 
 Start with one concrete question when the feedback is ambiguous. “Fewer
 things” might mean fewer picks, fewer follow-up notes, or only one project's
@@ -27,6 +34,31 @@ work. Show the result using today's tasks. When someone wants to keep the
 adjustment, use the same base profile and flags on `daymark profile`. A
 workspace profile is shared by callers of that database and workspace.
 Use a one-call adjustment for a visitor's preference or a busy afternoon.
+
+The usual capacity check also counts focused ready tasks. A warning states
+how many minutes came from focus alone. Use `include_focus=false` if the
+person uses focus as a priority list across several days. For all tasks
+planned today, including ones blocked on someone else, inspect the agenda.
+A capacity warning measures ready work and leaves each recorded date intact.
+
+Before a deadline review, try `daymark advise --profile plain --set lookahead`.
+For open tasks with a hard deadline in the next 14 local days, it points out
+a missing plan or work planned after the cutoff. An open task with a future
+start can appear in the notes before it becomes ready. A date-only plan can
+fit anywhere on its recorded day. When the day overlaps the cutoff, the
+strategy leaves that task out of the warning. For the deadlines of waiting
+tasks as well, read `daymark agenda --deadlines --days 14`.
+
+When reviewing a goal, `frontier-first` can also explain an empty ready list.
+A next condition may have a proposed move awaiting a decision. The note
+names the condition, and `daymark explore GOAL` shows the linked tasks and
+their recorded status. The proposal stays pending until someone authorized
+to decide accepts or dismisses it.
+
+A decision batch reports how many reviewed ready tasks need the person's
+answer. The IDs it names are limited to visible choices and the configured
+`decisions-first.limit`. For one question at a time, try `advise --profile
+plain --set decisions-first.limit=1 --set shortlist.size=1`.
 
 Advice is a list of options to discuss. A five-minute approval can qualify
 for a short list while its `next_move` still says `answer`. An agent looking
@@ -134,7 +166,10 @@ settings and stage order. Other stages remain usable and editable.
 If an installed extension no longer accepts a saved parameter, advice names
 it and the active profile shows its original value. Other preference edits
 preserve that value. Use `--drop STRATEGY.OLD_PARAMETER` only when the person
-wants to retire it. [Strategy packages](strategy-plugins.md)
+wants to retire it. The tagged v0.5.0 CLI can discard an unfamiliar option
+when editing a newer active profile. Use a current editor for those changes.
+A retained named copy or its profile JSON can identify the missing value.
+[Strategy packages](strategy-plugins.md) · [Mixed-version recovery](operations.md#setting-revisions-on-schema-6)
 
 ## Two people who share the same projects
 
@@ -165,6 +200,33 @@ to the workspace default. That action copies the selected configuration, so
 a subsequent edit to the named copy leaves the active version intact.
 `remember` also writes to shared workspace state. A person's private preference
 belongs in a host setting with the intended audience.
+
+### Let a personal choice expire
+
+A host can translate “two choices through Friday” into ordinary advice
+arguments. It looks up a private setting for the person who signed in. The
+end date belongs to the timezone agreed with that person. On the next local
+day, the workspace's current advice takes effect again.
+
+```python
+from datetime import date
+from zoneinfo import ZoneInfo
+
+def advice_for(tasks, window):
+    settings = []
+    if window:
+        today = tasks.now().astimezone(ZoneInfo(window["timezone"])).date()
+        if today <= date.fromisoformat(window["through"]):
+            settings.append(f"shortlist.size={window['choices']}")
+    return tasks.advise(settings=settings)
+```
+
+In a synthetic run, the proofreader chose two through November 1, 2030 in
+New York. The host supplied that setting in one process at 23:59:59 and a
+fresh process at midnight. The proofreader saw two tasks, then five. A second
+person using the same Daymark actor saw five both times. The workspace kept
+its original five events and revision-zero default throughout. A host with
+no private preference store can still narrow the current answer.
 
 ## Use the same preference through a service
 
@@ -239,7 +301,9 @@ After a lost response, repeat the same command and operation ID. It returns
 the original result, even if the workspace has moved on. Read `daymark profile`
 to check its current configuration. A successful change prints the exact
 command that restores the previous settings in the same database. Undo checks
-that no later active edit has intervened. Named saves and removals also accept
+that no later active edit has intervened. In a local MCP session, submit the
+receipt’s `restore_call` as a tool call. It contains the expected version and
+a stable retry ID. The restore action targets only the profile. Named saves and removals also accept
 `--op`. Their receipts are local configuration and stay out of task exports.
 
 ## Where the ideas come from

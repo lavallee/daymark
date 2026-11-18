@@ -144,3 +144,63 @@ def test_cli_and_mcp_edit_park_open_work(tmp_path, capsys):
         assert t.get("sample")["status"] == "waiting" and t.take() is None
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("ending", ["done", "cancel", "archive"])
+@pytest.mark.parametrize("late_action", ["wait", "resume"])
+def test_delayed_wait_cannot_restart_closed_work_or_reschedule_reminders(workers, ending, late_action):
+    outgoing, incoming = workers
+    outgoing.add("Review proof", id="proof")
+    outgoing.add("Print edition", id="print", after="proof")
+    outgoing.add("Review desk", kind="person", id="desk")
+    reminder = outgoing.remind("proof", "2030-05-15 09:00", recipient="desk")
+    outgoing.claim("proof")
+    parked = outgoing.wait("proof", "approval", op="park")
+    ended = getattr(incoming, ending)("proof")
+    head = outgoing.engine.head("default")
+
+    args = ("proof", "approval") if late_action == "wait" else ("proof",)
+    with pytest.raises(DomainError, match="Unarchive|Reopen") as error:
+        getattr(outgoing, late_action)(*args, op="delayed")
+    assert error.value.code == "conflict"
+    assert outgoing.engine.head("default") == head and not outgoing.engine.receipt("default", "delayed")
+    assert outgoing.wait("proof", "approval", op="park") == parked
+    assert outgoing.get("proof") == ended
+    assert outgoing.get(reminder["id"])["reminder_state"] == "cancelled"
+    assert [row["id"] for row in incoming.ready()] == ["print"]
+    assert not outgoing.search(claimed=True)["items"]
+
+
+def test_concurrent_completion_between_resume_read_and_write_is_preserved(tmp_path, monkeypatch):
+    first, second = Store(tmp_path / "queue.db"), Store(tmp_path / "queue.db")
+    try:
+        outgoing, incoming = Tasks(first, actor="writer"), Tasks(second, actor="editor")
+        outgoing.add("Review cover", id="cover", waiting_on="approval")
+        execute = first.execute
+
+        def interleave(*args, **kwargs):
+            incoming.done("cover")
+            return execute(*args, **kwargs)
+
+        monkeypatch.setattr(first, "execute", interleave)
+        with pytest.raises(DomainError, match="completed"):
+            outgoing.resume("cover", op="late")
+        assert incoming.get("cover")["status"] == "completed"
+        assert first.head("default") == 2
+    finally:
+        second.close()
+        first.close()
+
+
+def test_legacy_resume_from_closed_state_replays_without_restarting_it_again(workers):
+    outgoing, _ = workers
+    outgoing.add("Review cover", id="cover")
+    cancelled = outgoing.cancel("cover")
+    stored = outgoing.engine.execute(
+        "default", "historical", "update", {"id": "cover", "status": "open", "waiting_on": None},
+        expected_version=cancelled["version"], actor="outgoing",
+    )
+    current = outgoing.done("cover")
+    head = outgoing.engine.head("default")
+    assert outgoing.resume("cover", op="historical") == stored
+    assert outgoing.get("cover") == current and outgoing.engine.head("default") == head

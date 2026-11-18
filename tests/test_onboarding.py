@@ -138,3 +138,45 @@ def test_skill_prints_the_matching_source_without_a_database(tmp_path, monkeypat
     assert main(["onboard", "--skill"]) == 0
     assert capsys.readouterr().out == expected.read_text(encoding="utf-8")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("existed", [True, False])
+def test_onboard_preserves_an_editor_save_during_preparation(tmp_path, monkeypatch, existed):
+    from daymark import onboarding
+
+    target = tmp_path / "AGENTS.md"
+    if existed:
+        target.write_text("Original instructions")
+    prepare = onboarding.updated_instructions
+
+    def save_edit(original):
+        updated = prepare(original)
+        target.write_text("Instructions from the editor")
+        return updated
+
+    monkeypatch.setattr(onboarding, "updated_instructions", save_edit)
+    assert main(["onboard", "--write", str(target)]) != 0
+    assert target.read_text() == "Instructions from the editor"
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_cli_creates_private_database_and_wal_from_first_open(tmp_path):
+    import os
+    from contextlib import closing
+    from stat import S_IMODE
+
+    from daymark.cli import _open_store
+
+    if os.name != "posix":
+        pytest.skip("POSIX file mode bits")
+    db = tmp_path / "synthetic.sqlite"
+    mask = os.umask(0o022)
+    try:
+        with closing(_open_store(str(db))):
+            for path in (db, tmp_path / "synthetic.sqlite-wal", tmp_path / "synthetic.sqlite-shm"):
+                assert S_IMODE(path.stat().st_mode) == 0o600
+        db.chmod(0o640)
+        with closing(_open_store(str(db))):
+            assert S_IMODE(db.stat().st_mode) == 0o640
+    finally:
+        os.umask(mask)

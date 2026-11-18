@@ -1,9 +1,16 @@
-# Agent handoffs through MCP
+# Daymark in real MCP clients
 
-Could a fresh agent find explicitly delegated work, claim exactly one task,
-read the previous worker’s note, and leave the task open for the next shift?
-We tried this through two real MCP hosts with separate synthetic databases.
-We checked the task state and event history after each run.
+A returning agent needs to know what it can pick up, which decisions still
+belong to the person and whether an earlier write actually landed. We
+tested those questions in fresh agent-host processes and independent Python
+and TypeScript SDK clients. Each trial used synthetic records. We checked
+stored state after the runs, including instances where a worker gave a
+plausible answer but missed a matching record or selected the wrong person.
+
+The first handoff asked a worker to find explicitly delegated work, claim
+exactly one task, read the previous worker’s note and leave the task open
+for the next shift. Later trials cover working routines, source lookup,
+retries, review and authenticated policy.
 
 ## Fixture and grading
 
@@ -157,6 +164,12 @@ the key before sending the write and includes it in an ambiguous HTTP
 failure. Repeating that cold-session trial with the returned key left one
 task and returned its original ID.
 
+The same proxy also dropped a successful CLI capture. An unkeyed rerun
+previously created a second record. With the returned `error.operation_id`
+and the original arguments, the second CLI process recovered the first ID
+and left one task with one initial note. A confirmed credential refusal and
+a failed read each omit the write-recovery hint.
+
 ## Assigning a standalone task to a person
 
 A cold worker received an open task and an existing person in the same
@@ -214,6 +227,27 @@ read-only client discovered two tools, refused a direct call to complete the
 task, and read back its open state. The local workspace path contained spaces,
 a number sign and a non-ASCII character.
 
+A second qualification used the stable split client `@modelcontextprotocol/client`
+2.4.0 and the maintained `@modelcontextprotocol/sdk` 1.32.2. We installed
+each version from the official npm registry outside the checkout. With the
+v2 client, default and automatic negotiation each selected 2025-11-25
+on both local and authenticated connections. Each run used three fresh
+stdio processes and 14 calls. The second process recovered the original
+capture, read the changes behind a stale approval refusal and accepted the
+revised task with a fresh guard. A final read-only process saw two tools,
+received a structured refusal on a direct write and confirmed one note,
+an open task and three events. The v1 client passed the same journey.
+[Official TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk).
+
+One older official client, SDK 1.12.3, initially stopped at initialization:
+it requested 2025-03-26 and received an unsupported later revision.
+After enabling the March revision, three fresh sessions discovered tools,
+retried the original capture after approval and read the open task back
+at version 2. JSON views and errors remained available as text. A separate
+wire-level check exercised March's required batch support, including
+notification-only batches and hidden write refusal in a read-only session.
+[March 2025 protocol](https://modelcontextprotocol.io/specification/2025-03-26/basic).
+
 ## Undo after another worker has edited the task
 
 Two fresh MCP sessions were asked to undo only the previous worker's title
@@ -230,6 +264,28 @@ the request was in flight a second worker changed the priority at version 3.
 An automatic retry then reversed the priority instead. The new implementation
 returns a conflict and preserves both fields. A successful reviewed undo can
 still be retried with its original operation ID after later work.
+
+## Asking about authority without deciding
+
+A read-only authenticated worker was asked whether its service identity
+could decide a pending proposal on a write-enabled connection. Before
+proposal detail exposed policy, it could confirm the actor and pending
+status but had no evidence of the workspace permission.
+
+In the original trial the worker also tried `proposal`, `decision` and
+`all` as search kinds. Each returned an empty page despite the pending task.
+Typed searches now reject unknown kinds and statuses. A fresh worker asked
+for pending proposals in one scope first tried `kind=proposal, status=pending`.
+It followed the returned correction and retrieved the single matching ID and
+title with `kind=task, status=proposed`. The source record stayed at version 1.
+
+Two more cold workers used the same prompt and fixture under different
+policies. One correctly reported that its credential was allowed by the
+workspace, the other that it was denied. Both identified the read-only
+connection as a separate constraint. Neither attempted a decision, and the
+proposal stayed at version 1. Follow-up tests removed permission after an
+allowed read; the subsequent guarded decision was refused, leaving the
+proposal pending.
 
 ## Mixed client and service versions
 
@@ -273,3 +329,45 @@ cost depends on the workspace, serialization and tokenizer. Reproduce the
 byte counts with `uv run python scripts/measure_mcp_views.py`. Add
 `--with tiktoken==0.9.0` to the `uv run` options and `--tokens` to the
 script arguments to reproduce the tokenizer measurement with Python 3.12.
+
+## Exact source lookup inside a working scope
+
+Two cold workers were asked to check whether a given source reference
+belonged to a task in the studio scope. The question and titles were the same
+in each run. In one database the reference belonged only to a home task;
+in the other it belonged to a studio task. Initially both workers protected
+the requested scope and declined to fetch unfiltered detail. Their scoped
+text searches could not match source references, so the second worker
+missed the existing studio task.
+
+With an exact `source` filter on `find`, fresh workers correctly returned
+“No match” for the home-only source and the studio task ID for the positive
+case. The latter took a single call. The former used two calls after a
+rejected attempt at scoped full detail. Neither opened home detail or
+changed a record. In a separate larger queue, a scoped prime followed by
+scoped ready returned all eleven eligible studio IDs in two calls.
+
+## Choosing the first read
+
+We compared three primers in 12 fresh Claude Code sessions. Each variant
+ran once on each of four requests against a fresh synthetic workspace. The
+requests were to find a record by source and attach a note, distinguish a
+hoped-for finish from a hard deadline, show two studio decisions for this
+meeting only, and resume from a prior activity checkpoint. We checked stored
+facts and the returned answer, including whether the studio answer named
+unrelated home work.
+
+| Startup | Source and note | Dates | Studio decisions | Resume |
+| --- | ---: | ---: | ---: | ---: |
+| Full CLI command guide | 5 calls | 4 | 6 | 2 |
+| Compact MCP tool guide | 5 calls | 4 | 7 | 2 |
+| Native guide with scoped startup and first-read instruction | 5 calls | 5 | 2 | 2 |
+
+The first and third variants passed all four checks. The second correctly
+identified both studio decisions but also named a home task. The first
+variant read the home task without mentioning it. The third used a scoped
+primer followed by a scoped ready query for decisions. Those two tools
+returned 518 bytes of text versus 8,130 and 3,940 bytes across the earlier
+studio runs. All three left workspace settings untouched. The comparison
+changed both wording and scoped startup availability. It cannot isolate
+their contributions or predict another host's behavior.

@@ -23,10 +23,20 @@ from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from dateutil.tz import datetime_ambiguous, datetime_exists, resolve_imaginary
+from pydantic import ValidationError
 
 from . import plans
 from .client import Client
-from .models import DomainError, SourceRef, Temporal, normalize_now
+from .models import (
+    DomainError,
+    Recurrence,
+    SourceRef,
+    Temporal,
+    first_occurrence,
+    normalize_now,
+    require_active_round,
+    require_visible_proposal,
+)
 
 _ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"  # No 0/o, 1/l/i.
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -46,15 +56,27 @@ EVERY_FORMS = (
 )
 
 
+def _explicit_timezone(name: str) -> str:
+    try:
+        ZoneInfo(name)
+    except (KeyError, ValueError, OSError):
+        raise DomainError(
+            "invalid", "Unrecognized Daymark timezone",
+            ["Use an IANA name such as America/New_York, Europe/London or UTC with --tz or DAYMARK_TZ."],
+        ) from None
+    return name
+
+
 def local_timezone() -> str:
-    """DAYMARK_TZ, then TZ, then the system zone, then UTC."""
-    for name in (os.environ.get("DAYMARK_TZ"), os.environ.get("TZ")):
-        if name:
-            try:
-                ZoneInfo(name)
-                return name
-            except (KeyError, ValueError, OSError):
-                continue  # An unusable name falls through to the next source.
+    """Honor Daymark's explicit zone, otherwise discover the host's IANA zone."""
+    if configured := os.environ.get("DAYMARK_TZ"):
+        return _explicit_timezone(configured)
+    if host_zone := os.environ.get("TZ"):
+        try:
+            ZoneInfo(host_zone)
+            return host_zone
+        except (KeyError, ValueError, OSError):
+            pass  # The host may be using a POSIX TZ expression instead of an IANA key.
     try:
         target = os.path.realpath("/etc/localtime")
         if "/zoneinfo/" in target:
@@ -318,8 +340,7 @@ class Tasks:
         self._take_identity = remote or actor is not None
         self.actor = "agent" if actor is None else actor
         self._who = {} if remote else {"actor": self.actor}
-        self.timezone = timezone or local_timezone()
-        ZoneInfo(self.timezone)
+        self.timezone = _explicit_timezone(timezone) if timezone is not None else local_timezone()
         self._now = now
 
     # -- plumbing
@@ -385,6 +406,8 @@ class Tasks:
         for attempt in range(4):
             retry = self._retry_context(op, action, id)
             current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            if not retry and not self._ws and action in ("skip", "complete") and current["status"] != "proposed":
+                require_active_round(current, action)  # Older services lack this guard.
             changes = build(current, retry) if build else (fields or {})
             if review_token is not None:
                 changes = {**changes, "review_token": review_token}
@@ -420,12 +443,14 @@ class Tasks:
         except Exception as exc:  # client and store raise different types
             if not self._missing(exc):
                 raise
-        wanted = value.strip().casefold()
+        from .search import fold_text
+
+        wanted = fold_text(value.strip())
         matches = [
             item["id"]
             for kind in ("person", "principal")
             for item in self.engine.list(*self._ws, kind=kind)
-            if item["title"].strip().casefold() == wanted
+            if fold_text(item["title"].strip()) == wanted
         ]
         if len(matches) > 1:
             raise DomainError(
@@ -540,14 +565,9 @@ class Tasks:
         return out
 
     def _recurrence(self, every, fields, after_completion, index=0, fallback=None):
-        anchor = (
-            fields.get("planned")
-            or fields.get("deadline")
-            or fallback
-            or parse_when("today", self.timezone, self._now)
-        )
-        anchor = {**anchor, "expression": None}
-        return {
+        supplied = fields.get("planned") or fields.get("deadline") or fallback
+        anchor = {**(supplied or parse_when("today", self.timezone, self._now)), "expression": None}
+        result = {
             "rule": parse_every(every),
             "mode": "after_completion" if after_completion else "fixed",
             "timezone": anchor["timezone"],
@@ -555,6 +575,17 @@ class Tasks:
             # Changing the rule mid-series keeps this round's place in it.
             "occurrence_index": index,
         }
+        if not supplied:
+            try:
+                schedule = Recurrence.model_validate(result)
+            except ValidationError as exc:
+                raise DomainError("invalid", "Invalid recurrence rule", [EVERY_FORMS]) from exc
+            first = first_occurrence(schedule)
+            if first is None:
+                raise DomainError("invalid", "This recurrence has no starting date on or after today",
+                                  ["Review the rule ending or provide an explicit first plan date."])
+            result["anchor"] = first.model_dump(mode="json")
+        return result
 
     # -- capture
 
@@ -667,6 +698,12 @@ class Tasks:
                 index = (current["recurrence"] or {}).get("occurrence_index", 0)
                 fallback = ((retry["result"].get("recurrence") or {}).get("anchor") if retry else None)
                 out["recurrence"] = self._recurrence(every, merged, after_completion, index, fallback)
+                if (not current["recurrence"] and not merged.get("planned") and not merged.get("deadline")
+                        and "plan" not in fields and "due" not in fields
+                        and (not retry or retry["result"]["planned"])):
+                    # Enrolling an undated task uses the same first round as a
+                    # fresh capture. Earlier receipts had no inferred plan.
+                    out["planned"] = out["recurrence"]["anchor"]
             return out
 
         return self._act(id, "update", op=op, build=build, expected_version=expected_version, review_token=review_token)
@@ -713,13 +750,31 @@ class Tasks:
     def archive(self, id, *, op=None):
         return self._act(id, "archive", op=op)
 
+    def unarchive(self, id, *, op=None, expected_version=None, review_token=None):
+        """Restore an archived record's visibility, retaining its current status."""
+        def restore(current, retry):
+            if not current["archived"]:
+                raise DomainError("conflict", "This record is already visible")
+            return {"archived": False}
+
+        return self._act(id, "update", build=restore, op=op,
+                         expected_version=expected_version, review_token=review_token)
+
     def undo(self, id, *, op=None, expected_version=None, review_token=None):
         """Reverse the latest change only if the observed revision still matches."""
         return self._act(id, "undo", op=op, expected_version=expected_version, review_token=review_token)
 
     def accept(self, id, *, op=None, expected_version=None, review_token=None):
         """Accept the reviewed proposal, retaining a recorded wait."""
-        return self._act(id, "accept", op=op, expected_version=expected_version, review_token=review_token)
+        def check(current, retry):
+            # Older services permit a hidden acceptance. A versioned write
+            # ensures a concurrent archive forces a new read before accepting.
+            if not retry and not self._ws:
+                require_visible_proposal(current)
+            return {}
+
+        return self._act(id, "accept", build=check, op=op,
+                         expected_version=expected_version, review_token=review_token)
 
     def dismiss(self, id, *, op=None, expected_version=None, review_token=None):
         return self._act(id, "dismiss", op=op, expected_version=expected_version, review_token=review_token)
@@ -753,9 +808,21 @@ class Tasks:
         """Give back a claim, optionally recording a handoff note in the same transaction."""
         return self._with_note(id, "release", {"owner": self.actor}, note, op)
 
+    @staticmethod
+    def _check_wait_state(current, retry):
+        # A legacy operation may have restarted closed work. Its committed
+        # receipt still replays, without applying that transition again.
+        if retry:
+            return
+        if current["archived"]:
+            raise DomainError("conflict", "This record is archived. Unarchive it before changing its wait.")
+        if current["status"] in {"completed", "cancelled"}:
+            raise DomainError("conflict", f"This record is {current['status']}. Reopen it to restart work.")
+
     def wait(self, id, on, *, until=None, op=None):
         """Park a task on someone or something else; optionally hide it until a date."""
-        def build(_current, retry):
+        def build(current, retry):
+            self._check_wait_state(current, retry)
             changes = {"status": "waiting", "waiting_on": on}
             if until:
                 changes["earliest_start"] = parse_when(until, self.timezone, self._now, _replay=bool(retry))
@@ -768,6 +835,7 @@ class Tasks:
         """Stop waiting and make the task actionable now, lifting a future start date."""
 
         def build(current, retry):
+            self._check_wait_state(current, retry)
             out = {"status": "open", "waiting_on": None}
             if retry:
                 if current["earliest_start"] and not retry["result"]["earliest_start"]:
@@ -863,14 +931,14 @@ class Tasks:
 
     def show(self, id=None, history=10, *, source=None):
         return self.engine.context(
-            *self._ws, id, history=history, now=self._now, **self._read_owner(),
+            *self._ws, id, history=history, now=self._now, **self._read_owner(), **self._who,
             **({"source": source} if source is not None else {}),
         )
 
     def brief(self, id=None, *, before_note=None, source=None):
         """A bounded task handoff, including the latest attributed note previews."""
         return self.engine.brief(
-            *self._ws, id, now=self._now, before_note=before_note, **self._read_owner(),
+            *self._ws, id, now=self._now, before_note=before_note, **self._read_owner(), **self._who,
             **({"source": source} if source is not None else {}),
         )
 
@@ -930,7 +998,6 @@ class Tasks:
 
     def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None, brief=False):
         """Run the chosen profile with one-call adjustments, without saving them."""
-        from . import render
         from .strategies import selected_advice
         from .strategies.remote import advice as service_advice
 
@@ -942,8 +1009,10 @@ class Tasks:
         else:
             result = selected_advice(self, profile, **options)
         if brief:
-            now = self.now()
-            result.picks = [render.list_record(item, now, line_fields=True) for item in result.picks]
+            from .render import list_record
+
+            now = result.as_of or self.now()
+            result.picks = [list_record(item, now, line_fields=True) for item in result.picks]
         return result
 
     def profile(self, name=None, *, settings=(), drops=(), op=None, expected_version=None, undo=None):
@@ -1191,6 +1260,8 @@ class Tasks:
                 raise DomainError("conflict", "Operation ID belongs to a different request")
             current = retry["before"] if retry else self.engine.get(*self._ws, id)
             version = current["version"]
+            if not retry and not self._ws and second[1] == "complete" and current["status"] != "proposed":
+                require_active_round(current, "complete")
             versions = (version, next_retry["before"]["version"] if next_retry else version + 1)
             operations = [
                 {
@@ -1215,14 +1286,15 @@ class Tasks:
     def plan(self, project):
         return self.engine.plan(*self._ws, project, now=self._now)
 
-    def projects(self):
-        return self.engine.projects(*self._ws, now=self._now)
+    def projects(self, *, scope=None):
+        """Projects in the selected scope, with rollups across all of each project's members."""
+        return self.engine.projects(*self._ws, now=self._now, **({"scope": scope} if scope is not None else {}))
 
     def changes(self, project, after):
         return self.engine.changes(*self._ws, project, after)
 
     def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
-               claimed=False, archived=False):
+               claimed=False, archived=False, source=None):
         """Lean search hits for live records, archived records, or the actor's live claims."""
         if type(claimed) is not bool:
             raise DomainError("invalid", "claimed must be true or false")
@@ -1230,18 +1302,23 @@ class Tasks:
         if claimed:
             filters = {"claimed_by": self.actor} if self._ws else {"claimed": True}
             filters["now"] = self._now
+        if source is not None:
+            filters["source"] = source
         if archived is not False:
             filters["archived"] = archived
         return self.engine.search(
             *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
         )
 
-    def find(self, text=None, *, kind="task", status=None, limit=50):
+    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None):
         """Case-insensitive title or description search within one kind."""
-        clauses = [{"field": "kind", "op": "eq", "value": kind}]
-        if status:
-            clauses.append({"field": "status", "op": "eq", "value": status})
-        items = self.engine.query(*self._ws, {"and": clauses})
+        from .search import entity_filters
+
+        items = self.engine.query(*self._ws, entity_filters(kind, status, scope=scope, context=context))
+        if scope is not None:
+            items = [item for item in items if (item["scope"] or "") == scope]
+        if context is not None:
+            items = [item for item in items if context in item["context_ids"]]
         if text:
             needle = text.lower()
             items = [

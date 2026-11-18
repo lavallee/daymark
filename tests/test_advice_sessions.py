@@ -2,6 +2,7 @@
 
 import sqlite3
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -91,6 +92,38 @@ def test_snapshot_releases_before_extension_execution_and_preserves_caller_trans
     with closing(Store(tmp_path / "reader.db", read_only=True)) as store:
         assert [p["id"] for p in Tasks(store, "studio").advise().picks] == ["proof"]
         assert not store.db.in_transaction
+
+
+def test_explicit_client_extension_receives_only_the_requested_scope_and_context(monkeypatch):
+    def review(view, advice, params):
+        advice.notes.append(strategies.Note("open-proof", "Reviewed open tasks.", [x["id"] for x in view.open]))
+
+    extension = strategies.Strategy("open-proof", "hygiene", "Review open work.", "convention", review,
+                                    reads=("open",))
+    monkeypatch.setitem(strategies._REGISTRY, extension.name, extension)
+    with closing(Store(":memory:")) as store:
+        local = Tasks(store, "trial")
+        local.add("Phone", kind="context", id="phone")
+        for key, scope, tags in (("matching", "studio", ["phone"]), ("other-tag", "studio", []),
+                                 ("other-scope", "home", ["phone"]), ("unscoped", "", ["phone"])):
+            local.add(key, id=key, scope=scope, contexts=tags)
+        auth = {"token": {"workspace": "trial", "principal": "reviewer"}}
+        with TestClient(create_app(store, auth)) as app, Client(
+            "http://sample.invalid", "token", transport=app._transport
+        ) as client:
+            returned = []
+
+            def inspect(response):
+                if response.request.url.path == "/v1/query":
+                    response.read()
+                    returned.append([row["id"] for row in response.json()])
+
+            client._http.event_hooks["response"].append(inspect)
+            for scope, expected in (("studio", "matching"), ("", "unscoped")):
+                options = {"profile": "plain", "settings": [extension.name], "scope": scope, "context": "phone"}
+                assert local.advise(**options).notes[0].ids == [expected]
+                assert Tasks(client).advise(**options).notes[0].ids == [expected]
+                assert returned[-1] == [expected]
 
 
 def test_remote_preferences_use_the_authenticated_workspace_and_never_select_client_code(
@@ -234,7 +267,8 @@ def test_old_service_reports_plain_fallback_and_retains_one_call_builtin_preview
         preview = remote.advise(profile="plain", settings=["shortlist.size=1"])
         assert preview.profile_source["adjusted"] and preview.profile_source["name"] == "plain"
         assert remote.profile_catalog()["saved"] is None
-        assert asked.count("/v1/advice") == 1 and asked.count("/v1/profiles") == 1
+        assert asked.count("/v1/advice") == 1 and "/v1/profiles" not in asked
+        assert asked.count("/v1/schema") == 1
         with pytest.raises(DomainError, match="Upgrade the service"):
             remote.saved_profiles("short-review")
 
@@ -279,6 +313,8 @@ def test_compact_service_advice_preserves_choices_steps_and_claims_without_detai
             "http://example.invalid", "token", transport=httpx.MockTransport(forward)
         ) as client:
             remote = Tasks(client)
+            # The caller clock can be ahead of the service that evaluated its live claim.
+            remote.now = lambda: datetime.now(UTC) + timedelta(hours=2)
             full = remote.advise()
             assert full.picks[0]["description"] and full.picks[0]["notes"]
             full_size = len(calls[-1][1].content)

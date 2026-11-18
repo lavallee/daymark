@@ -3,10 +3,16 @@
 import subprocess
 import sys
 import tempfile
+from importlib.metadata import version
 from importlib.util import find_spec
 from pathlib import Path
 
-from daymark import Client, DomainError, Store
+from daymark import Client, DomainError, Store, __version__
+
+assert version("daymark-core") == __version__
+assert subprocess.check_output(
+    [sys.executable, "-I", "-m", "daymark.cli", "--version"], text=True
+).strip() == f"daymark {__version__}"
 
 if find_spec("httpx") is None:
     try:

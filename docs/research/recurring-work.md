@@ -63,3 +63,121 @@ hard deadline, and preview the next pair before saving. A recurring deadline
 at a fixed wall time, a deadline after an elapsed duration, and a series-wide
 cutoff need distinct examples, including the daylight-saving boundary. No
 assumption about the intended relationship follows from the current two dates.
+
+## Where the first round falls
+
+The 0.5.0 release created an undated `--every fri` capture on the current
+day, even on Tuesday. A task converted from a one-off to the same weekly
+rule had no planned day, series ID or occurrence key. Moving only that
+first converted occurrence to a later Friday also shifted its fixed series.
+
+On Tuesday, January 1, 2030, a new undated Friday series now begins January
+4 in the person's selected timezone. Turning an undated one-off into the
+same series produces the same planned Friday and gives the original record
+its first occurrence identity. Moving that one occurrence to January 25
+leaves the second round planned for January 11. An ordinary one-off merely
+planned for Friday remains ready on Tuesday. The first round of a repeating
+task with a future planned day follows the existing future-round readiness
+rule. A deadline-only round remains available before its deadline.
+
+Checking the first four matching civil dates in 4,000 synthetic combinations
+of frequency, interval, selector and start date found 3,862 nonempty
+sequences within a 100-year sample. All 3,862 had the same sampled dates
+when anchored at their first matching day. The product keeps its separate
+400-year search bound. A finite rule that ends before its first match gives
+the caller an error. An explicit first plan or deadline still wins.
+
+For a Tuesday explicitly supplied as the first date of a Friday rule with
+`COUNT=2`, the two recorded rounds are Tuesday and the following Friday.
+The released engine also generated a second Friday. RFC 5545 includes the
+start in the occurrence count and leaves an off-pattern start's recurrence
+set undefined. Daymark's choice preserves the explicitly recorded first
+round and includes it in the requested total. [RFC 5545 §3.3.10 and §3.8.5.3](https://www.rfc-editor.org/rfc/rfc5545#section-3.3.10)
+
+A clean 0.5.0 wheel created the Tuesday capture, converted another one-off
+and skipped an ordinary task. A separately built development wheel replayed
+all three release receipts after reopening the SQLite database and after
+restoring the JSON export. The saved release results and workspace head
+were unchanged. New captures and conversions in both destinations selected
+Friday and retained the following Friday after rescheduling the first round.
+
+## A calendar assistant after four missed weekly readings
+
+An external Python app used the released 0.5.0 wheel and a synthetic
+recording sink. It created an October 21 weekly equipment reading, then
+returned on November 18, 2026. Its first actual completion left the
+fixed-cadence successor planned for October 28. Three explicit skips passed
+October 28, November 4 and November 11 without recording any readings.
+The November 18 round was then available. A second series using seven days
+after completion produced November 25 immediately.
+
+The app scheduled two notices against the original reading. Running the
+worker first recorded the overdue notice once. Completing the original
+cancelled its future notice. Neither notice appeared on the next round.
+A separate fixed-clock check completed the original before running the
+worker. Both undelivered notices were then cancelled. A calendar app that
+promises a reminder on every round must explicitly schedule that round’s
+notice when it receives the new occurrence ID.
+
+The new round kept its assignee, scope, context, next move and prerequisite
+ID. Its checklist kept the item, marked unfinished. The old source
+reference, claim, focus, notes and waiting reason stayed off the new round.
+When a later worker claimed the second round and added a reading, undoing
+the first completion left both records open. They had different
+`occurrence_key` values. Closing the two in either order, including after
+native transfer, preserved the second round’s reading and produced one
+third round. An undo corrects the selected record. Scheduling or claims
+already attached to another occurrence require their own review.
+
+The released app also reproduced three unintended transitions. A late skip
+could erase a completed timestamp, restart a cancelled series or produce
+a visible successor from an archived round. On a one-off task it silently
+cancelled the task. Fresh skips now require a visible, unfinished recurring
+task. A closed recurring round must be reopened before another completion,
+and an archived one must first be restored. Genuine release-era receipts
+for an earlier one-off skip and completed-round skip replayed without new
+events after both SQLite restart and native JSON transfer.
+
+Revisiting an earlier round used to decode the complete change history of
+its existing successor just to check the occurrence key. A fixture with 72
+notes of about 2,000 characters peaked at 13.9 MB of Python allocations on
+the development interpreter. Projecting the occurrence key and checking
+the current successor first reduced that peak to 26 KB. Deleted or reused
+IDs still reserve their recorded slots. [Calendar return tests](../../tests/test_recurring_return.py)
+
+## Checking local clock input across timezones
+
+A development wheel was tested on the 312 zones in each tested copy of
+`zone1970.tab`. The harness inspected UTC days from 1990 through 2040.
+When the offset changed between daily samples it located the transition
+second, tested both sides with explicit offsets, and tried a wall-clock
+minute inside the gap or overlap. It tested both a written calendar date
+and a relative day with a time. For overlaps it also parsed both explicit
+offsets and checked that Daymark displayed distinguishable readings.
+
+| Timezone data source | Forward jumps found | Backward jumps found | Mismatches in those checks |
+| --- | ---: | ---: | ---: |
+| System, 2026c | 6,842 | 6,847 | 0 |
+| Wheel dependency, 2026f, with the system search path disabled | 6,813 | 6,816 | 0 |
+
+The sampled changes included thirty minutes, two hours, three hours, seven
+hours and a full day. These are checks on one-off clock input and display.
+They cover offset changes detected by daily samples in these two database
+versions. Recurring schedules have their own gap and overlap rules.
+
+## Crossing midnight with running workers
+
+Two installed builds, `19536c4` and `864515a`, each opened a new synthetic
+New York workspace before midnight on November 18, 2026. A real 23:59
+reminder recorded first. At 00:00, two worker processes raced on each
+database. Together they claimed and recorded two due reminders, one for
+open work and one for waiting work. A cancelled reminder remained
+cancelled. A proposal's reminder stayed pending until an explicit
+acceptance. Restarting added no recording. These were local recording-sink
+outcomes.
+
+In a separate retry experiment, an installed candidate resolved “tomorrow
+09:00” at 23:59:48. The experiment held the write until 00:00:02 without
+altering the system clock. A fresh process retried the same operation at
+00:00:06. Both results identified the same reminder at November 18,
+14:00 UTC, and the workspace still had three events.

@@ -46,7 +46,7 @@ def test_source_addresses_by_three_exact_components_across_http():
                 source=source,
                 note="First sample",
             )
-        first = Tasks(store, "one").brief(source=source)
+        first = Tasks(store, "one", actor="reader").brief(source=source)
         app = create_app(
             store,
             {

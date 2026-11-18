@@ -63,9 +63,10 @@ def read(tasks, view, *, protocol="2025-11-25", **fields):
     ],
 )
 def test_requested_views_deliver_the_same_data_to_old_and_new_protocols(tasks, view, fields, key):
-    modern = read(tasks, view, json=True, **fields)
-    old = read(tasks, view, protocol="2024-11-05", json=True, **fields)
-    default = read(tasks, view, **fields)
+    with tasks.read_snapshot() as reader:
+        modern = read(reader, view, json=True, **fields)
+        old = read(reader, view, protocol="2024-11-05", json=True, **fields)
+        default = read(reader, view, **fields)
     assert key in modern["structuredContent"]
     assert json.loads(old["content"][0]["text"]) == modern["structuredContent"]
     assert "structuredContent" not in old and "structuredContent" not in default

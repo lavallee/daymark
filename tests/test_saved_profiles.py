@@ -353,6 +353,12 @@ def test_catalog_discovers_a_time_window_and_inspects_bounds_without_loading_plu
         assert detail["evidence"] == "practitioner" and "individually" in detail["summary"]
         assert main(["strategies", "time-fit", "--json"]) == 0
         assert json.loads(capsys.readouterr().out) == detail
+        first_step = tasks.profile_catalog(strategy="first-step")
+        assert first_step["evidence"] == "clinical"
+        assert "therapy program" in first_step["evidence_note"]
+        assert first_step["evidence_note"] in call(
+            tasks, "daymark_view", {"view": "profiles", "strategy": "first-step"}
+        )
         fails(
             "invalid",
             call,
@@ -605,3 +611,62 @@ def test_unavailable_stages_keep_their_settings_and_order_across_independent_edi
         ):
             fails("invalid", tasks.save_profile, "invalid", profile={"strategies": [stage]})
         assert tasks.saved_profiles("backup")["profile"]["strategies"] == expected
+
+
+def test_mcp_only_profile_restore_is_replayable_and_cannot_undo_an_entity_with_the_same_id(
+    tmp_path,
+):
+    from daymark.mcp import handle
+
+    def invoke(tasks, name, arguments, **options):
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+        return handle(tasks, request, **options)["result"]
+
+    with closing(Store(tmp_path / "restore.db")) as store:
+        tasks = Tasks(store, "studio")
+        tasks.add("Unrelated proof", id="choice")
+        tasks.edit("choice", title="Approved title")
+        before = store.export("studio")
+        adopted = invoke(
+            tasks,
+            "daymark_act",
+            {"action": "use_profile", "id": "gentle", "op": "choice", "expected_version": 0},
+        )
+        receipt = adopted["structuredContent"]
+        restore = receipt["restore_call"]
+        assert restore["name"] == "daymark_act" and restore["arguments"] == {
+            "action": "restore_profile",
+            "id": "choice",
+            "expected_version": 1,
+            "op": "choice:restore-profile",
+        }
+        assert "Restore this preference in MCP" in adopted["content"][0]["text"]
+        assert invoke(tasks, **restore, read_only=True)["isError"]
+        short = dict(restore["arguments"])
+        del short["expected_version"]
+        assert invoke(tasks, restore["name"], short)["isError"]
+        assert invoke(tasks, restore["name"], {**restore["arguments"], "set": ["shortlist"]})[
+            "isError"
+        ]
+        assert (
+            invoke(Tasks(store, "other"), **restore)["structuredContent"]["error"]["code"]
+            == "not_found"
+        )
+        restored = invoke(tasks, **restore)
+        assert restored["structuredContent"]["name"] == "plain" and tasks.profile()["version"] == 2
+        assert tasks.get("choice")["title"] == "Approved title" and store.export("studio") == before
+        second = invoke(
+            tasks,
+            "daymark_act",
+            {"action": "use_profile", "id": "dense", "op": "next", "expected_version": 2},
+        )
+        assert second["structuredContent"]["version"] == 3
+        assert invoke(tasks, **restore) == restored and tasks.profile()["name"] == "dense"
+        stale = invoke(tasks, **restored["structuredContent"]["restore_call"])
+        assert stale["structuredContent"]["error"]["code"] == "conflict"
+        assert "profiles" in stale["structuredContent"]["error"]["recovery"]

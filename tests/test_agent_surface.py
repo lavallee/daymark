@@ -565,7 +565,9 @@ def test_mcp_tools_cover_the_flow():
     assert "Pay the rent" in tool("daymark_view", view="agenda", days=60)[1]
     assert tool("daymark_act", action="done", id=id, text="Paid")[0] is False
     assert tool("daymark_view", view="ready")[1] == "Nothing is ready."
-    assert "Commands" in tool("daymark_prime")[1]
+    primer = tool("daymark_prime")[1]
+    assert "daymark_add" in primer and "daymark_view" in primer
+    assert "deadlines=true" in primer and "--plan" not in primer
     assert rpc("nope")["error"]["code"] == -32601
     stream = io.StringIO()
     serve(tasks, io.StringIO('not json\n\n{"jsonrpc":"2.0","id":7,"method":"ping"}\n'), stream)

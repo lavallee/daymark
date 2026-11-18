@@ -38,6 +38,20 @@ See [RELEASING.md](RELEASING.md) for maintainer release checks.
 ## Try a change as a new user or agent
 
 The [agent journeys](docs/research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
-include a local driver for six synthetic requests. Use it to compare what the
+include a local driver for seven synthetic requests. Use it to compare what the
 person asked for with what an agent actually stored. It works with the real
 CLI and your choice of client.
+
+
+## Check a real MCP client
+
+From a clean checkout, run the optional SDK smoke check with uv.
+
+```sh
+uv sync --dev && uv run --script scripts/smoke_mcp.py --daymark .venv/bin/daymark
+```
+
+The script starts three fresh stdio servers against its own temporary database.
+It checks capture, ownership, a handoff note, an exact restart retry and
+read-only pickup. The pinned Python MCP SDK runs in the script environment.
+To qualify a wheel, pass the path to its installed `daymark` executable.

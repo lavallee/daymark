@@ -44,3 +44,18 @@ def test_standalone_assignee_survives_rename_and_rejects_another_person_on_repla
         assert row["project_id"] is None and row["claimed_by"] is None and row["waiting_on"] is None
         cleared = invoke(tasks, "edit", id=row["id"], assignee="", op="clear")["structuredContent"]
         assert cleared["assignee_id"] is None
+
+
+
+def test_assignment_uses_the_same_unicode_equivalence_as_people_search():
+    with closing(Store(":memory:")) as store:
+        t = Tasks(store, "lab")
+        t.add("Qualité", kind="person", id="quality")
+        t.add("Check the print", id="print")
+        name = "QUALITE\u0301"
+        assert t.search(name, kind="person")["items"][0]["id"] == "quality"
+        assert invoke(t, "edit", id="print", assignee=name)["structuredContent"]["assignee_id"] == "quality"
+        t.add(name, kind="principal", id="control")
+        # Two canonically equivalent names need the same disambiguation as two literal matches.
+        refusal = invoke(t, "edit", id="print", assignee="Qualité")["structuredContent"]["error"]
+        assert refusal["details"] == ["control", "quality"]

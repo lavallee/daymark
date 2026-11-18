@@ -27,9 +27,9 @@ def change(store, item, action="update", **fields):
     )
 
 
-def reminder(store):
+def reminder(store, **task_fields):
     create(store, "person", "person")
-    create(store, "task")
+    create(store, "task", **task_fields)
     return create(
         store,
         "reminder",
@@ -65,8 +65,8 @@ def test_schema_and_root_rollback_leave_connection_reusable(tmp_path):
         ("depends_on", "project"),
     ],
 )
-def test_existing_wrong_kind_reference_is_rejected(tmp_path, field, kind):
-    store = Store(tmp_path / "kinds.db")
+def test_existing_wrong_kind_reference_is_rejected(open_store, tmp_path, field, kind):
+    store = open_store(tmp_path / "kinds.db")
     create(store, "ref", kind)
     baseline = store.export("w")
     value = ["ref"] if field in {"depends_on", "label_ids"} else "ref"
@@ -75,8 +75,8 @@ def test_existing_wrong_kind_reference_is_rejected(tmp_path, field, kind):
     assert store.export("w") == baseline
 
 
-def test_source_links_append_without_identity_reassignment(tmp_path):
-    store = Store(tmp_path / "sources.db")
+def test_source_links_append_without_identity_reassignment(open_store, tmp_path):
+    store = open_store(tmp_path / "sources.db")
     source = {"system": "synthetic", "kind": "task", "id": "one"}
     second = {"system": "synthetic", "kind": "recipe", "id": "two"}
     item = create(store, "a", source_refs=[source])
@@ -89,8 +89,8 @@ def test_source_links_append_without_identity_reassignment(tmp_path):
     assert store.export("w") == baseline
 
 
-def test_delete_replay_exact_restore_and_undo_versions(tmp_path):
-    store = Store(tmp_path / "undo.db")
+def test_delete_replay_exact_restore_and_undo_versions(open_store, tmp_path):
+    store = open_store(tmp_path / "undo.db")
     original = create(store, "a", metadata={"synthetic": {"keep": [1, 2]}})
     deleted = change(store, original, "delete")
     with pytest.raises(DomainError):
@@ -113,9 +113,12 @@ def test_delete_replay_exact_restore_and_undo_versions(tmp_path):
 
 
 @pytest.mark.parametrize("action", ["complete", "cancel", "archive", "update", "skip"])
-def test_task_lifecycle_fences_existing_claim(tmp_path, action):
-    store = Store(tmp_path / "lifecycle.db")
-    reminder(store)
+def test_task_lifecycle_fences_existing_claim(open_store, tmp_path, action):
+    store = open_store(tmp_path / "lifecycle.db")
+    if action == "skip":
+        reminder(store, recurrence={"rule": "FREQ=WEEKLY", "anchor": {"date": "2030-01-01"}})
+    else:
+        reminder(store)
     claimed = store.claim_reminders("owner", now=NOW)[0]
     task = store.get("w", "task")
     change(
@@ -130,8 +133,8 @@ def test_task_lifecycle_fences_existing_claim(tmp_path, action):
         )
 
 
-def test_missing_token_and_forged_scheduler_update_are_atomic(tmp_path):
-    store = Store(tmp_path / "fence.db")
+def test_missing_token_and_forged_scheduler_update_are_atomic(open_store, tmp_path):
+    store = open_store(tmp_path / "fence.db")
     reminder(store)
     claimed = store.claim_reminders("owner", now=NOW)[0]
     baseline = store.export("w")
@@ -142,8 +145,8 @@ def test_missing_token_and_forged_scheduler_update_are_atomic(tmp_path):
     assert store.export("w") == baseline
 
 
-def test_delivery_outcome_retry_is_idempotent_and_changed_outcome_conflicts(tmp_path):
-    store = Store(tmp_path / "outcome.db")
+def test_delivery_outcome_retry_is_idempotent_and_changed_outcome_conflicts(open_store, tmp_path):
+    store = open_store(tmp_path / "outcome.db")
     reminder(store)
     claim = store.claim_reminders("owner", now=NOW)[0]
     result = store.finish_delivery(
@@ -175,8 +178,8 @@ def test_delivery_outcome_retry_is_idempotent_and_changed_outcome_conflicts(tmp_
 
 
 @pytest.mark.parametrize("initial_count", [0, 1, 3])
-def test_snapshot_restart_retains_actual_recurrence_budget(tmp_path, initial_count):
-    store = Store(tmp_path / "recurrence.db")
+def test_snapshot_restart_retains_actual_recurrence_budget(open_store, tmp_path, initial_count):
+    store = open_store(tmp_path / "recurrence.db")
     planned = {"date": "2029-12-01", "timezone": "UTC"}
     task = create(
         store,
@@ -191,7 +194,7 @@ def test_snapshot_restart_retains_actual_recurrence_budget(tmp_path, initial_cou
     restored = Store(tmp_path / "restored.db")
     restored.import_snapshot("w", snapshot, operation_id="transfer", expected_version=0)
     restored.close()
-    restored = Store(tmp_path / "restored.db")
+    restored = open_store(tmp_path / "restored.db")
     while True:
         pending = [x for x in restored.list("w") if x["status"] == "open"]
         if not pending:
@@ -203,8 +206,8 @@ def test_snapshot_restart_retains_actual_recurrence_budget(tmp_path, initial_cou
     assert len({x["occurrence_key"] for x in tasks}) == 4
 
 
-def test_moved_occurrence_uses_original_slot_after_snapshot_restart(tmp_path):
-    store = Store(tmp_path / "move.db")
+def test_moved_occurrence_uses_original_slot_after_snapshot_restart(open_store, tmp_path):
+    store = open_store(tmp_path / "move.db")
     planned = {"date": "2030-01-01", "timezone": "UTC"}
     task = create(
         store,
@@ -214,7 +217,7 @@ def test_moved_occurrence_uses_original_slot_after_snapshot_restart(tmp_path):
     )
     moved = change(store, task, planned={"date": "2030-01-20", "timezone": "UTC"})
     assert moved["occurrence_key"] == task["occurrence_key"]
-    target = Store(tmp_path / "move-target.db")
+    target = open_store(tmp_path / "move-target.db")
     target.import_snapshot("w", store.export("w"), operation_id="transfer", expected_version=0)
     done = change(target, moved, "complete", completed_at=NOW.isoformat())
     following = [x for x in target.list("w") if x["status"] == "open"]
@@ -225,8 +228,8 @@ def test_moved_occurrence_uses_original_slot_after_snapshot_restart(tmp_path):
     assert len(target.list("w")) == 2
 
 
-def test_cross_workspace_cursors_merge_without_global_collisions(tmp_path):
-    source, target = Store(tmp_path / "source.db"), Store(tmp_path / "target.db")
+def test_cross_workspace_cursors_merge_without_global_collisions(open_store, tmp_path):
+    source, target = open_store(tmp_path / "source.db"), open_store(tmp_path / "target.db")
     create(source, "portable")
     target.execute(
         "other", "create", "create", {"id": "foreign", "kind": "task"}, expected_version=0
@@ -236,8 +239,8 @@ def test_cross_workspace_cursors_merge_without_global_collisions(tmp_path):
     assert target.events("other")[0]["seq"] == target.events("w")[0]["seq"] == 1
 
 
-def test_import_cycle_rolls_back_every_collection(tmp_path):
-    source, target = Store(tmp_path / "source.db"), Store(tmp_path / "target.db")
+def test_import_cycle_rolls_back_every_collection(open_store, tmp_path):
+    source, target = open_store(tmp_path / "source.db"), open_store(tmp_path / "target.db")
     create(source, "a")
     create(source, "b", parent_id="a")
     snapshot = copy.deepcopy(source.export("w"))
@@ -248,11 +251,11 @@ def test_import_cycle_rolls_back_every_collection(tmp_path):
     assert target.export("w") == baseline
 
 
-def test_overdue_only_hard_deadline(tmp_path, monkeypatch):
+def test_overdue_only_hard_deadline(open_store, tmp_path, monkeypatch):
     import daymark.store as module
 
     monkeypatch.setattr(module, "normalize_now", lambda now=None: now or NOW)
-    store = Store(tmp_path / "query.db")
+    store = open_store(tmp_path / "query.db")
     create(store, "hard", deadline={"date": "2029-12-31"})
     create(store, "plan", planned={"date": "2029-12-31"})
     create(store, "same-day", deadline={"date": "2030-01-01"})

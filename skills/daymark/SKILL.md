@@ -7,7 +7,14 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 If the person names a scope, start with `daymark prime --scope NAME` or MCP
 `daymark_prime {"scope":"NAME"}`. This limits both task counts and remembered
-facts. Preserve the scope on any follow-up queue or search.
+facts. Preserve the scope on any follow-up queue or search. For an exact external
+reference inside a scope, use `find --source SYSTEM:KIND:ID --scope NAME`
+or MCP `view=find` with both fields. The full MCP primer gives native tool arguments.
+A pending task proposal uses `find --status proposed`. For a decision the person can act on, use `ready --move answer`.
+For an exact ID or source, a direct `show` can answer the first question.
+Memories and settings are shared within the workspace. Keep a personal
+or time-limited display choice with the current request or its authorized
+host until the person agrees to share it.
 
 Check the database and workspace with `daymark where` in an unfamiliar
 folder. If no database exists, choose `daymark init` for a per-user database
@@ -27,14 +34,15 @@ Then work in this loop:
    accepted live work that is overdue, due today or due through the next two
    local days, including waiting and blocked tasks. Use `ready --explain` with
    the same scope and context to understand a short or empty ready queue.
-2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions.
+2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions. If a circular wait is shown, inspect the named prerequisite and child links with the person before repairing one.
 3. Use a distinct `DAYMARK_ACTOR` for each concurrent worker, then `daymark claim ID`.
 4. Do the work. `daymark note ID "what happened"` whenever you learn something
    that affects the task. When stopping mid-task, use
    `daymark release ID --note "what is verified and what remains"` so another worker can pick it up.
 5. `daymark done ID [--note TEXT]`, or `daymark wait ID --on WHO` if it now depends on
    someone else. An edit with `--waiting-on WHO` also parks an open task. Clearing
-   the reason keeps it waiting until an explicit `resume ID`.
+   the reason keeps it waiting until an explicit `resume ID`. If wait or resume reports
+   archived or finished work, read the latest handoff before restoring or reopening it.
 
 Record an ongoing fact the person supplied with `remember TEXT`. Use
 `--scope NAME` for where it applies and `--source SYSTEM:KIND:ID` for an
@@ -57,6 +65,8 @@ When capturing:
 - Ask which offset the person means when a local clock time occurs twice. Ask for a different local time when the clock skips it.
 - Assign responsibility with `edit ID --assignee PERSON_ID` or MCP `daymark_edit` with `assignee`. Pass a supplied name as given to check people and principals together. For repeated names, ask which ID the person intends.
 - For a reviewed one-step undo, pass the observed version and review token. To restore one older field, check the intervening edits and change only that field.
+- For a pending proposal, full or brief detail reports whether the current actor passes the workspace decision policy. Get the person’s decision before acting.
+- Set `--tz` or `DAYMARK_TZ` to the agreed IANA timezone for local times.
 - Never invent a date or priority. If the person did not give one, leave it out.
 - If the person did not ask for the task, use `daymark propose`. Do not run
   `accept` on their behalf.
@@ -86,6 +96,13 @@ applies the person's chosen way of working and lists what to raise with them.
 For a temporary request such as “show two today,” use `daymark advise --set
 shortlist.size=2`. Save it with `daymark profile --set shortlist.size=2` only
 when the person asks for that workspace preference.
+A new series with no explicit first date starts on its first matching local
+day. A person's explicit first date counts toward a finite series.
+Use `skip ID` for one missed open or waiting round. Cancel a one-off task
+with `cancel ID`. If correcting an earlier completion, inspect the next
+round too. It keeps its own notes and claims. Each reminder names a single
+occurrence.
+
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
 the active profile are shared within the workspace. A current HTTP service
@@ -98,14 +115,21 @@ profiles view lists adjustment defaults and accepts `strategy` for details.
 For a requested standing change, read `daymark profile --json`, supply its
 version with `--if-version`, and reuse the same `--op` on a retry. The
 returned undo command restores the previous settings while that change is current.
-For a goal, `daymark explore GOAL` shows what must be true and what is stuck.
+In MCP submit the receipt’s `restore_call` to restore the profile safely.
+For a goal, `daymark explore GOAL` shows what must be true and what is stuck. Add `--scope NAME` to name only conditions and linked work in that scope. Work elsewhere can still keep a condition blocked or cover its next step.
 
 Add `--json` for structured output and `--op NAME` to make a write safe to
-retry. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
+retry. If a remote write reports an uncertain result, keep its command and flags and reuse the returned `error.operation_id` as `--op`. Exit status 3 is not found, 4 is a conflict (re-read, then decide),
 5 is an invalid request with the broken rule on standard error.
 
 
-At session pickup, `daymark activity` shows recent changes, including handoff
+When returning to a known task, start with `show ID --brief` or
+`show --source REF --brief`. Follow `next_before_note` for older notes and
+read truncated evidence with `show ID --note NOTE_ID`. Check for corrections.
+Report an unknown stopping point if the record only establishes who claimed
+the task. When leaving work, note the last verified check and next action.
+
+At workspace pickup, `daymark activity` shows recent changes, including handoff
 notes. To continue from the saved `activity_checkpoint`, run
 `daymark activity --after CURSOR`. Read more pages while the JSON `cursor`
 is below `head`, passing each returned `checkpoint` back as `--after`. If the checkpoint conflicts, review the workspace with `prime --brief`. Older services can return an integer cursor only.
@@ -135,6 +159,14 @@ For a long-running task, start with `daymark show ID --brief`. It includes the
 latest three notes with authors and IDs. Expand one with
 `daymark show ID --note NOTE_ID`, or follow `next_before_note` with
 `daymark show ID --before-note NOTE_ID` to read older notes.
+
+When the person asks to revisit an archived idea, inspect its exact ID or
+source with `show --brief --json`. Use the returned ID and review token in
+`unarchive ID --if-review TOKEN`. A proposal still needs a separate decision,
+a waiting task keeps its wait, and a completed task keeps its completion.
+Returning an unfinished blocker may hold other work again. Restoring a
+forgotten fact makes it active workspace memory. Schedule a new reminder
+only if the person wants one.
 
 When presenting a proposal for a person's decision, show the source, note and
 version from `show ID --brief`. The person can accept or dismiss that exact

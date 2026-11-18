@@ -39,6 +39,12 @@ The current development API also accepts `reads=()` for a strategy that needs
 only the ready candidates and clock. Leaving the keyword out keeps this
 example compatible with the v0.5.0 strategy signature.
 
+For the development API, an optional `evidence_note` can explain which
+parts of the practice a source evaluated and which are the author's design
+choices. A reader sees it when inspecting that strategy. For example,
+`daymark strategies first-step` explains the difference between a whole
+program assessed in a trial and a particular checklist display.
+
 ## Declare the entry point
 
 Use this `pyproject.toml` at the package root. Its entry-point name matches

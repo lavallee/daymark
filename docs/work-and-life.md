@@ -28,6 +28,13 @@ else can ask for the ordinary ready list throughout. The examples below
 connect those choices to actual Daymark reads.
 [Working preferences](working-preferences.md) · [Working methods](research/working-methods.md)
 
+“I'd like to keep that idea around” can also mean the person wants no prompt
+to decide. If they already keep reference material elsewhere, use that
+destination. If they choose a separate Daymark workspace for ideas, a memory
+there stays out of their usual agenda and session startup. They can search
+for a phrase later and explicitly ask to turn it into a proposal in their
+working workspace. [Worked example](research/capture-clarification.md#keeping-an-idea-out-of-the-working-queue)
+
 ## Why life is harder than a backlog
 
 A software backlog has a forgiving shape. Work is ready or blocked, somebody
@@ -93,6 +100,15 @@ for that and Daymark is not. If the work is a person's commitments, where the
 hard part is time, recurrence, waiting and consent, that is what Daymark
 models. The two can sit side by side: a Daymark task can carry a source
 reference to an issue elsewhere without copying it.
+
+For example, Beads can own the issue “Verify the booklet export.” In Daymark,
+the separate commitment “Book the print slot” can depend on a condition
+that cites the issue as its source. In a run with Beads v1.3.4 we closed
+the issue and read its status. Recording that observation with
+`assess --evidence` made booking ready. Retrying the assessment added
+nothing. When the issue reopened, recording the new observation held the
+booking again. At both transitions the agent had to check the issue and
+record the change. Booking the slot remained its own action.
 
 For a recent test of startup, handoff and task selection, see the
 [agent journeys](research/agent-journeys.md).

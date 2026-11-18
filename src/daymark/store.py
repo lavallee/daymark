@@ -19,7 +19,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from . import cursors, outbox, plans, project_feed, ranks
+from . import __version__, cursors, outbox, plans, project_feed, ranks
 from .models import (
     DomainError,
     Entity,
@@ -30,6 +30,8 @@ from .models import (
     normalize_now,
     plain_number,
     recurrence_date_field,
+    require_active_round,
+    require_visible_proposal,
     retry_delay,
 )
 
@@ -153,7 +155,7 @@ class Store:
             raise DomainError(
                 "conflict",
                 f"This database was written by a newer Daymark (schema {stored}); this is "
-                f"daymark-core {RELEASE} (schema {SCHEMA}). Use a newer Daymark.",
+                f"daymark-core {__version__} (schema {SCHEMA}). Use a newer Daymark.",
             )
         if upgrading or self._current():
             return
@@ -649,6 +651,12 @@ class Store:
             ).fetchone()
             return json.loads(row[0]) if row else {"deciders": []}
 
+    def decision_access(self, workspace, actor):
+        """Whether the workspace proposal policy admits this actor at the time of the read."""
+        deciders = self.policy(workspace)["deciders"]
+        return {"actor": actor, "policy_allows": not deciders or actor in deciders,
+                "rule": "named_deciders" if deciders else "any_writer"}
+
     def set_policy(self, workspace, *, deciders):
         """Name the actors who may accept or dismiss proposals; an empty list lifts the rule.
 
@@ -961,11 +969,11 @@ class Store:
 
         return views.tree(self, workspace, id, depth=depth)
 
-    def projects(self, workspace, *, now=None):
+    def projects(self, workspace, *, now=None, scope=None):
         """Every unarchived project in a workspace with its roll-up. See views.projects."""
         from . import views
 
-        return views.projects(self, workspace, now=now)
+        return views.projects(self, workspace, now=now, scope=scope)
 
     def _execute(self, workspace, operation_id, action, payload, expected_version):
         if action == "take" and payload.get("owner") != self._actor:
@@ -1097,6 +1105,9 @@ class Store:
                 }:
                     invalid("A proposal changes status only through accept or dismiss")
                 raw.update({k: v for k, v in payload.items() if k not in protected})
+                if raw.get("recurrence") and not before["recurrence"] and not raw["occurrence_key"]:
+                    raw["series_id"] = raw["series_id"] or raw["id"]
+                    raw["occurrence_key"] = f"{raw['series_id']}:0"
                 if isinstance(payload.get("values"), dict):
                     # Values merge per field: name only what changes; null clears one.
                     merged = {**before.get("values", {}), **payload["values"]}
@@ -1112,19 +1123,21 @@ class Store:
                     invalid("Unexpected action fields")
                 if before["status"] != "proposed":
                     invalid("Only a proposal can be accepted or dismissed")
-                deciders = self.policy(workspace)["deciders"]
-                if deciders and self._actor not in deciders:
+                if not self.decision_access(workspace, self._actor)["policy_allows"]:
                     raise DomainError(
                         "forbidden", "Only a designated decider can accept or dismiss"
                     )
                 raw["status"] = "cancelled"
                 if action == "accept":
+                    require_visible_proposal(before)
                     raw["status"] = "waiting" if before["waiting_on"] else "open"
             elif action in {"complete", "cancel", "reopen", "archive", "skip", "delete"}:
                 if set(payload) - {"id", "completed_at"}:
                     invalid("Unexpected action fields")
                 if before["status"] == "proposed" and action in {"complete", "skip", "reopen"}:
                     invalid("Accept or dismiss a proposal first")
+                if action in {"skip", "complete"}:
+                    require_active_round(before, action)
                 if action == "archive":
                     raw["archived"] = True
                 elif action == "complete":
@@ -1229,6 +1242,12 @@ class Store:
                     and (before is None or before["status"] != "completed")
                 )
             ):
+                # Edits and stage moves can also produce a completion. Keep
+                # a closed round from starting new work through those routes.
+                if data["archived"]:
+                    require_active_round(data, "complete")
+                if action == "update":
+                    require_active_round({**before, "recurrence": data["recurrence"]}, "complete")
                 self._successor(data, operation_id)
         result = {"task": data} if taking else data
         self._record(workspace, operation_id, digest, result)
@@ -1643,6 +1662,32 @@ class Store:
             self._put(updated)
             self._event(workspace, operation_id, "stage.restore", task, updated)
 
+    def _occurrence_slot(self, workspace, candidate, key):
+        """Return ours, other or None from current and historical slot evidence."""
+        # The usual correction finds its already generated successor in the
+        # first row. A deleted or reused ID still reserves its historical slot.
+        sql = (
+            "SELECT NULL,{} FROM daymark_entities WHERE workspace=? AND id=? UNION ALL "
+            "SELECT {},{} FROM daymark_events WHERE workspace=? AND entity_id=?"
+        )
+        fields = ("data", "before_data", "after_data")
+        params = (workspace, candidate, workspace, candidate)
+        try:
+            rows = self.db.execute(sql.format(*(f"json_extract({f},'$.occurrence_key')" for f in fields)), params)
+        except sqlite3.OperationalError as exc:
+            if "no such function" not in str(exc):
+                raise
+            rows = (
+                tuple(json.loads(value).get("occurrence_key") if value else None for value in row)
+                for row in self.db.execute(sql.format(*fields), params)
+            )
+        state = None
+        for previous, following in rows:
+            if key in (previous, following):
+                return "ours"
+            state = "other"
+        return state
+
     def _successor(self, data, operation_id):
         now = normalize_now().isoformat()
         recurrence = Recurrence.model_validate(data["recurrence"])
@@ -1652,45 +1697,25 @@ class Store:
         workspace, key = data["workspace"], f"{series}:{index}"
         hashed = uuid.uuid5(uuid.NAMESPACE_URL, canonical([workspace, series, index])).hex
 
-        def slot(candidate):
-            """ "ours" if this ID ever held this occurrence, "other" if only
-            something unrelated did, None if it has never been used."""
-            states = [
-                json.loads(text)
-                for row in self.db.execute(
-                    "SELECT before_data,after_data FROM daymark_events WHERE workspace=? AND entity_id=?",
-                    (workspace, candidate),
-                )
-                for text in row
-                if text
-            ]
-            live = self.db.execute(
-                "SELECT data FROM daymark_entities WHERE workspace=? AND id=?",
-                (workspace, candidate),
-            ).fetchone()
-            if live:
-                states.append(json.loads(live[0]))
-            if any(state.get("occurrence_key") == key for state in states):
-                return "ours"
-            return "other" if states else None
-
         # Prefer a readable "<series>.<n>"; a name some unrelated entity uses or
         # used, or an over-long one, leaves the hashed identity. A slot that was
         # ever materialized, even if since deleted, is never materialized again.
         readable = f"{series}.{index}"
-        state = slot(readable) if len(readable) <= 128 else "other"
-        if state == "ours" or slot(hashed) is not None:
+        state = self._occurrence_slot(workspace, readable, key) if len(readable) <= 128 else "other"
+        if state == "ours" or self._occurrence_slot(workspace, hashed, key) is not None:
             return
         id = readable if state is None else hashed
         original_row = self._entity_history(
             workspace, data["id"], "e.after_data", 1, creations=True
         ).fetchone()
         original = json.loads(original_row[0]) if original_row else data
-        if not original.get("recurrence"):
-            original = data
-        current = Temporal.model_validate(
-            original["planned"] or original["deadline"] or original["recurrence"]["anchor"]
-        )
+        if original.get("recurrence"):
+            nominal = original["planned"] or original["deadline"] or original["recurrence"]["anchor"]
+        else:
+            # This task joined its series after creation. Its enrollment
+            # anchor survives rescheduling of the first individual occurrence.
+            nominal = data["recurrence"]["anchor"]
+        current = Temporal.model_validate(nominal)
         # Skip advances the series at its transition time without recording activity.
         following = next_occurrence(
             recurrence, current, normalize_now(data["completed_at"] or data["updated_at"])
@@ -1766,7 +1791,7 @@ class Store:
             (workspace, task_id),
         ).fetchall()
         for item in (json.loads(row[0]) for row in rows):
-            active = item["reminder_state"] in {"pending", "leased", "snoozed", "failed"}
+            active = item["reminder_state"] in outbox.ACTIVE_STATES
             if active or detach:
                 updated = {
                     **item,
@@ -1784,6 +1809,8 @@ class Store:
 
     def _invalidate_reminders(self, before, after, operation_id, now):
         if before["kind"] == "reminder":
+            if after["reminder_state"] not in outbox.ACTIVE_STATES:
+                return  # Archiving a delivered or acknowledged reminder preserves its outcome.
             if after["archived"] or after["status"] not in {"open", "waiting"}:
                 after.update(
                     reminder_state="cancelled", lease_owner=None, lease_until=None, lease_token=None
@@ -1872,7 +1899,9 @@ class Store:
                     "SELECT data FROM daymark_entities WHERE workspace=? AND id=?",
                     (workspace, data["id"]),
                 ).fetchone()
-                if existing and json.loads(existing[0]) != data:
+                # Scheduler writes and older records may spell equivalent UTC
+                # instants differently. Compare model values, leaving live bytes intact.
+                if existing and not self._same_materialized_state(existing[0], canonical(data)):
                     raise DomainError("conflict", "Entity collision")
                 if not existing:
                     self._put(data)
@@ -2111,12 +2140,12 @@ class Store:
         return compile_node(ast, 0)
 
     def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
-               archived=False, claimed_by=None, now=None):
+               archived=False, source=None, claimed_by=None, now=None):
         """Search titles and descriptions. Continue from the last ID with the same filters."""
         from .search import page
 
         return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit,
-                    archived=archived, claimed_by=claimed_by, now=now)
+                    archived=archived, source=source, claimed_by=claimed_by, now=now)
 
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
@@ -2198,10 +2227,10 @@ class Store:
                     raise DomainError("not_found", "No entity owns this source")
                 return read(self, workspace, row[0], *args, **kwargs)
 
-    def brief(self, workspace, id=None, *, now=None, owner=None, before_note=None, source=None):
+    def brief(self, workspace, id=None, *, now=None, owner=None, before_note=None, source=None, actor=None):
         from . import brief
 
-        return self._read_entity(brief.read, workspace, id, source, now=now, owner=owner, before_note=before_note)
+        return self._read_entity(brief.read, workspace, id, source, now=now, owner=owner, before_note=before_note, actor=actor)
 
     def changes_since(self, workspace, id=None, *, version, source=None):
         from . import comparison
@@ -2213,11 +2242,11 @@ class Store:
 
         return self._read_entity(brief.note, workspace, id, source, note_id)
 
-    def context(self, workspace, id=None, *, history=10, now=None, owner=None, source=None):
+    def context(self, workspace, id=None, *, history=10, now=None, owner=None, source=None, actor=None):
         """An entity with its blockers, dependents, children, reminders and history."""
         from . import views
 
-        return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner)
+        return self._read_entity(views.context, workspace, id, source, history=history, now=now, owner=owner, actor=actor)
 
     def orientation(self, workspace, *, now=None, owner=None, scope=None):
         """An atomic startup snapshot including active work and shared memory previews."""

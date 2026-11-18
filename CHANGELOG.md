@@ -4,86 +4,109 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
-- Python clients can install `daymark-core[client]` and import `Client` and `ClientError` from `daymark`.
+Development builds identify themselves as `0.6.0.dev0`. The tagged release
+remains `0.5.0`.
 
-- `prime --scope NAME` and MCP `daymark_prime {"scope":"NAME"}` return scoped counts, ready work and memory previews with filtered continuations.
+### Upgrade and compatibility
 
-- `agenda --deadlines --days N` finds agreed hard cutoffs, including held work. The ordinary text agenda now separates earlier plans from work due or planned today.
+- Make a native SQLite backup before upgrading. The schema marker stays at
+  6. A writable open installs setting-revision tracking, including for later
+  writes by a v0.5.0 process. A caller-owned connection must commit this
+  installation. An existing read-only database can still serve ordinary
+  record views. [Upgrade and rollback](docs/operations.md#upgrading-between-releases)
+- An explicit one-off local clock time must exist and identify one instant.
+  Supply an offset when the clock repeats. An invalid `--tz` or `DAYMARK_TZ`
+  now returns an error. Relative reminder retries retain their original instant
+  across midnight and native transfer.
+- A delayed `wait` or `resume` refuses finished or archived work. Accepting a
+  proposal recorded with an outstanding wait places it in waiting. A new
+  acceptance of an archived proposal requires explicit restoration.
+- An undated recurrence starts on its first matching local day, including
+  when an existing task joins a series. An explicit first date counts
+  toward a finite schedule. Skip requires a visible, unfinished recurring
+  task. Use `cancel` for one-off work and `reopen` to correct a closed round.
+  Recorded operation results remain replayable. [Recurring work](docs/research/recurring-work.md)
+- Older HTTP services can support ordinary reads while lacking newer scope
+  filters, decision-policy evidence or verifiable retries. The current client
+  checks support before using those features. [Mixed-version trials](docs/research/mcp-client-trials.md)
 
-- `undo` accepts a reviewed version and token. An intervening edit now causes a conflict, preserving the other worker’s change.
+### Picking work and returning to it
 
-- Authenticated service advice honors the workspace's active or named profile and runs its built-in stages. Remote profile inspection is read-only. Local advice reads its configuration, candidates and supporting facts from a single SQLite snapshot.
+- `prime --brief` returns live counts, up to five ready tasks and remembered
+  facts, the evaluation time and a portable activity checkpoint in one
+  snapshot on a current store or service. `prime --scope NAME` limits startup
+  to the requested area. MCP startup describes the native tools, and HTTP
+  startup identifies the credential's workspace and actor.
+- `agenda --deadlines --days N` shows agreed hard cutoffs, including work
+  that is waiting or blocked. The ordinary text agenda separates earlier
+  plans from work due or planned today.
+- `ready --explain` counts eligible and held tasks and gives examples for
+  each reason. A brief shows the reviewed task's blockers, claim, attributed
+  notes and source. It can identify a circular wait through a dependency
+  and an unfinished child. A recurring brief names the round and date advanced.
+- `find --page` supports cursor-based results and filters for scope, kind,
+  status, active claims and archived work. `--source SYSTEM:KIND:ID` checks
+  an exact external reference within the filters. `show --source REF`
+  retrieves a known record, including archived records.
+- `daymark activity --after CHECKPOINT` follows changes and handoff notes.
+  `show ID --since-version N` compares the current record with a reviewed
+  version, including field excerpts and attributed note changes. Use
+  `--note NOTE_ID` for the original note and `--before-note` for older notes.
 
-- A writable open installs SQLite setting revision tracking on schema 6. Later changes from a v0.5.0 writer invalidate stale preference edits, including changes that restore an earlier value.
+### Preferences and consent
 
-- MCP capture and edit accept an existing assignee on a standalone task. Receipts confirm the person ID and a renamed person can be verified on retry.
+- Try an advice profile or `--set` and `--drop` adjustments for one request.
+  Time-based choices use individual task estimates. Project review finds
+  active projects without actionable commitments and distinguishes projects
+  whose proposals still need a decision. Decision batching reports the
+  reviewed population and labels the options offered in the final batch.
+  Deadline lookahead flags planned work that falls after its hard cutoff,
+  respecting each date's precision and timezone.
+- Save and inspect named recipes with `profile --save-as NAME` and
+  `profile --saved NAME`. Active settings and saved copies have guarded
+  revisions. A local MCP adoption receipt includes an exact `restore_profile`
+  call. An authenticated service can apply its own built-in stages and expose
+  its profile catalog read-only. [Working preferences](docs/working-preferences.md)
+- A proposal's detail reports whether the current actor may decide under
+  workspace policy. Its connection can separately be read-only. A memory can
+  have a scope and source. `forget` retires a reviewed memory. `unarchive`
+  restores a record's visibility and preserves its lifecycle status.
 
-- A relative reminder retry keeps its original instant across midnight and native transfer. A reminder brief reports its recipient, channel, and worker state, including when a linked proposal is holding it.
+### Working with other agents
 
-- Explicit one-off clock inputs now refuse skipped times and require an offset for repeated times. Full CLI and MCP JSON detail preserves the original date evidence. Existing operation receipts still replay.
+- `take` atomically claims one ready task explicitly delegated to an agent.
+  It accepts scope and context. An exact retry returns the original result,
+  including an empty queue. `release --note` and `done --note` record the
+  handoff or closing note together with the action.
+- Ordinary writes verify the original intent on retry. Reviewed edits, undo,
+  acceptance and dismissal can include an expected version and review token
+  to detect intervening writes or ID reuse. An assessment and its evidence
+  commit together. Restored history and recurring successors follow the
+  original workspace event order after a sparse merge.
+- Waiting on a new person or reply parks an open task immediately. Clearing
+  the reason leaves the task waiting until explicit resumption. Follow-up
+  advice honors its return time. MCP captures can assign a known person.
+- MCP can schedule a reminder for existing work. Its receipt and brief name
+  the time, recipient, channel and worker state. The brief explains when a
+  proposal holds delivery. Archiving a reminder retains its recorded outcome
+  and cancels an outstanding retry.
 
-- `find --archived` searches archived records only. CLI, Python, HTTP and MCP return marked, paginated matches.
+### Installing and embedding
 
-- Restored history, undo and recurring successors follow the original workspace event order after a sparse merge. Undo detects missing history or a mismatched current record.
-- Compact startup reads now return ready work, exact counts, scoped memory previews, the UTC evaluation instant and a workspace-checked activity checkpoint from one SQLite snapshot. Numeric cursors remain available. HTTP uses one authenticated read with bounded titles.
-- Schedule an existing task’s reminder through MCP. Scheduling receipts show the time, recipient, channel and reminder state.
-
-- Authenticated prime reports the credential’s workspace and actor. Ordinary capture notes receive the same server-side attribution as follow-up notes; native imports and raw historical note authors remain available.
-
-- The wheel includes the agent skill, available with `daymark onboard --skill`. Source distributions include the contributor guides and verification scripts.
-
-- Remembered facts accept scope and source. Startup includes scope in its five previews. `forget` only archives memories, supports `--if-version` and `--if-review`, and labels archived records in detail and write confirmations.
-- Schema upgrade notices give the rollback path. Older releases differ in whether they refuse an upgraded file.
-
-- `mcp --read-only` offers a two-tool review session, opens local SQLite read-only and restricts an HTTP-backed session to read requests.
-
-- Editing an open task’s waiting reason parks it immediately and removes it from ready and take. Clearing a reason keeps the task waiting until an explicit resume. Waiting-check advice honors a recorded return day or time and identifies how long the task has gone without an update.
-- A repeating task’s brief identifies its round, rule, time zone and the date advanced for a generated occurrence.
-- `show ID --since-version N` compares current terms with the version a person reviewed, including field excerpts and attributed note changes. Exact source references also work. Missing and ambiguous historical snapshots are reported explicitly. `edit`, `accept` and `dismiss` also accept `--if-review TOKEN` from the original show or brief to detect an ID that was deleted and reused or restored with different contents.
-
-- HTTP clients can read, edit and replay imported entity and operation IDs containing slashes or URL path punctuation. Query-based forms support exact lookup behind URL-decoding gateways.
-- Use `--context ID` with `ready`, `agenda` or `advise` to select tasks tagged with an existing context. The filter combines with scope and honors every dependency.
-
-- `show --source SYSTEM:KIND:ID` recovers a capture by exact source reference in the active workspace, including archived entities. It also supports brief and individual note reads.
-
-- `ready --explain` counts eligible and held tasks within the selected filters and names example tasks behind each reason.
-
-- Accepting a proposal with `--waiting-on` now places it in waiting. `accept` and `dismiss` support `--if-version N` for a reviewed proposal. Both full and brief task details show source references.
-
-- `where [--json]` explains local file selection and workspace identity without opening or upgrading a database. For HTTP it reports the service origin.
-- `find --page` returns compact, cursor-based search hits. Filter by kind, status and scope and continue with `--after ID`. `find --claimed` recovers the current worker’s live claims, including held work. Brief startup reads cap task and memory previews.
-
-- `show ID --brief` provides a bounded handoff with attributed note previews, lease and readiness. `--note NOTE_ID` reads the entire note and `--before-note NOTE_ID` pages back through earlier notes.
-
-- Plain-verb retries verify the original write against its existing receipt, including
-  the entity, action and translated fields. `edit --if-version N` lets a caller reject a
-  stale decision. An assessment and its evidence note now commit together.
-
-- Project initialization adds a database-specific Git ignore file when one is absent. It refuses a conflicting database location with `--here`. `onboard --check FILE` checks project instructions without editing them. Refreshes preserve surrounding content and line endings.
-- Task details explain every applicable readiness constraint from the current actor’s perspective.
-
-- Try profile adjustments for one call with `advise --set` or `--drop`. The
-  optional `time-fit` strategy offers tasks individually estimated to fit a
-  stated window. Save a reusable configuration with `profile --save-as NAME`,
-  inspect or export it with `profile --saved NAME`, and choose it when needed
-  with `advise --profile NAME`. Local preference writes accept a retry operation ID.
-  Active profiles and saved copies have versions for safe updates. Active changes
-  return a command that restores the previous choice at the observed revision.
-  The optional `project-review` strategy names active projects without an open
-  or waiting task and distinguishes projects with proposals awaiting a decision.
-  Plain and gentle advice only fetch the ready queue for ordinary-sized lists.
-
-- `daymark --as WORKER take [--scope NAME] [--context ID]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.
-
-- MCP negotiates supported protocol revisions, distinguishes request errors from tool refusals,
-  validates arguments before writing, and accepts replay keys on every write. Modern clients
-  receive a machine-readable ID and version with each successful write.
-
-- `daymark activity [--after CURSOR]` reads recent edits and handoff notes in a compact page. Available through Python, HTTP and MCP.
-
-- `prime` shows the active session and live work first. Use `--brief` to skip the guide. Structured output includes session context. The ready count includes the actor’s claims and covers workspaces larger than 1,000 ready tasks.
-
-- `release ID --note TEXT` hands unfinished work back with an attributed note. `done ID --note TEXT` now commits the closing note and completion in a single transaction. `show ID` displays the expiry of an active claim.
+- The wheel includes the matching agent skill, available through `onboard
+  --skill`. The source distribution includes contributor guides and verification
+  scripts. Python embedders can install the HTTP-only `[client]` extra and
+  import `Client` and `ClientError` from `daymark`.
+- `where --json` explains database selection without opening or upgrading
+  the file. Project initialization protects the local database from Git and
+  checks for conflicting locations. `onboard --check FILE` checks instructions
+  without editing. Refresh preserves surrounding text and line endings.
+- MCP negotiates supported protocol revisions, validates arguments before
+  writing, and gives modern clients structured identifiers and versions.
+  `mcp --read-only` exposes two review tools and opens local SQLite read-only.
+  New CLI databases and their WAL files start private on POSIX. HTTP capture
+  notes use the authenticated principal. Imported historical authors remain
+  available. [Agent guide](docs/agents.md) · [MCP clients](docs/mcp.md)
 
 ## [0.5.0] - 2026-11-15
 

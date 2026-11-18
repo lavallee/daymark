@@ -9,11 +9,13 @@ IDs and expected versions.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shlex
 import sqlite3
 import sys
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -36,7 +38,7 @@ def _print(value: Any) -> None:
 
 SIMPLE = {
     "prime", "activity", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
-    "reopen", "archive", "undo", "accept", "dismiss", "claim", "take", "release", "note", "wait",
+    "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim", "take", "release", "note", "wait",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
     "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
     "tree", "advise", "profile", "strategies", "condition", "assess", "explore",
@@ -248,6 +250,7 @@ def _simple_commands(sub) -> None:
         ("cancel", "Cancel a task"),
         ("reopen", "Reopen a finished task"),
         ("archive", "Hide an entity without deleting it"),
+        ("unarchive", "Restore a hidden record and keep its status"),
         ("undo", "Restore the previous state of an entity"),
         ("accept", "Accept a proposal (a person's decision)"),
         ("dismiss", "Dismiss a proposal"),
@@ -258,7 +261,7 @@ def _simple_commands(sub) -> None:
     ):
         item = add(name, help, writes=True)
         item.add_argument("id")
-        if name in {"accept", "dismiss", "forget", "undo"}:
+        if name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
             item.add_argument("--if-version", type=int, metavar="N", help="Refuse if the record changed since this version")
             item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
@@ -297,6 +300,7 @@ def _simple_commands(sub) -> None:
     find.add_argument("--archived", action="store_true", help="Search archived records only (implies --page)")
     find.add_argument("--claimed", action="store_true", help="Show my live task claims, including held work")
     find.add_argument("--page", action="store_true", help="Show compact search hits and a continuation ID")
+    find.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Match one exact source with the other filters")
     find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
     find.add_argument("--limit", "-n", type=int, default=50, metavar="N")
     find.add_argument("--scope", metavar="NAME", help="Filter by scope (uses compact hits)")
@@ -404,6 +408,10 @@ def _simple_commands(sub) -> None:
     assess.add_argument("--evidence", metavar="TEXT", help="What shows it")
     explore = add("explore", "A goal's conditions: what is met, what is next, where nothing moves")
     explore.add_argument("goal", nargs="?", help="Goal ID (default: every goal)")
+    explore_scope = explore.add_mutually_exclusive_group()
+    explore_scope.add_argument("--scope", help="Show conditions and named links only in this scope")
+    explore_scope.add_argument("--unscoped", action="store_const", const="", dest="scope",
+                               help="Show conditions and named links with no scope")
     sub.add_parser("workspaces", help="List the workspaces in this database")
     mcp = sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
     mcp.add_argument("--read-only", action="store_true", help="Expose only prime and view; open the local database read-only")
@@ -527,18 +535,40 @@ def _copy_database(source: Path, destination: Path) -> None:
     """SQLite online backup API includes committed WAL; refuses destination overwrite."""
     if not source.is_file():
         raise ValueError("Source database missing")
-    # Validate source before creating the destination.
+    if source.stat().st_size == 0:
+        raise ValueError("Source is an empty file, not a SQLite backup")
+    if os.path.lexists(destination):
+        raise FileExistsError("Destination already exists")
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
-        if reader.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            raise ValueError("Database integrity check failed")
-        fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        fd, name = tempfile.mkstemp(prefix=".daymark-backup-", dir=destination.parent)
         os.close(fd)
+        prepared = Path(name)
         try:
-            with closing(sqlite3.connect(destination)) as writer:
+            with closing(sqlite3.connect(prepared)) as writer:
                 reader.backup(writer)
-        except BaseException:
-            destination.unlink(missing_ok=True)
-            raise
+                if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise ValueError("Database integrity check failed")
+            # Publish a closed, checked snapshot. A competing creator keeps its file.
+            if os.name == "nt":
+                os.rename(prepared, destination)  # Windows rename refuses an existing name.
+            else:
+                try:
+                    os.link(prepared, destination)
+                except OSError as exc:
+                    if exc.errno not in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
+                        raise
+                    # Some removable filesystems cannot link two names to one file.
+                    # SQLite commits the checked snapshot to an exclusively created file.
+                    fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    os.close(fd)
+                    try:
+                        with closing(sqlite3.connect(prepared)) as copy, closing(sqlite3.connect(destination)) as dest:
+                            copy.backup(dest)
+                    except BaseException:
+                        destination.unlink(missing_ok=True)
+                        raise
+        finally:
+            prepared.unlink(missing_ok=True)
 
 
 def _stored_schema(path):
@@ -562,18 +592,32 @@ def _stored_schema(path):
 def _open_store(path, *, read_only=False):
     """Open a Store the way every command does: upgrading an older database in place.
     The upgrade is one-way, so the first one is announced on standard error."""
-    from .store import RELEASE, SCHEMA, Store
+    from . import __version__
+    from .store import SCHEMA, Store
 
     if read_only:
         return Store(path, read_only=True)
     before = _stored_schema(path)
+    if path and path != ":memory:":
+        # SQLite derives WAL and shared-memory permissions from the main file.
+        # Set the mode before the first connection creates those companions.
+        try:
+            fd = os.open(Path(path).resolve(), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
     store = Store(path)
-    if before is not None and before != SCHEMA:
-        print(
-            f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
-            f"(Daymark {RELEASE}); use a pre-upgrade backup to return to an older schema",
-            file=sys.stderr,
-        )
+    try:
+        if before is not None and before != SCHEMA:
+            print(
+                f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
+                f"(Daymark {__version__}); use a pre-upgrade backup to return to an older schema",
+                file=sys.stderr,
+            )
+    except BaseException:
+        store.close()
+        raise
     return store
 
 
@@ -638,6 +682,11 @@ def _simple(args, engine) -> int:
     tasks = Tasks(engine, args.workspace, actor=args.actor, timezone=args.tz)
     now, name, as_json = tasks.now(), args.command, getattr(args, "json", False)
     op = getattr(args, "op", None)
+    # --op is present on write commands, with two mixed read/write surfaces.
+    # Profile writes are local-only. Reading project configuration is a GET.
+    config_read = name == "project" and args.action == "config" and not (args.apply or args.preset)
+    if args.url and hasattr(args, "op") and name != "profile" and not config_read:
+        op = args.retry_op = tasks._op_id(op)
 
     def out(value, text):
         _print(value) if as_json else print(text)
@@ -773,7 +822,7 @@ def _simple(args, engine) -> int:
         entity(item)
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op))
-    elif name in {"accept", "dismiss", "forget", "undo"}:
+    elif name in {"accept", "dismiss", "forget", "undo", "unarchive"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
     elif name in {"skip", "cancel", "reopen", "archive",
                   "resume", "unfocus"}:  # fmt: skip
@@ -788,7 +837,7 @@ def _simple(args, engine) -> int:
     elif name == "assess":
         entity(tasks.assess(args.id, args.state, evidence=args.evidence, op=op))
     elif name == "explore":
-        view = tasks.explore(args.goal)
+        view = tasks.explore(args.goal, scope=scope)
         out(view, render.explore_text(view))
     elif name == "focus":
         entity(tasks.focus(args.id, args.rank, op=op))
@@ -815,10 +864,10 @@ def _simple(args, engine) -> int:
             from .models import DomainError
 
             raise DomainError("invalid", "Limit must be between 1 and 1000")
-        if args.archived or args.claimed or args.page or args.after is not None or scope is not None:
+        if args.archived or args.claimed or args.page or args.after is not None or scope is not None or args.source is not None:
             page = tasks.search(args.text, kind=args.kind, status=args.status,
                                 scope=scope, after=args.after, limit=args.limit, claimed=args.claimed,
-                                archived=args.archived)
+                                archived=args.archived, source=args.source)
             out(page, render.search_text(page))
         else:
             items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
@@ -960,15 +1009,21 @@ def _project(args, tasks, out, entity, op) -> None:
     out(config, json.dumps(config, indent=2, sort_keys=True))
 
 
-def _fail(args, code: str, message: str, details=()) -> int:
+def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
     if code == "conflict" and args.command in {"add", "propose", "remember"} and getattr(args, "source", None):
         details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
     if code == "conflict" and args.command in {"edit", "accept", "dismiss", "undo"} and getattr(args, "if_version", None):
         details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]
+    if retry_op is not None:
+        hint = f"Write outcome uncertain. Repeat the same command and flags with --op {shlex.quote(retry_op)}."
+        details = [*details, hint]
     if getattr(args, "json", False):
+        error = {"code": code, "message": message, "details": list(details)}
+        if retry_op is not None:
+            error["operation_id"] = retry_op
         print(
-            json.dumps({"error": {"code": code, "message": message, "details": list(details)}}),
+            json.dumps({"error": error}),
             file=sys.stderr,
         )
     else:
@@ -1018,10 +1073,11 @@ def main(argv: list[str] | None = None) -> int:
 
             from .api import create_app
 
+            auth = _json_file(args.auth_file)
             store = _open_store(args.db)
-            app = create_app(store, _json_file(args.auth_file))
             # Uvicorn access logs include private URL/query values; never enable them here.
             try:
+                app = create_app(store, auth)
                 uvicorn.run(app, host=args.host, port=args.port, access_log=False)
             finally:
                 close = getattr(store, "close", None)
@@ -1035,10 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
 
             engine = Client(args.url, os.environ.get(args.token_env, ""), read_only=getattr(args, "read_only", False))
         else:
-            fresh = args.db != ":memory:" and not Path(args.db).exists()
             engine = _open_store(args.db, read_only=getattr(args, "read_only", False))
-            if fresh:
-                os.chmod(args.db, 0o600)  # Task data is private by default.
         try:
             ws = [] if args.url else [args.workspace]
             if args.command == "workspaces":
@@ -1115,7 +1168,8 @@ def main(argv: list[str] | None = None) -> int:
     except ClientError as exc:
         if exc.code == "unauthenticated":
             return _fail(args, exc.code, "Check the bearer credential configured for this Daymark endpoint.")
-        return _fail(args, exc.code, str(exc))
+        retry_op = getattr(args, "retry_op", None) if exc.uncertain else None
+        return _fail(args, exc.code, str(exc), retry_op=retry_op)
     except Exception:  # noqa: BLE001 - prevent private exception text escaping
         # Parsing/Store/network exceptions can contain private paths and payloads.
         print(

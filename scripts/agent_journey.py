@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from daymark import Store, Tasks
+from daymark.strategies import service_builtins
 
 CASES = {
     "move-plan": "I will work on draft on May 6, 2030 instead. Its May 10 deadline stays. Make the change.",
@@ -15,6 +16,7 @@ CASES = {
     "suggestion": "Keep Design a poster as a suggestion I can decide on later.",
     "one-option": "Show me one ready task from the studio scope. Give me its ID. This is just for now. Leave the workspace as you found it.",
     "blocked": "Which unfinished prerequisite is keeping the invitation from being sent? Give me its ID and leave the tasks as they are.",
+    "standing-window": "For everyone using this workspace, keep our neutral wording about dates. From now on, offer up to two ready options that each fit a 15-minute gap. Keep the tasks and our separately saved review as they are.",
 }
 MARKER = "daymark-synthetic-journey-v1"
 WS = "trial"
@@ -37,12 +39,36 @@ def setup(case, folder):
         elif case == "blocked":
             tasks.add("Approve text", id="approval")
             tasks.add("Send invitation", id="invite", after=["approval"])
+        elif case == "standing-window":
+            tasks.profile("plain", settings=["neutral-aging"])
+            tasks.save_profile("weekly", profile="plain", settings=["project-review"])
+            for task_id, minutes in (
+                ("proof", 45),
+                ("layout", 60),
+                ("unknown", None),
+                ("just-over", 16),
+                ("boundary", 15),
+            ):
+                tasks.add(
+                    task_id.capitalize(),
+                    id=task_id,
+                    scope="press",
+                    minutes=minutes,
+                    priority=2 if task_id == "boundary" else 1,
+                )
+            for task_id, minutes in (("fold", 5), ("label", 7), ("sort", 9)):
+                tasks.add(
+                    task_id.capitalize(), id=task_id, scope="studio", minutes=minutes, priority=2
+                )
         trial = {
             "format": MARKER,
             "case": case,
             "baseline_head": store.head(WS),
             "baseline": store.list(WS, include_archived=True),
         }
+        if case == "standing-window":
+            trial["active_version"] = store.setting_state(WS, "profile")["version"]
+            trial["library"] = store.setting_state(WS, "profile.library")
         (folder / "trial.json").write_text(json.dumps(trial, indent=2) + "\n")
     finally:
         store.close()
@@ -62,6 +88,31 @@ def grade(store, trial, answer):
     before = {row["id"]: row for row in trial["baseline"]}
     rows = {row["id"]: row for row in entities}
     tasks = [row for row in entities if row["kind"] == "task" and not row["archived"]]
+    if case == "standing-window":
+        reader = Tasks(store, WS, actor="returning-reader", timezone="UTC")
+        with service_builtins():
+            default = reader.advise()
+            press = reader.advise(scope="press")
+            studio = reader.advise(scope="studio")
+        return {
+            "standing_profile_changed": store.setting_state(WS, "profile")["version"]
+            > trial["active_version"],
+            "saved_review_unchanged": store.setting_state(WS, "profile.library")
+            == trial["library"],
+            "entities_and_events_unchanged": before == rows
+            and store.head(WS) == trial["baseline_head"],
+            "all_stages_available_to_the_scorer": not (default.profile_source or {}).get("skipped"),
+            "neutral_date_wording_retained": default.tone == "neutral",
+            "two_known_fits_from_the_workspace": len(default.picks) == 2
+            and all(
+                row["estimate_minutes"] is not None and row["estimate_minutes"] <= 15
+                for row in default.picks
+            ),
+            "exact_fit_survives_longer_and_unknown_estimates": [row["id"] for row in press.picks]
+            == ["boundary"],
+            "two_of_three_short_options": len(studio.picks) == 2
+            and {row["id"] for row in studio.picks} <= {"fold", "label", "sort"},
+        }
     checks = {
         "workspace_preferences_unchanged": all(
             store.setting_state(WS, key)["version"] == 0 for key in ("profile", "profile.library")

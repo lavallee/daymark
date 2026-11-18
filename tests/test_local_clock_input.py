@@ -76,3 +76,17 @@ def test_full_mcp_and_cli_detail_preserve_zone_offset_precision_and_date_evidenc
         assert observed[0]["temporal"]["deadline"] != observed[1]["temporal"]["deadline"]
     main(["--db", str(path), "--workspace", "lab", "show", "late", "--json"])
     assert json.loads(capsys.readouterr().out)["temporal"] == observed[1]["temporal"]
+
+
+def test_misspelled_daymark_timezone_refuses_capture_instead_of_using_host_zone(tmp_path, monkeypatch, capsys):
+    from daymark.cli import main
+
+    db = str(tmp_path / "work.db")
+    monkeypatch.setenv("TZ", "America/New_York")
+    monkeypatch.setenv("DAYMARK_TZ", "America/Los_Angles")
+    assert main(["--db", db, "add", "Call the printer", "--id", "call", "--due", "tomorrow 09:00"]) == 5
+    assert "IANA" in capsys.readouterr().err
+    with closing(Store(db)) as store:
+        assert store.head("default") == 0
+    assert main(["--db", db, "--tz", "UTC", "add", "Call the printer", "--id", "call"]) == 0
+    assert main(["--db", db, "--tz", "Unrecognized/Zone", "prime"]) == 5

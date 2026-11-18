@@ -2,6 +2,7 @@
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
@@ -113,8 +114,8 @@ def test_caller_root_write_without_explicit_begin_is_rollbackable(tmp_path):
     connection.close()
 
 
-def test_replay_hash_version_and_failed_operation_are_atomic(tmp_path):
-    store = Store(tmp_path / "replay.db")
+def test_replay_hash_version_and_failed_operation_are_atomic(open_store, tmp_path):
+    store = open_store(tmp_path / "replay.db")
     payload = {"id": "a", "kind": "task", "title": "synthetic"}
     first = store.execute("w", "stable", "create", payload, expected_version=0)
     assert (
@@ -163,8 +164,8 @@ def test_replay_hash_version_and_failed_operation_are_atomic(tmp_path):
         ("recipient_id", "person"),
     ],
 )
-def test_foreign_links_cannot_cross_workspace(tmp_path, field, kind):
-    store = Store(tmp_path / "foreign.db")
+def test_foreign_links_cannot_cross_workspace(open_store, tmp_path, field, kind):
+    store = open_store(tmp_path / "foreign.db")
     create(store, "foreign", "hidden", kind)
     fields = {
         field: ["hidden"]
@@ -187,14 +188,14 @@ def test_foreign_links_cannot_cross_workspace(tmp_path, field, kind):
     assert store.list("local") == ([] if field != "task_id" else [store.get("local", "person")])
 
 
-def test_concurrent_claims_lease_expiry_and_old_owner_fencing(tmp_path):
+def test_concurrent_claims_lease_expiry_and_old_owner_fencing(open_store, tmp_path):
     path = tmp_path / "leases.db"
-    store = Store(path)
+    store = open_store(path)
     seed_reminder(store)
     barrier = Barrier(2)
 
     def claim(owner):
-        engine = Store(path)
+        engine = open_store(path)
         barrier.wait()
         return engine.claim_reminders(owner, now=NOW, lease_seconds=10)
 
@@ -225,8 +226,8 @@ def test_concurrent_claims_lease_expiry_and_old_owner_fencing(tmp_path):
     assert not store.claim_reminders("owner-d", now=NOW + timedelta(days=1))
 
 
-def test_retry_preserves_delivery_key_and_suppresses_completed_task(tmp_path):
-    store = Store(tmp_path / "retry.db")
+def test_retry_preserves_delivery_key_and_suppresses_completed_task(open_store, tmp_path):
+    store = open_store(tmp_path / "retry.db")
     seed_reminder(store)
     claim = store.claim_reminders("one", now=NOW)[0]
     store.finish_delivery(
@@ -264,8 +265,8 @@ def test_retry_preserves_delivery_key_and_suppresses_completed_task(tmp_path):
     assert not store.claim_reminders("three", now=NOW + timedelta(days=1))
 
 
-def test_worker_recording_default_and_error_redaction(tmp_path, caplog):
-    store = Store(tmp_path / "worker.db")
+def test_worker_recording_default_and_error_redaction(open_store, tmp_path, caplog):
+    store = open_store(tmp_path / "worker.db")
     seed_reminder(store)
     worker = Worker(store)
     assert isinstance(worker.sink, RecordingSink)
@@ -283,23 +284,23 @@ def test_worker_recording_default_and_error_redaction(tmp_path, caplog):
     assert "private" not in str(store.get("w", "bad"))
 
 
-def test_import_foreign_reference_rolls_back_entire_snapshot(tmp_path):
+def test_import_foreign_reference_rolls_back_entire_snapshot(open_store, tmp_path):
     import copy
 
-    source = Store(tmp_path / "source.db")
+    source = open_store(tmp_path / "source.db")
     create(source, "w", "first")
     create(source, "w", "second")
     snapshot = copy.deepcopy(source.export("w"))
     snapshot["entities"][1]["parent_id"] = "missing-parent"
-    destination = Store(tmp_path / "destination.db")
+    destination = open_store(tmp_path / "destination.db")
     with pytest.raises(DomainError):
         destination.import_snapshot("w", snapshot, operation_id="bad-import", expected_version=0)
     assert destination.list("w") == []
     assert destination.events("w") == []
 
 
-def test_lease_finish_after_expiry_without_reclaim_is_rejected(tmp_path):
-    store = Store(tmp_path / "expired.db")
+def test_lease_finish_after_expiry_without_reclaim_is_rejected(open_store, tmp_path):
+    store = open_store(tmp_path / "expired.db")
     seed_reminder(store)
     claim = store.claim_reminders("owner", now=NOW, lease_seconds=1)[0]
     with pytest.raises(DomainError):
@@ -327,8 +328,8 @@ def test_store_initialization_cannot_commit_unrelated_caller_work(tmp_path):
     connection.close()
 
 
-def test_hostile_query_is_bounded_and_never_executes_sql(tmp_path):
-    store = Store(tmp_path / "queries.db")
+def test_hostile_query_is_bounded_and_never_executes_sql(open_store, tmp_path):
+    store = open_store(tmp_path / "queries.db")
     create(store, "w", "safe")
     attacks = [
         {"field": "title); DROP TABLE daymark_entities;--", "op": "eq", "value": "x"},
@@ -352,8 +353,8 @@ def test_finite_recurrence_stops_at_rule_count():
     assert next_occurrence(rule, second, NOW) is None
 
 
-def test_recompletion_cannot_duplicate_same_series_occurrence(tmp_path):
-    store = Store(tmp_path / "recurrence.db")
+def test_recompletion_cannot_duplicate_same_series_occurrence(open_store, tmp_path):
+    store = open_store(tmp_path / "recurrence.db")
     planned = {"date": "2026-11-09", "timezone": "America/New_York"}
     task = create(
         store,
@@ -381,10 +382,10 @@ def test_recompletion_cannot_duplicate_same_series_occurrence(tmp_path):
     assert len(keys) == len(set(keys))
 
 
-def test_worker_uses_fresh_completion_time_and_fences_late_outcome(tmp_path, monkeypatch):
+def test_worker_uses_fresh_completion_time_and_fences_late_outcome(open_store, tmp_path, monkeypatch):
     import daymark.worker as worker_module
 
-    store = Store(tmp_path / "late-worker.db")
+    store = open_store(tmp_path / "late-worker.db")
     seed_reminder(store)
     clock = [NOW]
 
@@ -410,8 +411,8 @@ def test_worker_uses_fresh_completion_time_and_fences_late_outcome(tmp_path, mon
 @pytest.mark.parametrize(
     "action,target", [("reminder.cancel", "reminder"), ("cancel", "task"), ("complete", "task")]
 )
-def test_worker_suppresses_cancellation_between_claim_and_send(tmp_path, action, target):
-    store = Store(tmp_path / "cancel-before-send.db")
+def test_worker_suppresses_cancellation_between_claim_and_send(open_store, tmp_path, action, target):
+    store = open_store(tmp_path / "cancel-before-send.db")
     seed_reminder(store)
 
     class CancelAfterClaim:
@@ -435,7 +436,7 @@ def test_worker_suppresses_cancellation_between_claim_and_send(tmp_path, action,
     assert not sink.delivery_keys
 
 
-def test_sink_success_then_persistence_crash_replays_same_key(tmp_path):
+def test_sink_success_then_persistence_crash_replays_same_key(open_store, tmp_path):
     import os
     import subprocess
     import sys
@@ -443,7 +444,7 @@ def test_sink_success_then_persistence_crash_replays_same_key(tmp_path):
     from pathlib import Path
 
     path, receiver = tmp_path / "after-delivery.db", tmp_path / "receiver.db"
-    store = Store(path)
+    store = open_store(path)
     seed_reminder(store)
     script = textwrap.dedent("""
         import os
@@ -489,18 +490,18 @@ def test_sink_success_then_persistence_crash_replays_same_key(tmp_path):
         check=False,
     )
     assert recovered.returncode == 0, recovered.stderr.decode()
-    with sqlite3.connect(receiver) as conn:
+    with closing(sqlite3.connect(receiver)) as conn:
         keys = [row[0] for row in conn.execute("SELECT key FROM calls")]
         assert len(keys) == 2 and keys[0] == keys[1]
         assert conn.execute("SELECT count(*) FROM effects").fetchone()[0] == 1
-    outcome = Store(path).get("w", "reminder")
+    outcome = open_store(path).get("w", "reminder")
     assert outcome["reminder_state"] == "delivered" and outcome["attempts"] == 2
 
 
-def test_cancel_after_final_check_cannot_unsend_but_cannot_record_success(tmp_path):
+def test_cancel_after_final_check_cannot_unsend_but_cannot_record_success(open_store, tmp_path):
     from threading import Event
 
-    store = Store(tmp_path / "cancel-after-check.db")
+    store = open_store(tmp_path / "cancel-after-check.db")
     seed_reminder(store)
     checked, cancelled = Event(), Event()
     sink = RecordingSink()
@@ -533,8 +534,8 @@ def test_cancel_after_final_check_cannot_unsend_but_cannot_record_success(tmp_pa
     assert store.get("w", "reminder")["reminder_state"] == "cancelled"
 
 
-def test_snapshot_restart_preserves_event_cursor_and_original_operation_results(tmp_path):
-    source = Store(tmp_path / "snapshot-source.db")
+def test_snapshot_restart_preserves_event_cursor_and_original_operation_results(open_store, tmp_path):
+    source = open_store(tmp_path / "snapshot-source.db")
     original = create(source, "w", "restored", title="first")
     payload = {"id": "restored", "title": "second"}
     second = source.execute(
@@ -555,7 +556,7 @@ def test_snapshot_restart_preserves_event_cursor_and_original_operation_results(
     close = getattr(target, "close", None)
     if close:
         close()
-    target = Store(target_path)
+    target = open_store(target_path)
     baseline_events = target.events("w", after=0, limit=1000)
     # Prior operation results can differ from current state; replay returns the
     # original result and must neither rewind the entity nor append an event.
@@ -586,7 +587,7 @@ def test_snapshot_restart_preserves_event_cursor_and_original_operation_results(
     assert target.export("w") == state_before
 
 
-def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_path):
+def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(open_store, tmp_path):
     path = tmp_path / "nested.db"
     connection = sqlite3.connect(path)
     store = Store(connection)
@@ -595,7 +596,7 @@ def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_pat
     connection.commit()  # Only the application owns the root commit.
     baseline = store.export("w")
     connection.commit()  # Export's caller-owned read transaction is caller-owned too.
-    observer = Store(path)
+    observer = open_store(path)
     connection.execute("BEGIN")
     create(store, "w", "keep-in-root")
     connection.execute("SAVEPOINT application_nested")
@@ -629,8 +630,8 @@ def test_root_and_nested_rollback_remove_intent_events_and_replay_ledger(tmp_pat
 
 
 @pytest.mark.parametrize("stale_success", [True, False])
-def test_same_owner_aba_rejects_stale_success_and_failure_without_mutation(tmp_path, stale_success):
-    store = Store(tmp_path / "same-owner-aba.db")
+def test_same_owner_aba_rejects_stale_success_and_failure_without_mutation(open_store, tmp_path, stale_success):
+    store = open_store(tmp_path / "same-owner-aba.db")
     seed_reminder(store)
     first = store.claim_reminders("same-owner", now=NOW, lease_seconds=10)[0]
     second = store.claim_reminders("same-owner", now=NOW + timedelta(seconds=11), lease_seconds=10)[
@@ -664,8 +665,8 @@ def test_same_owner_aba_rejects_stale_success_and_failure_without_mutation(tmp_p
     assert store.get("w", "reminder")["reminder_state"] == "delivered"
 
 
-def test_default_recording_sink_does_not_succeed_for_unsupported_channel(tmp_path):
-    store = Store(tmp_path / "unsupported-channel.db")
+def test_default_recording_sink_does_not_succeed_for_unsupported_channel(open_store, tmp_path):
+    store = open_store(tmp_path / "unsupported-channel.db")
     seed_reminder(store, channel="unsupported-synthetic")
     sink = RecordingSink()
     counts = Worker(store, sink).run_once(NOW)
@@ -674,16 +675,16 @@ def test_default_recording_sink_does_not_succeed_for_unsupported_channel(tmp_pat
     assert store.get("w", "reminder")["reminder_state"] != "delivered"
 
 
-def test_snapshot_rejects_duplicate_event_identity_with_changed_content_atomically(tmp_path):
+def test_snapshot_rejects_duplicate_event_identity_with_changed_content_atomically(open_store, tmp_path):
     import copy
 
-    source = Store(tmp_path / "events-source.db")
+    source = open_store(tmp_path / "events-source.db")
     create(source, "w", "portable")
     snapshot = source.export("w")
     forged = copy.deepcopy(snapshot["events"][0])
     forged["action"] = "forged-action"
     snapshot["events"].append(forged)
-    target = Store(tmp_path / "events-target.db")
+    target = open_store(tmp_path / "events-target.db")
     with pytest.raises(DomainError):
         target.import_snapshot("w", snapshot, operation_id="bad-event-import", expected_version=0)
     assert not target.list("w") and not target.events("w")
@@ -694,26 +695,26 @@ def test_snapshot_rejects_duplicate_event_identity_with_changed_content_atomical
     assert target.get("w", "portable")["id"] == "portable"
 
 
-def test_snapshot_rejects_conflicting_duplicate_operation_receipt_atomically(tmp_path):
+def test_snapshot_rejects_conflicting_duplicate_operation_receipt_atomically(open_store, tmp_path):
     import copy
 
-    source = Store(tmp_path / "receipt-source.db")
+    source = open_store(tmp_path / "receipt-source.db")
     create(source, "w", "portable")
     snapshot = source.export("w")
     assert snapshot["operations"], "Full-fidelity export must preserve replay receipts"
     forged = copy.deepcopy(snapshot["operations"][0])
     forged["payload_hash"] = "0" * 64
     snapshot["operations"].append(forged)
-    target = Store(tmp_path / "receipt-target.db")
+    target = open_store(tmp_path / "receipt-target.db")
     with pytest.raises(DomainError):
         target.import_snapshot("w", snapshot, operation_id="bad-receipt-import", expected_version=0)
     assert not target.list("w") and not target.events("w")
 
 
-def test_import_cannot_rewind_newer_state_or_partially_merge_on_conflict(tmp_path):
-    source = Store(tmp_path / "old-snapshot.db")
+def test_import_cannot_rewind_newer_state_or_partially_merge_on_conflict(open_store, tmp_path):
+    source = open_store(tmp_path / "old-snapshot.db")
     first = create(source, "w", "original", title="first")
-    target = Store(tmp_path / "newer-target.db")
+    target = open_store(tmp_path / "newer-target.db")
     target.import_snapshot(
         "w", source.export("w"), operation_id="initial-merge", expected_version=0
     )
@@ -733,8 +734,8 @@ def test_import_cannot_rewind_newer_state_or_partially_merge_on_conflict(tmp_pat
     assert target.export("w") == baseline
 
 
-def test_event_cursors_do_not_reveal_foreign_workspace_activity(tmp_path):
-    store = Store(tmp_path / "private-cursors.db")
+def test_event_cursors_do_not_reveal_foreign_workspace_activity(open_store, tmp_path):
+    store = open_store(tmp_path / "private-cursors.db")
     first = create(store, "one", "first")
     before = store.events("one")[-1]["seq"]
     for index in range(3):
@@ -750,9 +751,9 @@ def test_event_cursors_do_not_reveal_foreign_workspace_activity(tmp_path):
     assert len(after) == 1 and after[0]["seq"] == before + 1
 
 
-def test_owned_commit_failure_rolls_back_and_preserves_original_error(tmp_path):
+def test_owned_commit_failure_rolls_back_and_preserves_original_error(open_store, tmp_path):
     path = tmp_path / "commit-failure.db"
-    store = Store(path)
+    store = open_store(path)
     create(store, "w", "baseline")
     # Path-owned stores default to WAL, where a reader no longer blocks COMMIT.
     # Return to a rollback journal to keep this deterministic commit fault.
@@ -783,8 +784,8 @@ def test_owned_commit_failure_rolls_back_and_preserves_original_error(tmp_path):
 
 @pytest.mark.parametrize("field", ["title", "description"])
 @pytest.mark.parametrize("claimed", [False, True])
-def test_harmless_task_text_edit_preserves_explicit_reminder(tmp_path, field, claimed):
-    store = Store(tmp_path / "harmless-edit.db")
+def test_harmless_task_text_edit_preserves_explicit_reminder(open_store, tmp_path, field, claimed):
+    store = open_store(tmp_path / "harmless-edit.db")
     seed_reminder(store)
     if claimed:
         store.claim_reminders("owner", now=NOW)
@@ -807,8 +808,8 @@ def test_harmless_task_text_edit_preserves_explicit_reminder(tmp_path, field, cl
 
 
 @pytest.mark.parametrize("action", ["cancel", "complete", "archive", "delete"])
-def test_terminal_archive_delete_invalidates_explicit_reminder(tmp_path, action):
-    store = Store(tmp_path / "terminal-edit.db")
+def test_terminal_archive_delete_invalidates_explicit_reminder(open_store, tmp_path, action):
+    store = open_store(tmp_path / "terminal-edit.db")
     seed_reminder(store)
     store.execute(
         "w", "terminal", action, {"id": "task"}, expected_version=store.get("w", "task")["version"]
@@ -833,8 +834,8 @@ def test_terminal_archive_delete_invalidates_explicit_reminder(tmp_path, action)
         ("error", "forged-outcome"),
     ],
 )
-def test_commands_cannot_forge_scheduler_owned_state(tmp_path, action, field, value):
-    store = Store(tmp_path / "scheduler-forgery.db")
+def test_commands_cannot_forge_scheduler_owned_state(open_store, tmp_path, action, field, value):
+    store = open_store(tmp_path / "scheduler-forgery.db")
     seed_reminder(store)
     baseline = store.export("w")
     if action == "create":
@@ -853,8 +854,8 @@ def test_commands_cannot_forge_scheduler_owned_state(tmp_path, action, field, va
     assert store.export("w") == baseline
 
 
-def test_native_skip_advances_series_without_recording_actual_completion(tmp_path):
-    store = Store(tmp_path / "skip-disposition.db")
+def test_native_skip_advances_series_without_recording_actual_completion(open_store, tmp_path):
+    store = open_store(tmp_path / "skip-disposition.db")
     planned = {"date": "2026-11-09", "timezone": "America/New_York"}
     task = create(
         store,

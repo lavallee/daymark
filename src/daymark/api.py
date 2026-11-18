@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .cursors import numeric_or_checkpoint
+from .models import SourceRef
 
 LOG = logging.getLogger("daymark.api")
 MAX_BODY_BYTES = 1_048_576
@@ -52,6 +53,7 @@ class ImportRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    source: SourceRef | str | None = None
     claimed: bool = False
     archived: bool = False
     now: str | None = Field(None, max_length=40)
@@ -280,8 +282,10 @@ def create_router(store: Any) -> APIRouter:
         return _invoke(read)
 
     @router.get("/projects", operation_id="daymark_v1_projects")
-    def projects(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
-        return _invoke(store.projects, identity(request).workspace, now=now)
+    def projects(request: Request, now: str | None = Query(None, max_length=40),
+                 scope: str | None = Query(None, max_length=100)) -> Any:
+        return _invoke(store.projects, identity(request).workspace, now=now,
+                       **({"scope": scope} if scope is not None else {}))
 
     @router.get("/project-plan", operation_id="daymark_v1_plan_by_id")
     @router.get("/projects/{project_id}/plan", operation_id="daymark_v1_plan")
@@ -433,8 +437,8 @@ def create_router(store: Any) -> APIRouter:
             return _invoke(store.read_note, actor.workspace, None, note_id, source=ref)
         principal = actor.principal if mine else owner
         if detail == "brief":
-            return _invoke(store.brief, actor.workspace, source=ref, owner=principal, now=now, before_note=before_note)
-        return _invoke(store.context, actor.workspace, source=ref, owner=principal, now=now, history=history)
+            return _invoke(store.brief, actor.workspace, source=ref, owner=principal, now=now, before_note=before_note, actor=actor.principal)
+        return _invoke(store.context, actor.workspace, source=ref, owner=principal, now=now, history=history, actor=actor.principal)
 
     @router.get("/comparison", operation_id="daymark_v1_comparison")
     def comparison(
@@ -451,7 +455,7 @@ def create_router(store: Any) -> APIRouter:
     ) -> Any:
         actor = identity(request)
         return _invoke(store.brief, actor.workspace, entity_id, now=now,
-                       owner=actor.principal if mine else owner, before_note=before_note)
+                       actor=actor.principal, owner=actor.principal if mine else owner, before_note=before_note)
 
     @router.get("/note", operation_id="daymark_v1_read_note")
     def read_note(
@@ -469,7 +473,7 @@ def create_router(store: Any) -> APIRouter:
     ) -> Any:
         actor = identity(request)
         return _invoke(store.context, actor.workspace, entity_id, history=history,
-                       now=now, owner=actor.principal if mine else owner)
+                       now=now, actor=actor.principal, owner=actor.principal if mine else owner)
 
     @router.get("/receipt-context", operation_id="daymark_v1_receipt_context")
     def receipt_context(
@@ -635,8 +639,19 @@ def create_app(
     app.include_router(create_router(store))
 
     @app.get("/v1/schema", operation_id="daymark_v1_schema", include_in_schema=False)
-    def schema() -> Any:
+    def schema(brief: bool = False) -> Any:
         document = app.openapi()
+        if brief:
+            # The compatibility check needs just routes, methods and query
+            # names. Derive them from the same schema as the full API contract.
+            paths = {}
+            for path, methods in document["paths"].items():
+                paths[path] = {}
+                for method, operation in methods.items():
+                    names = [{"name": p["name"]} for p in operation.get("parameters", ())
+                             if p.get("in") == "query"]
+                    paths[path][method] = {"parameters": names} if names else {}
+            return {"paths": paths}
         document.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
             "type": "http",
             "scheme": "bearer",

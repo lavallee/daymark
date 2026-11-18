@@ -29,6 +29,7 @@ def tasks():
     ("method", "params"),
     [
         ("initialize", {"protocolVersion": "2024-11-05"}),
+        ("initialize", {"protocolVersion": "2025-03-26"}),
         ("initialize", {"protocolVersion": "2025-06-18"}),
         ("initialize", {"protocolVersion": "2025-11-25"}),
     ],
@@ -141,12 +142,39 @@ def test_stdio_restart_retries_keep_one_write_and_return_original_entity(tmp_pat
         assert store.get("sample", task_id)["version"] == 3
 
 
-def test_legacy_protocol_keeps_text_only_write_results(tasks):
-    result = handle(tasks, tool("daymark_add", title="Review the draft"), protocol="2024-11-05")[
+@pytest.mark.parametrize("revision", ["2024-11-05", "2025-03-26"])
+def test_legacy_protocol_keeps_text_only_write_results(tasks, revision):
+    result = handle(tasks, tool("daymark_add", title="Review the draft"), protocol=revision)[
         "result"
     ]
     assert "Review the draft" in result["content"][0]["text"]
     assert "structuredContent" not in result
+
+
+def test_march_batches_receive_one_reply_per_request_and_preserve_read_only(tasks):
+    from io import StringIO
+
+    from daymark.mcp import serve
+
+    tasks.add("Collect samples", id="sample")
+    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    wire = [
+        request("initialize", protocolVersion="2025-03-26"), [notification], [],
+        [notification, {**request("ping"), "id": 2},
+         {**tool("daymark_act", action="done", id="sample"), "id": 3},
+         [], {**request("initialize", protocolVersion="2025-11-25"), "id": 4}],
+        [{**tool("daymark_view", view="show", id="sample", brief=True, json=True), "id": 5}],
+    ]
+    stdout = StringIO()
+    serve(tasks, StringIO("".join(json.dumps(item) + "\n" for item in wire)), stdout, read_only=True)
+    hello, empty, mixed, last = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert hello["result"]["protocolVersion"] == "2025-03-26"
+    assert empty["error"]["code"] == -32600
+    assert [r["id"] for r in mixed] == [2, 3, None, 4]
+    assert mixed[0]["result"] == {} and "forbidden" in mixed[1]["result"]["content"][0]["text"]
+    assert mixed[2]["error"]["code"] == mixed[3]["error"]["code"] == -32600
+    assert json.loads(last[0]["result"]["content"][0]["text"])["version"] == 1
+    assert handle(tasks, wire[-1], protocol="2025-11-25")["error"]["code"] == -32600
 
 
 def test_stale_decision_names_recovery_without_changing_the_proposal(tasks):
@@ -244,6 +272,24 @@ def test_temporary_advice_recovers_from_misplaced_filters(tasks):
         result = handle(tasks, tool("daymark_view", view="advise", **fields))["result"]
         error = result["structuredContent"]["error"]
         assert error["code"] == "invalid" and "time-fit.minutes=15" in error["recovery"]
+
+
+@pytest.mark.parametrize("selector", [{"id": "sample"}, {"source": "press:job:S-41"}])
+def test_misplaced_activity_selector_recovers_to_the_exact_task(tasks, selector):
+    tasks.add("Sample proof", id="sample", source="press:job:S-41")
+    tasks.add("Sample proof", id="other", note="Unrelated instruction.")
+    tasks.note("sample", "Check the overlay at F3.")
+
+    def read(view, **args):
+        return handle(tasks, tool("daymark_view", view=view, json=True, **args))["result"]
+
+    error = read("activity", **selector)["structuredContent"]["error"]
+    assert error["code"] == "invalid" and "show" in error["recovery"]
+    assert "brief=true" in error["recovery"] and "since_version" in error["recovery"]
+    brief = read("show", brief=True, **selector)["structuredContent"]
+    assert brief["id"] == "sample" and len(brief["notes"]) == 1
+    full = read("show", note=brief["notes"][0]["id"], **selector)["structuredContent"]
+    assert full["text"] == "Check the overlay at F3."
 
 
 def test_invalid_service_credential_is_distinct_from_a_transport_failure_and_redacted():

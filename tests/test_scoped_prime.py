@@ -86,3 +86,39 @@ def test_old_service_cannot_silently_widen_a_scoped_snapshot():
         reply = prime(tasks, "studio")
         assert reply["isError"] and "Keep the same scope" in reply["content"][0]["text"]
     assert seen == ["/v1/schema"]
+
+
+@pytest.mark.parametrize(("scope", "operation", "values"), [("studio", "eq", "studio"), ("", "in", [None, ""])])
+def test_legacy_scope_filters_reach_the_service_before_any_memory_bodies(scope, operation, values):
+    with closing(Store(":memory:")) as store:
+        seed(store)
+        returned_ids = []
+
+        def service(req):
+            if req.url.path == "/v1/search":
+                return httpx.Response(404)
+            assert req.url.path == "/v1/query"
+            query = json.loads(req.content)["filters"]
+            assert {"field": "scope", "op": operation, "value": values} in query["and"]
+            items = store.query("lab", query)
+            returned_ids.extend(x["id"] for x in items)
+            return httpx.Response(200, json=items)
+
+        with Client("http://sample.invalid", "t", transport=httpx.MockTransport(service)) as c:
+            assert Tasks(c).search(kind="memory", scope=scope)["items"]
+        assert all(id.startswith("z-") for id in returned_ids) if scope else returned_ids == ["a-global"]
+
+
+@pytest.mark.parametrize("section", ["ready", "memories"])
+def test_scope_echo_without_matching_nested_records_refuses_before_rendering(section):
+    def service(req):
+        if req.url.path == "/v1/schema":
+            return httpx.Response(200, json={"paths": {"/v1/orientation": {"get": {"parameters": [{"name": "scope"}]}}}})
+        snapshot = {"scope": "studio", "ready": [], "memories": [], "activity_cursor": 42}
+        snapshot[section] = [{"scope": "home", "title": "Sensitive sample outside the requested view"}]
+        return httpx.Response(200, json=snapshot)
+
+    with Client("http://sample.invalid", "t", transport=httpx.MockTransport(service)) as c:
+        result = prime(Tasks(c), "studio")
+    assert result["structuredContent"]["error"]["code"] == "invalid"
+    assert "Sensitive sample" not in str(result) and "42" not in str(result)

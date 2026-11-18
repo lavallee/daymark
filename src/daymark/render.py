@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from shlex import join
 from urllib.parse import urlsplit
@@ -15,6 +16,12 @@ _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
 _ALWAYS = ("id", "kind", "title", "status", "version")
 EMPTY_TAKE = "No unclaimed agent task is ready in this scope."
 _BOOKKEEPING = {"workspace", "created_at", "updated_at"}
+_ROW_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _single_line(text: str) -> str:
+    """Show control characters as escapes while preserving printable text."""
+    return _ROW_CONTROLS.sub(lambda match: ascii(match[0])[1:-1], text)
 
 
 _LIST_FIELDS = (
@@ -116,7 +123,7 @@ def when(temporal) -> str:
     return local.isoformat(sep=" ", timespec=precision) + " " + value.timezone
 
 
-def line(item: dict, now=None, reason=True, *, timezone="UTC") -> str:
+def line(item: dict, now=None, reason=True, *, timezone="UTC", multiline=False) -> str:
     """One task on one line: id, priority, title, then only what is set."""
     # Historical write receipts keep the entity shape of the release that made
     # them. Apply today's display defaults without rewriting their evidence.
@@ -172,7 +179,8 @@ def line(item: dict, now=None, reason=True, *, timezone="UTC") -> str:
         tags.append("claimed by " + holder)
     if item["depends_on"]:
         tags.append("after " + ",".join(item["depends_on"]))
-    return "  ".join(parts) + ("  [" + "; ".join(dict.fromkeys(tags)) + "]" if tags else "")
+    row = "  ".join(parts) + ("  [" + "; ".join(dict.fromkeys(tags)) + "]" if tags else "")
+    return row if multiline else _single_line(row)
 
 
 def ready_explanation(view):
@@ -180,7 +188,10 @@ def ready_explanation(view):
     if not ready and not held:
         return "No live tasks match this view."
     out = [f"{ready} ready, {held} held"]
-    out.extend(f"  {item['id']}  {item['title']}  [{item['why']}]" for item in view["ready"])
+    out.extend(
+        _single_line(f"  {item['id']}  {item['title']}  [{item['why']}]")
+        for item in view["ready"]
+    )
     if len(view["ready"]) < ready:
         out.append(f"  Showing {len(view['ready'])} of {ready}. Use --limit for more.")
     labels = {
@@ -190,20 +201,31 @@ def ready_explanation(view):
         "proposed": "Awaiting a decision", "waiting": "Waiting on someone or something",
     }
     for code, group in sorted(view["reasons"].items()):
-        out.append(f"{labels[code]} ({group['count']}): " + ", ".join(group["examples"]))
+        out.append(_single_line(f"{labels[code]} ({group['count']}): " + ", ".join(group["examples"])))
     if held:
         out.append("Read a task with daymark show ID for its details.")
     return "\n".join(out)
 
 
-def search_text(page):
+def search_text(page, *, mcp=False):
     lines = []
     for item in page["items"]:
-        lease = f" until {item['claim_until']}" if "claim_until" in item else ""
-        archived = "  [archived]" if item.get("archived") else ""
-        lines.append(f"{item['id']}  {item['title']}  [{item['status']}]{archived}{lease}")
-    if page["next"] is not None:
-        lines.append("More matches. Repeat this search with " + join([f"--after={page['next']}"]))
+        row = f"{item['id']}  {item['title']}  [{item['status']}]"
+        if item.get("archived"):
+            row += "  [archived]"
+        if mcp and item.get("claimed_by"):
+            row += f"  claimed by {item['claimed_by']} until {item['claim_until']}"
+        elif not mcp and "claim_until" in item:
+            row += f" until {item['claim_until']}"
+        lines.append(_single_line(row))
+    if (cursor := page["next"]) is not None:
+        if _single_line(cursor) != cursor:
+            structured = "json: true" if mcp else "--json"
+            lines.append(f"More matches. Read the exact next cursor with {structured}.")
+        elif mcp:
+            lines.append("next: " + cursor)
+        else:
+            lines.append("More matches. Repeat this search with " + join([f"--after={cursor}"]))
     return "\n".join(lines) or "No matches."
 
 
@@ -222,21 +244,30 @@ def explore_text(view: dict) -> str:
         if item["frontier"]:
             tags.append(
                 "next"
-                if item["advancing"] and item["id"] not in view["gaps"]
+                if item["id"] not in view["gaps"]
                 else "next; nothing moving it"
             )
         if item["waiting_on"]:
             tags.append("needs " + ",".join(item["waiting_on"]))
+        outside = item.get("outside_scope", {})
+        if outside.get("waiting_on"):
+            tags.append(f"waiting on {outside['waiting_on']} outside this scope")
+        if outside.get("advancing"):
+            counts = ", ".join(f"{n} {status}" for status, n in sorted(outside["advancing"].items()))
+            tags.append(f"linked work outside this scope: {counts}")
         out.append(
             f"  [{marks[item['state']]}] {item['id']}  {item['title']}"
             + (f"  [{'; '.join(tags)}]" if tags else "")
         )
         for task in item["advancing"]:
-            out.append(f"        {task['id']}  {task['title']}  [{task['status']}]")
+            out.append(_single_line(f"        {task['id']}  {task['title']}  [{task['status']}]"))
         for evidence in item["evidence"][-1:]:
             out.append(f"        evidence: {evidence}")
     if not view["conditions"]:
-        out.append('No conditions recorded. Add one with `daymark condition "..." --goal ID`.')
+        if "scope" in view:
+            out.append("No conditions recorded in this scope.")
+        else:
+            out.append('No conditions recorded. Add one with `daymark condition "..." --goal ID`.')
     if view["unassessed"]:
         out.append(
             f"{len(view['unassessed'])} not yet assessed: {', '.join(view['unassessed'][:8])}"
@@ -266,6 +297,7 @@ def _read_hint(view, options, session, mcp):
 
 def advice_text(advice, now=None, *, session=None, mcp=False) -> str:
     """Picks, then what the profile's strategies noticed."""
+    now = advice.as_of or now
     plain = advice.tone != "neutral"
     out = []
     source = advice.profile_source
@@ -307,12 +339,17 @@ def advice_text(advice, now=None, *, session=None, mcp=False) -> str:
     return "\n".join(out)
 
 
+def parameter_text(value):
+    """Use the same boolean spellings that a copied --set argument accepts."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
 def profile_text(profile: dict, *, database=None) -> str:
     out = [f"profile: {profile['name']}"]
     if profile.get("execution") == "legacy-client":
         out.append("This service cannot report its workspace profile. The client falls back to plain.")
     for stage in profile["strategies"]:
-        settings = ", ".join(f"{k}={v}" for k, v in stage["with"].items())
+        settings = ", ".join(f"{k}={parameter_text(v)}" for k, v in stage["with"].items())
         out.append(f"  {stage['use']}" + (f"  ({settings})" if settings else ""))
         for key, value in stage.get("unavailable_parameters", {}).items():
             field = f"{stage['use']}.{key}"
@@ -342,6 +379,8 @@ def strategy_detail(data):
     if data.get("installed_plugin"):
         return f"{data['name']}  {data['summary']} Use `advise --set {data['name']}` to preview it."
     lines = [f"{data['name']} [{data['kind']}]  {data['summary']}", f"Practice evidence: {data['evidence']}"]
+    if data.get("evidence_note"):
+        lines.append(data["evidence_note"])
     for key, param in data["parameters"].items():
         bounds = []
         if "minimum" in param:
@@ -349,14 +388,14 @@ def strategy_detail(data):
         if "maximum" in param:
             bounds.append(f"maximum {param['maximum']}")
         extra = f" ({', '.join(bounds)})" if bounds else ""
-        lines.append(f"  {data['name']}.{key}={param['default']}  {param['help']}{extra}")
+        lines.append(f"  {data['name']}.{key}={parameter_text(param['default'])}  {param['help']}{extra}")
     return "\n".join(lines)
 
 
 def strategies_text(listed, profiles: dict, *, plugins=()) -> str:
     out = ["Strategies (kind, evidence for the underlying practice):"]
     for s in listed:
-        settings = ", ".join(f"{k}={p.default}" for k, p in s.params.items())
+        settings = ", ".join(f"{k}={parameter_text(p.default)}" for k, p in s.params.items())
         out.append(f"  {s.name}  [{s.kind}; {s.evidence}]  {s.summary}"
                    + (f"  ({settings})" if settings else ""))  # fmt: skip
     if plugins:
@@ -414,7 +453,7 @@ def activity_text(view: dict, *, session=None, mcp=False, limit=20) -> str:
             row += " — " + (text if len(text) <= 240 else text[:239] + "…")
         elif event["action"] == "update" and event.get("changed"):
             row += "  [" + ", ".join(event["changed"]) + "]"
-        out.append(row)
+        out.append(_single_line(row))
     if not out:
         out.append("No activity.")
     out.append(f"cursor {view['cursor']}")
@@ -483,11 +522,36 @@ def _blocker_labels(view):
     return ", ".join(labels)
 
 
+def _decision_line(data):
+    access = data.get("decision_access") or {}
+    allowed = access.get("policy_allows")
+    if allowed is None:
+        line = "Workspace policy permission for this actor is unknown."
+    elif allowed:
+        if access.get("rule") == "named_deciders":
+            line = f"Workspace policy names {access['actor']} as a proposal decider."
+        elif access.get("rule") == "any_writer":
+            line = f"Workspace policy permits any writer, including {access['actor']}, to accept or dismiss."
+        else:
+            line = f"Workspace policy permits {access['actor']} to accept or dismiss."
+        line += " The person's decision is still required."
+    else:
+        line = f"Workspace policy does not permit {access['actor']} to accept or dismiss."
+    return line + (" This MCP session is read-only." if access.get("session_read_only") else "")
+
+
+def _cycle_line(id, cycle):
+    chain = id + "".join(f" → {step['relation']} {step['id']}" for step in cycle)
+    return f"Circular wait. {chain}. Review the prerequisite or parent link."
+
+
 def brief_text(view: dict, *, timezone="UTC") -> str:
     clipped = view.get("truncated", [])
     title = view["title"] + ("…" if "title" in clipped else "")
     archived = "archived, " if view.get("archived") else ""
     out = [f"{view['id']}  {title}  [{archived}{view['status']}, version {view['version']}]"]
+    if view.get("status") == "proposed":
+        out.append(_decision_line(view))
     if view.get("review_token"):
         out.append(f"Review token: {view['review_token']}")
     if view.get("scheduled_at") and view["kind"] == "reminder":
@@ -504,6 +568,8 @@ def brief_text(view: dict, *, timezone="UTC") -> str:
     if "readiness" in view:
         state = view["readiness"]
         out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
+        if state.get("cycle"):
+            out.append(_cycle_line(view["id"], state["cycle"]))
     if "next_move" in view:
         out.append("Next move: " + view["next_move"])
     if rule := view.get("recurrence"):
@@ -543,7 +609,9 @@ def brief_text(view: dict, *, timezone="UTC") -> str:
 
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
-    out = [line(item, now)]
+    out = [line(item, now, multiline=True)]
+    if item.get("status") == "proposed":
+        out.append(_decision_line(ctx))
     if ctx.get("review_token"):
         out.append(f"Review token: {ctx['review_token']}")
     if claim_holder(item, normalize_now(now)):
@@ -560,6 +628,8 @@ def show_text(ctx: dict, now=None) -> str:
         }
         why = ", ".join(reasons.get(code, code) for code in state["reasons"])
         out.append("Ready now" if state["ready"] else "Not ready: " + why)
+        if state.get("cycle"):
+            out.append(_cycle_line(item["id"], state["cycle"]))
     out.extend(source_text(ref) for ref in item["source_refs"])
     if item["description"]:
         out.append(item["description"])
@@ -652,7 +722,7 @@ def _card(card: dict, view: dict, now, *, skip=()) -> str:
             shown = ",".join(value) if isinstance(value, list) else value
             tags.append(f"{key}={shown}")
     base = line({**card, "stage": None}, now)
-    return base + ("  " + "  ".join(tags) if tags else "")
+    return base + ("  " + _single_line("  ".join(tags)) if tags else "")
 
 
 def plan_groups(view: dict, by: str) -> list[tuple[str, list]]:
@@ -747,16 +817,17 @@ def plan_text(view: dict, now=None, by: str = "stage") -> str:
     for title, cards in plan_groups(view, by):
         if not cards and by not in {"stage", "milestone"}:
             continue
-        out.append(title.replace("{n}", str(len(cards))))
+        out.append(_single_line(title.replace("{n}", str(len(cards)))))
         out.extend("  " + _card(card, view, now, skip=skip) for card in cards)
     if view["proposed"]:
         out.append(f"PROPOSED, awaiting a decision ({len(view['proposed'])})")
         out.extend("  " + line(item, now, reason=False) for item in view["proposed"])
     for ref in view["external_dependencies"]:
-        out.append(
+        row = (
             f"outside this project: {ref['id']} {ref['title']} [{ref['status']}] "
             f"blocks {', '.join(ref['dependents'])}"
         )
+        out.append(_single_line(row))
     for fact in view["dependency_conflicts"]:
         out.append(
             f"date conflict: {fact['item']} starts {fact['start']} before "
@@ -785,7 +856,7 @@ def tree_text(node: dict, depth: int = 0) -> str:
         "  " * depth
         + f"{node['id']}  {node['title'] or '(' + node['kind'] + ')'}  [{node['status']}{tag}]"
     )
-    lines = [text + (f"  (+{node['more']} below)" if node.get("more") else "")]
+    lines = [_single_line(text) + (f"  (+{node['more']} below)" if node.get("more") else "")]
     lines.extend(tree_text(child, depth + 1) for child in node.get("children", []))
     return "\n".join(lines)
 
@@ -853,6 +924,31 @@ def presets_text(presets: dict) -> str:
     return "\n".join(out)
 
 
+MCP_GUIDE = (
+    "Use Daymark for the person's request\n"
+    '• Named scope or known ID? Use it on the first read. daymark_prime takes scope. For studio '
+    'decisions, daymark_view with view=ready, scope=studio and move=answer lists the relevant '
+    'items. Keep the answer within the requested scope.\n'
+    '• Read agenda with deadlines=true for hard cutoffs, including waiting work. Use show with '
+    'id or source for details, brief=true for recent notes and review_token. For a prior '
+    'activity checkpoint, read activity after that checkpoint.\n'
+    '• Use advise with scope, profile or set for a one-time change. Read profiles for available '
+    'choices. Memories and settings are shared. A host can resend a personal preference through '
+    'its agreed end date. Save it here only if the person wants to share it. Use daymark_remember for a fact the '
+    'person wants to share across sessions.\n'
+    '• Use daymark_add for agreed work or proposed=true for a suggestion awaiting a decision. '
+    'Proposals are tasks with status=proposed. Set move=agent for expressly delegated work. Use '
+    'daymark_edit on the existing ID for changes. Pass an assignee name as supplied so both '
+    'people and principals are checked.\n'
+    '• plan is an intended work day, due is a hard cutoff, start is the earliest start, target '
+    'is a hoped-for finish. Leave unstated dates and priority unset. Ask when the distinction '
+    'matters.\n'
+    '• daymark_act supports wait with on, remind with when and recipient (default local '
+    'recording), take or claim for shared work, release with a handoff note, and done after '
+    'completion. Give each write a fresh op and keep it for retries. Guard reviewed edits and '
+    'decisions with the review_token returned by show.\n'
+).rstrip()
+
 GUIDE = """\
 Use Daymark to pick up a person's commitments across sessions.
 
@@ -875,24 +971,27 @@ Commands (add --json to any for structured output)
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
     --deadlines                     hard deadlines only, including waiting and blocked tasks
   daymark show ID [--since-version N]   current detail or changes since a reviewed version
+    A circular wait names the child and prerequisite links to review.
   daymark activity [--after CURSOR]  recent changes, or changes after a saved checkpoint
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
   daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-review TOKEN]
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
-  daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
+  daymark explore [GOAL] [--scope NAME]   what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
   daymark advise [--context ID] [--set shortlist.size=3]   try advice for this request
   daymark strategies [NAME]   discover methods and inspect a parameter range
   daymark profile --saved           inspect named choices locally or on a current service
       advise runs service built-ins for the authenticated workspace. Save preferences locally.
+      MCP use_profile receipts include restore_call for a version-checked reversal.
   daymark --as WORKER take [--scope NAME] [--context ID]   claim the next unclaimed ready agent task
   daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
   daymark note ID "text"            progress or context for the next session
+  If a remote write is uncertain, repeat the same command and flags with the returned --op.
   daymark done ID [--note TEXT]     complete (a repeating task spawns its next)
-  daymark skip ID                   pass over one occurrence without completing it
-  daymark wait ID --on WHO [--until D] / resume ID
+  daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)
+  daymark wait ID --on WHO [--until D] / resume ID   visible, unfinished work
   daymark edit ID --assignee NAME   MCP edit: assignee. Pass the name as given to check
       both people and principals for a match. Use an ID the person supplied or confirmed.
   daymark remind ID WHEN --to PERSON   schedule a reminder; show REMINDER --brief checks the local recording
@@ -901,9 +1000,12 @@ Commands (add --json to any for structured output)
   daymark edit ID --waiting-on WHO  park open work; resume ID when the wait ends
   daymark block ID --on OTHER / unblock ID --on OTHER
   daymark find TEXT [--kind memory] [--page]   find work or a remembered fact
+  daymark find --source SYSTEM:KIND:ID --scope NAME   check a source inside a scope
+  daymark find --status proposed    list tasks awaiting acceptance
   daymark find TEXT --archived [--kind memory]   search archived records only
   daymark --as WORKER find --claimed   recover this worker’s active claims, including held work
   daymark remember "fact" [--scope NAME] [--source SYSTEM:KIND:ID]   keep an explicit workspace fact
+  daymark unarchive ID [--if-review TOKEN]   restore visibility and keep the recorded status
   daymark forget MEMORY_ID [--if-review TOKEN]   retire a remembered fact from pickup
   daymark undo ID --if-version N --if-review TOKEN   reverse the reviewed latest change
 Projects (as plain or as structured as the work needs)
@@ -1002,24 +1104,24 @@ def prime_text(tasks, where: str | None = None, *, context=None, brief=False, mc
                 ) if item.get(key)
             ]
             details = "  [" + "; ".join(facts) + "]" if facts else ""
-            out.append(f"  {item['id']}  {item['title']}{details}")
+            out.append(_single_line(f"  {item['id']}  {item['title']}{details}"))
     if state["memories"]:
         out.append("Remembered")
         for fact in state["memories"]:
             fact_scope = f"  [scope:{fact['scope']}]" if fact.get("scope") else ""
-            out.append(f"  - {fact['title']}{fact_scope}  ({fact['id']})")
+            out.append(_single_line(f"  - {fact['title']}{fact_scope}  ({fact['id']})"))
         if state["next_memory"]:
             options = {"kind": "memory", "after": state["next_memory"]}
             if scope is not None:
                 options["scope"] = scope
             hint = _read_hint("find", options, context, mcp)
             out.append(f"  More facts: {hint}")
-    if "activity_cursor" in state:
+    if scope is None and "activity_cursor" in state:
         cursor = state.get("activity_checkpoint", state["activity_cursor"])
         hint = _read_hint("activity", {"after": cursor}, context, mcp)
         out.append(f"Changes after this snapshot: {hint}")
     if not mcp and "endpoint" in context and (state["next_memory"] or "activity_cursor" in state):
         out.append("Use the same service URL and credential for these reads.")
     if not brief and scope is None:
-        out.extend(["", GUIDE])
+        out.extend(["", MCP_GUIDE if mcp else GUIDE])
     return "\n".join(out)

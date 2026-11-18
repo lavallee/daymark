@@ -11,6 +11,15 @@ daymark --db example.sqlite3 --workspace example create --help
 
 This guide covers the engine commands, the service and the worker. The everyday
 verbs (`add`, `ready`, `done` and the rest) are in the [agent guide](agents.md).
+On POSIX, the CLI creates a new database with mode 0600 before SQLite opens
+it. Its journal and shared-memory files inherit the database permissions.
+Backup and restore check the completed copy before publishing its final name.
+An interrupted copy can leave a private `.daymark-backup-*` temporary file.
+On filesystems without hard links, the command reserves the new destination
+and commits the checked SQLite copy there. A hard interruption of this
+fallback can leave an uninitialized file. Restore refuses a zero-byte source.
+A file already at the destination is preserved.
+
 A path-owned database runs in SQLite WAL mode, so `-wal` and `-shm` files
 appear beside it; back up with `daymark backup`, not by copying the main file.
 
@@ -43,6 +52,12 @@ daymark --db example.sqlite3 serve --auth-file auth.json
 ```
 
 Every route, including `/v1/schema` and `/v1/health`, requires bearer authentication.
+
+A client checking whether a service understands a scope or context filter
+can request `GET /v1/schema?brief=true`. The response contains route paths,
+HTTP methods and query parameter names from the service's OpenAPI document.
+A v0.5.0 service returns its complete schema for this request. The client
+checks support before sending a read whose results depend on that filter.
 HTTP outbox health is scoped to the token's workspace; shared scheduler health
 contains only infrastructure timestamps/counts. Trusted embedded callers and
 local CLI may request global operational health.
@@ -81,7 +96,8 @@ claim visibility. An empty object selects the active workspace profile.
 Optional `profile`, `set`, `drop`, `scope`, `context` and `now` apply to this
 request. The service evaluates built-in strategies after taking one local
 snapshot. Set `brief: true` for list-sized task rows with supporting notes
-and checklist steps. The MCP bridge uses this form. `GET /v1/profiles` lists active and saved choices. Use `view=active`,
+and checklist steps. The MCP bridge uses this form. Its `as_of` is the UTC
+instant used for claims and dates on the service. `GET /v1/profiles` lists active and saved choices. Use `view=active`,
 `view=saved&name=NAME` or `view=strategy&name=STRATEGY` to inspect one.
 Preference mutations require local database access.
 
@@ -135,6 +151,11 @@ use this principal for ownership or authorship. Restored historical events keep
 the actor recorded in the snapshot. If the workspace names deciders
 (`daymark --db example.sqlite3 --workspace example policy --deciders operator`),
 `accept` and `dismiss` from any other principal return 403.
+A proposal’s context and brief include only the authenticated actor’s
+`decision_access`. The `owner` query parameter used to evaluate readiness
+cannot select a different identity for this policy check. A later decision
+rechecks the policy in the write transaction.
+
 The server resolves the workspace from its token configuration. Do not expose
 this bearer-only service beyond a trusted local boundary without TLS termination
 and your own access policy. CORS is disabled. Request bodies are limited to 1 MiB;
@@ -248,15 +269,49 @@ daymark --db restored.sqlite3 --workspace example export --output restored.json
 ```
 
 Backup uses SQLite's online backup API, including committed WAL data, and checks
-source integrity. Restore writes a new database and refuses to overwrite an
-existing path. Stop workers and writers before switching the active database;
-restoring delivered records can otherwise replay already performed external
-side effects. Keep backups and exports private (new files use mode 0600).
+the integrity of the copied snapshot. Restore writes a new database and
+refuses to overwrite an existing path. Stop workers and writers before the
+final backup for a switch. Restoring an earlier backup can make a reminder
+pending again even if the source already delivered it. Keep backups and exports private (new files use mode 0600).
+A reminder recorded as delivered, acknowledged or dismissed retains that
+outcome after archiving and restoring visibility. Archiving a retryable failed
+delivery cancels its future attempt. Its original result remains in the
+operation receipt and its attempt count and last error remain on the record.
 Logical snapshot import also validates entity references and preserves history;
 including prior operation hashes/results so identical write retries remain
 replays after restore. Conflicting duplicate event/operation identities must be
 rejected atomically. This is distinct from a complete SQLite backup. Compare synthetic snapshot readback
 before considering a restore verified. Do not use real household data in examples.
+
+### Move one workspace to a fresh file
+
+Use a workspace snapshot for this move. A database backup includes every
+workspace. With the local CLI, select the source and destination using
+`--workspace NAME`; an HTTP bearer token selects its own workspace. Check
+`GET /v1/identity` before exporting or importing over HTTP. The destination
+must use the same workspace name. A snapshot includes the entire workspace,
+including history and receipts from its other actors. It is suitable for a
+person's separate workspace on a shared machine.
+
+Set the destination's decider policy before granting service access. A
+fresh workspace allows any writer to accept or dismiss a proposal until
+you configure deciders. Move profiles separately using
+[named profile files](working-preferences.md#keep-more-than-one-way-of-working).
+
+Pause source writers and reminder workers before the final export. A pending
+reminder can become due and be delivered from both files if both workers run
+against the same exported state. Keep destination delivery disabled until
+you account for any source deliveries since export. The built-in recorder
+only records locally. Task claims retain their actor and original expiry.
+Coordinate release with the holder or wait for expiry before assigning the
+work again.
+
+In a two-workspace transfer over authenticated loopback HTTP, readback
+matched all five entities, six events and six operation receipts for the
+selected workspace. An import using the other credential failed. A competing
+claim saw a conflict, and the freshly configured destination refused the
+helper's proposal decision. After deliberate simultaneous activation, two
+local recorders processed the same pending delivery key, one per database.
 
 ## Upgrading between releases
 
@@ -331,9 +386,21 @@ this installation alone does not print a CLI schema upgrade notice. An untouched
 plain setting reads. Reading a guarded preference version requires the
 writable installation to commit first. Existing v0.5.0 connections can
 continue across installation.
-Its setting writes are unconditional, but each committed change advances
+A released v0.5.0 writer stayed open during an upgrade trial. After it changed
+the value five times, a version-1 write was refused and a native backup retained
+revision 6. Its setting writes are unconditional, but each committed change advances
 the revision checked by later candidate writes. Same-value writes and
 deletes of absent settings keep the current revision.
+
+A tagged v0.5.0 profile editor can discard settings it does not recognize.
+In a mixed-version trial a current client set `overbooked.include_focus=false`
+at revision 1. The older CLI added a shortlist and omitted the unfamiliar
+parameter from its write. Revision 2 correctly exposed the change. Replaying
+the original current-client operation returned its earlier result, and a
+separately saved named copy retained the intended value. Guarded undo refused
+to overwrite revision 2. Setting only the missing parameter with
+`--if-version 2` preserved the new shortlist at revision 3. A portable
+profile export uses `profile --saved NAME --json`.
 
 Use settings observations obtained after installation for guarded writes,
 and review any pre-installation change anew before reversing it. Installation

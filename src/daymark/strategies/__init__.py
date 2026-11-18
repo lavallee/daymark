@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from ..models import DomainError
+from ..models import DomainError, normalize_now
 
 KINDS = (
     "rank",  # choose and order what to offer
@@ -73,6 +73,8 @@ class Note:
     strategy: str
     text: str
     ids: list[str] = field(default_factory=list)
+    # A discussion batch can name only picks that survive every stage.
+    batch_limit: int | None = None
 
 
 @dataclass
@@ -88,6 +90,7 @@ class Advice:
     scope: str | None = None
     profile_source: dict | None = None
     context: str | None = None
+    as_of: datetime | None = None
 
     @classmethod
     def from_result(cls, data):
@@ -103,6 +106,7 @@ class Advice:
             profile_source=data["profile_source"],
             scope=data.get("scope"),
             context=data.get("context"),
+            as_of=normalize_now(data["as_of"]) if data.get("as_of") else None,
         )
 
     def ready_query(self) -> dict:
@@ -120,6 +124,7 @@ class Advice:
     def to_dict(self) -> dict:
         return {
             "profile": self.profile,
+            **({"as_of": self.as_of.isoformat()} if self.as_of is not None else {}),
             **({"profile_source": self.profile_source} if self.profile_source else {}),
             **({"scope": self.scope} if self.scope is not None else {}),
             **({"context": self.context} if self.context is not None else {}),
@@ -143,6 +148,7 @@ class Strategy:
     params: dict[str, Param] = field(default_factory=dict)
     needs: frozenset[str] = frozenset()  # beyond stored tasks: calendar, clock, llm, person
     reads: tuple[str, ...] = SNAPSHOT_READS  # ready and clock are always included
+    evidence_note: str = ""  # scope of the evidence, for detailed inspection
 
     def __post_init__(self):
         if self.kind not in KINDS or self.evidence not in EVIDENCE:
@@ -170,7 +176,8 @@ def has_external_setting(settings):
     from .builtin import BUILTINS
 
     names = {setting.partition("=")[0].partition(".")[0] for setting in settings}
-    return any(name in _REGISTRY or _plugin_entries(name) for name in names - BUILTINS.keys())
+    external = names - BUILTINS.keys()
+    return bool(external and (external & _REGISTRY.keys() or external.intersection(installed_plugins())))
 
 
 
@@ -252,6 +259,7 @@ def describe(name: str) -> dict:
         "kind": found.kind,
         "summary": found.summary,
         "evidence": found.evidence,
+        **({"evidence_note": found.evidence_note} if found.evidence_note else {}),
         "parameters": {
             key: {
                 "default": param.default,
@@ -440,19 +448,7 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
 
 
 def _review_projects(tasks, scope):
-    projects = [p for p in tasks.projects()["projects"] if p["status"] == "open"]
-    if scope is None or not projects:
-        return projects
-    # The projects view includes all member tasks, which may have distinct
-    # scopes. A scoped project review selects the project itself.
-    matched = set()
-    cursor = None
-    while True:
-        page = tasks.search(kind="project", status="open", scope=scope, limit=1000, after=cursor)
-        matched.update(p["id"] for p in page["items"])
-        cursor = page["next"]
-        if cursor is None:
-            return [p for p in projects if p["id"] in matched]
+    return [p for p in tasks.projects(scope=scope)["projects"] if p["status"] == "open"]
 
 
 def snapshot(
@@ -461,13 +457,7 @@ def snapshot(
     """Read ready picks and the additional views used by this profile."""
     filters = {"scope": scope, **({"context": context} if context is not None else {})}
     ready = tasks.ready(limit=READY_LIMIT, **filters)
-    opened = []
-    if "open" in reads:
-        opened = tasks.find(status="open", limit=None)
-        if scope is not None:
-            opened = [x for x in opened if (x["scope"] or "") == scope]
-        if context is not None:
-            opened = [x for x in opened if context in x["context_ids"]]
+    opened = tasks.find(status="open", limit=None, **filters) if "open" in reads else []
     agenda = tasks.agenda(days=0, **filters) if "waiting" in reads or "proposed" in reads else {}
     exploration = tasks.explore(scope=scope) if "exploration" in reads else {}
     if exploration and context is not None:
@@ -544,7 +534,7 @@ def _advise(tasks, requested, scope, context, source):
             if len(view.ready) == READY_LIMIT else len(view.ready)
         )
     advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope, context=context,
-                    profile_source=source)
+                    profile_source=source, as_of=view.now)
     if skipped:
         if _SERVICE_BUILTINS.get():
             message = ("Service advice uses built-in strategies. These saved stages could not run: "
@@ -576,6 +566,11 @@ def _advise(tasks, requested, scope, context, source):
         )
     for strategy, params in stages:
         strategy.apply(view, advice, params)
+    for note in advice.notes:
+        if note.batch_limit is not None:
+            eligible = set(note.ids)
+            note.ids = [pick["id"] for pick in advice.picks if pick["id"] in eligible][:note.batch_limit]
+            note.text += f" {len(note.ids)} offered for discussion in this batch."
     if advice.steps:
         # A later stage can narrow the picks after first-step supplied text.
         advice.steps = {
@@ -589,9 +584,8 @@ def _advise(tasks, requested, scope, context, source):
 def stored_profile(tasks) -> dict:
     """The workspace's chosen profile, or the plain one. Local stores only.
 
-    A saved profile can outlive what it names: a plugin is uninstalled, a
-    parameter is renamed. Such entries are left out and listed under
-    ``skipped`` so the workspace keeps working and the person can see why.
+    Unavailable stages appear in ``skipped``. Retired parameters appear under
+    ``unavailable_parameters`` beside the current effective settings.
     """
     from .preferences import select_profile
 
@@ -623,6 +617,6 @@ def store_profile(tasks, profile: dict) -> dict:
     writer = getattr(tasks.engine, "set_setting", None)
     if writer is None:
         raise DomainError("invalid", "Profiles are set on a local database")
-    profile = persistent_profile(validate_profile(profile))
+    profile = persistent_profile(validate_profile({k: v for k, v in profile.items() if k != "skipped"}))
     writer(*tasks._ws, SETTING, profile)
     return restore_profile(profile)

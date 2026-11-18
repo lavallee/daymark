@@ -5,8 +5,8 @@ deadlines, intentions, dependencies and suggestions distinct, so a new session
 can pick up a project without asking the person to reconstruct it. It runs on
 one SQLite file and needs no account or model.
 
-A venue deposit has a deadline. Drafting the invitation is a plan. Sending it
-must wait for approval of the draft. An idea for a poster is still a suggestion.
+A venue deposit has a deadline. Drafting the invitation is a plan. Approving it
+must wait until someone has drafted it. An idea for a poster is still a suggestion.
 Here is how that looks in Daymark.
 
 ## Try it in an empty folder
@@ -107,8 +107,9 @@ epics, milestones that work counts toward, a goal it serves, and fields of your
 own (points, cost, risk). None of it is required, and nothing about a project
 forces a method on it.
 
-Moving house is a few phases and one date that matters (each example starts from
-a fresh `daymark init` with `DAYMARK_TZ=Europe/London`, and runs as shown):
+The following transcripts use the development checkout. Each starts with a
+fresh `daymark init` and `DAYMARK_TZ=Europe/London`. Moving house has several
+phases and one date that matters.
 
 ```console
 $ daymark project add "Move house" --id move --preset event --target 2030-06-28
@@ -208,8 +209,8 @@ each strategy.
 
 ## Install from source
 
-The Python import is `daymark`; the distribution is `daymark-core`. The current
-release is 0.5.0. Package registry publication is not yet promised. Requires
+The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.5.0. This checkout identifies itself as 0.6.0.dev0.
+Use `daymark --version` to tell which CLI your agent will run. Both require
 Python 3.11 or newer.
 
 The quickstart above installs the tagged release. To install from a checkout:
