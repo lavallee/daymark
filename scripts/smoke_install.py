@@ -7,7 +7,12 @@ from importlib.metadata import version
 from importlib.util import find_spec
 from pathlib import Path
 
-from daymark import Client, DomainError, Store, __version__
+import daymark
+from daymark import Client, DomainError
+
+assert set(daymark.__all__) <= set(dir(daymark))
+assert "daymark.models" not in sys.modules
+from daymark import Store, __version__
 
 assert version("daymark-core") == __version__
 assert subprocess.check_output(

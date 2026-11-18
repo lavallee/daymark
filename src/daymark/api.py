@@ -325,11 +325,16 @@ def create_router(store: Any) -> APIRouter:
         return _invoke(store.list, identity(request).workspace, kind=kind)
 
     @router.post("/search", operation_id="daymark_v1_search")
-    def search(body: SearchRequest, request: Request) -> Any:
+    def search(body: SearchRequest, request: Request, projection: Literal["line", "entity"] | None = None,
+               context: str | None = Query(None, min_length=1, max_length=128)) -> Any:
         actor = identity(request)
         filters = body.model_dump(exclude={"claimed", "now"})
         if body.claimed:
             filters.update(claimed_by=actor.principal, now=body.now)
+        if projection is not None:
+            filters["projection"] = projection
+        if context is not None:
+            filters["context"] = context
         return _invoke(store.search, actor.workspace, **filters)
 
     @router.post("/query", operation_id="daymark_v1_query")
@@ -346,6 +351,7 @@ def create_router(store: Any) -> APIRouter:
         next_move: str | None = Query(None, max_length=20),
         scope: str | None = Query(None, max_length=100),
         context: str | None = Query(None, min_length=1, max_length=128),
+        project: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
         actor = identity(request)
@@ -357,6 +363,7 @@ def create_router(store: Any) -> APIRouter:
             owner=actor.principal if mine else owner,
             next_move=next_move,
             scope=scope, **({"context": context} if context is not None else {}),
+            **({"project": project} if project is not None else {}),
             **({"brief": True} if brief else {}),
         )
 
@@ -367,11 +374,14 @@ def create_router(store: Any) -> APIRouter:
         next_move: str | None = Query(None, max_length=20),
         scope: str | None = Query(None, max_length=100),
         context: str | None = Query(None, min_length=1, max_length=128),
+        project: str | None = Query(None, min_length=1, max_length=128),
         now: str | None = Query(None, max_length=40),
     ) -> Any:
         actor = identity(request)
         return _invoke(store.explain_ready, actor.workspace, now=now, limit=limit,
-                       owner=actor.principal if mine else owner, next_move=next_move, scope=scope, **({"context": context} if context is not None else {}))
+                       owner=actor.principal if mine else owner, next_move=next_move, scope=scope,
+                       **({"context": context} if context is not None else {}),
+                       **({"project": project} if project is not None else {}))
 
     @router.get("/agenda", operation_id="daymark_v1_agenda")
     def agenda(

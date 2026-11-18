@@ -10,10 +10,14 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: macos-latest
+            python-version: "3.14"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -24,7 +28,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --frozen --dev
       - run: uv run ruff check src tests --output-format=github
-      - run: uv run pytest -q
+      - name: Run the test suite
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then ulimit -n 256; fi
+          uv run pytest -q
       - run: uv run python scripts/build_walkthrough.py --check
       - run: uv build
       - run: uv run python scripts/check_sdist.py dist/*.tar.gz
@@ -41,6 +49,12 @@ jobs:
               "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/scripts/smoke_install.py"
             )
           done
+      - name: Exercise the installed wheel with the official MCP client
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          uv run --script "$GITHUB_WORKSPACE/scripts/smoke_mcp.py" --daymark "$RUNNER_TEMP/daymark-smoke-whl/bin/daymark"
       - name: Verify installed HTTP client and service
         shell: bash
         run: |

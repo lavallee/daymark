@@ -480,6 +480,23 @@ service returned its full 14,252-byte schema and the client declined the
 unsupported scoped startup before reading task data. Separate scoped
 extension queries returned the matching task on both services.
 
+A project review used two studio projects in a workspace of 30 projects,
+each with a 4-KB description. The client extension previously received the
+whole 144,167-byte portfolio, then made a second search to choose the two
+projects. The scoped portfolio returned 9,704 bytes in one project read.
+The initial capability check is shared with other filters on that client.
+Cross-scope members and blockers still contributed to their project's counts.
+
+In a queue with 1,012 higher-priority nonmembers, the first 1,000 ready
+tasks contained no member of the requested project. `ready --project
+press --limit 2` returned two members. Its explanation counted all 13
+eligible members and three proposals. In an installed-wheel trial a
+coordinator moved a delegated member to another project after the worker
+inspected it. The project-bound take returned empty. Moving the member back
+permitted a fresh operation to claim it. The original empty receipt and the
+later successful receipt each replayed their original result after another
+reassignment.
+
 A separate two-connection test completed a project's only task between its
 ready read and project review. Before grouping the local reads, the same
 response could offer the task and ask why its project had no action. With one
@@ -638,3 +655,45 @@ same database because two equivalent UTC encodings compared differently.
 Regression cases now cover preserved terminal outcomes, cancelled retries,
 receipt replay on restart and transfer, and atomic refusal when an incoming
 attempt count actually differs.
+
+## Returning after an interruption
+
+In a controlled human task, Trafton and colleagues found that participants
+who had eight seconds to prepare for an interruption resumed faster than
+those interrupted immediately. Leroy and Glomb studied a different outcome.
+When people anticipated resuming under time pressure, a short return plan
+helped them concentrate on the intervening task. Both studies concern the
+same person working across an interruption. How well another worker can
+recover a recorded stopping point was a separate question for our trial.
+[Trafton et al. (2003)](https://gregtrafton.com/papers/preparing.to.resume.pdf) ·
+[Leroy and Glomb (2018)](https://pubsonline.informs.org/doi/abs/10.1287/orsc.2017.1184)
+
+We gave fresh Codex and Claude Code sessions read-only access to three
+synthetic workspaces. Each request named an exact source. Each workspace
+contained two tasks titled “Sample proof” and 50 subsequent filing edits.
+Four edits touched the requested task. The unrelated task contained a
+plausible but wrong instruction. Each host ran once per case, then once
+again with the same prompt and fixture recipe after revising tool guidance.
+
+| What the returning worker had | What the hosts recovered | MCP calls before → after (Codex / Claude) |
+| --- | --- | --- |
+| A release note with the instructions at the end of 3,976 characters, followed by five filing notes | Sheet 6 measured 14 mm with gauge K-17. Align the violet overlay at F3 on sheet 7. | 3 / 6 → 4 / 6 |
+| A release instruction subsequently corrected by the day desk | Seal Q-74 was verified. Compare clear stencil D at mark 18. The copper stencil B instruction was withdrawn. | 6 / 11 → 1 / 7 |
+| A live claim and no physical progress notes | Night shift held the claim. Both hosts reported that the stopping point was unknown. Neither assigned the other task’s orange gauge to this one. | 21 / 26 → 6 / 16 |
+
+Originally, one of six sessions used the source on its first call. The other
+five treated the source or its prefix as a possible scope. Three tried to
+filter workspace activity by task ID and then read the broader feed. With
+explicit instructions for a known source and an error hint pointing to item
+detail, all six fresh sessions opened the exact source first. Claude still
+read other records. On the corrected task, its wording implied the mark-18
+comparison had yet to be performed. The evidence only established that no
+result had been recorded. All twelve native exports were unchanged after
+the reads. These are individual tool-use traces, not comparative timing or
+accuracy measurements.
+
+A separate Python client restarted after 50 edits to the requested task
+itself and seven newer filing notes. The release was outside the ten recent
+events in full detail. Three brief pages and one exact note read recovered
+the complete 4,005-character handoff and its author. A workspace checkpoint
+saved before release also recovered all 59 subsequent events across pages.

@@ -31,6 +31,7 @@ def test_addressable_entity_project_goal_and_receipt_ids_round_trip():
                 "https://sample.invalid", "sample", transport=httpx.MockTransport(forward)
             ) as client:
                 remote = Tasks(client)
+                literal = local.add("Literal slash in the key", id="tray/07")
                 for id in ("crate/07", ".", "..", "tray%2F07", "tray#?é", "/shelf/"):
                     saved = remote.add("Check synthetic sample", id=id, op="seed/" + id)
                     noted = remote.note(id, "Checked against sample.", op="review/" + id)
@@ -39,6 +40,7 @@ def test_addressable_entity_project_goal_and_receipt_ids_round_trip():
                     assert client.receipt("review/" + id) == noted
                     assert client.tree(id) == store.tree("room", id)
                     assert remote.note(id, "Checked against sample.", op="review/" + id) == noted
+                assert client.get("tray/07") == literal
                 local.project("Inspect a crate", id="project/07")
                 local.goal("Finished sample", id="goal/07")
                 assert client.plan("project/07") == local.plan("project/07")

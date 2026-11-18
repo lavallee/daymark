@@ -63,3 +63,54 @@ subsequently left the accepted work intact. The studio had three events and
 the reference workspace two. A scope within a shared workspace does not
 give an unfiltered primer this separation. A local database owner can
 access both workspaces. HTTP workspace selection follows the credential.
+
+## Reconcile one external task
+
+We downloaded Todoist’s linked sample CSV, read its 14 headers with
+Python’s CSV reader, and wrote two synthetic files using those headers.
+Two rows had the same task name and label. The second file reversed their
+order, renamed one task and omitted a third. The sample supplies columns
+for scheduled date and deadline. Its author and assignee IDs identify
+people. It has no task-ID column. Todoist’s project export omits completed
+tasks and the start date of a recurring schedule. A missing row calls for
+checking the original. A row containing `every year` can leave the intended
+first occurrence unknown. [Todoist CSV format and export limits](https://www.todoist.com/help/account-and-billing/security/import-or-export-a-project-as-a-csv-file-in-todoist-YC8YvN)
+
+In our trial the person supplied the original task ID separately, confirmed
+May 8 as the plan and May 10 as the cutoff, and wanted a proposal. These
+commands use an existing local label named `proof` and a synthetic source.
+
+```sh
+daymark propose "Review cover" --source todoist-studio:task:fixture-41 \
+  --plan 2030-05-08 --due 2030-05-10 --label proof --op capture-41
+daymark show --source todoist-studio:task:fixture-41 --brief --json
+```
+
+The proposal stayed outside ready. An unknown local label was refused.
+The assignee in the external project remained there. An agreed local
+assignment would also need the intended person’s Daymark identity.
+Resolve a rename by the source, review the current wording and edit that
+record. Reusing the capture operation with different wording conflicted.
+Replaying the original request after the rename, approval and restart
+returned the original receipt and added no event. The previously missing
+task remained proposed. Todoist documents an ID-based link as
+`todoist://task?id=ID`. [Todoist developer documentation](https://developer.todoist.com/api/v1/)
+
+For Things, a link copied from a particular to-do can supply its ID. In
+the trial a different Things task with the same opaque ID occupied its own
+source namespace. A `show` link can also identify a list, and an `add`
+link describes a requested creation. Its parameters do not establish that
+the task was created or that its requested tags existed. A `when` with a
+time can also schedule a reminder. Confirm what the person wants moved and
+which app will deliver that reminder. We parsed synthetic URLs without
+launching Things or accessing either app’s accounts. [Things URL scheme](https://culturedcode.com/things/support/articles/2803573/)
+
+Two fresh MCP hosts then received a request to rename the existing proposal.
+Claude Code changed only its title, but incorrectly reported the proof label
+absent after reading a brief that omitted labels. Codex read full detail,
+identified the label and truthfully reported that its host required approval
+for the edit. After adding bounded label and context IDs to the brief, we
+repeated the request in fresh sessions. Both reported the existing label
+correctly. Claude again made one title edit. Codex again reported the
+approval requirement and made no write. The similarly named proposal and
+the missing CSV row's proposal stayed unchanged in all four runs.

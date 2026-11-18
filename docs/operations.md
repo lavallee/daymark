@@ -13,7 +13,11 @@ This guide covers the engine commands, the service and the worker. The everyday
 verbs (`add`, `ready`, `done` and the rest) are in the [agent guide](agents.md).
 On POSIX, the CLI creates a new database with mode 0600 before SQLite opens
 it. Its journal and shared-memory files inherit the database permissions.
-Backup and restore check the completed copy before publishing its final name.
+Backup checks the completed copy and stores it in SQLite's rollback-journal
+mode so an offline, read-only reader needs no sidecar files. The live source
+retains its journal mode. Opening a restored path for writing with Daymark
+selects WAL again. Applications that own their SQLite connection can choose
+their own journal mode after restoration.
 An interrupted copy can leave a private `.daymark-backup-*` temporary file.
 On filesystems without hard links, the command reserves the new destination
 and commits the checked SQLite copy there. A hard interruption of this
@@ -22,6 +26,11 @@ A file already at the destination is preserved.
 
 A path-owned database runs in SQLite WAL mode, so `-wal` and `-shm` files
 appear beside it; back up with `daymark backup`, not by copying the main file.
+
+Use `daymark where --json` to inspect the selected path without opening SQLite.
+The everyday task views and `workspaces` require an existing Daymark database.
+The low-level `list` command retains its legacy create-on-open behavior when
+given a new filename. Use `where` for preflight and `init` for deliberate setup.
 
 The engine write commands require a stable `--operation-id`; updates and actions require
 `--expected-version` from the last read. Creation uses expected version zero.

@@ -20,6 +20,10 @@ In an unfamiliar directory, `daymark where --json` reports the selected
 database, selection rule and whether the file exists. It opens no database
 and makes no network request. If there is no database, use `daymark init`
 for a per-user database or `daymark init --here` for the current folder.
+Ordinary task views return `no_database` for a missing selected file or an
+unrelated SQLite database. An initialized workspace with no matching tasks
+returns an empty result. For two agents starting together, [verify their
+read-only connections](mcp.md#connect-two-agents-in-five-minutes).
 
 Set `--tz` or `DAYMARK_TZ` to the person's IANA timezone when their local
 day differs from the host's. An unrecognized explicit zone gives an error.
@@ -31,7 +35,8 @@ guide. Titles are limited to 160 characters plus an ellipsis. Use an ID with
 `show` for the complete record. Local sessions identify the database and
 timezone. An HTTP session uses the workspace and actor bound to its credential.
 The ready count includes work claimed by the current actor. The full MCP primer gives native tool arguments.
-For an exact ID or source, a direct `show` can answer the first question.
+For an exact source inside a named scope, use `find --source REF --scope NAME`.
+A direct `show` reads the full record when that is what the person requested.
 Memories and settings are shared within the workspace. Keep a personal
 or time-limited display choice with the current request or its authorized
 host until the person agrees to share it.
@@ -71,13 +76,14 @@ Use a source reference for the related Daymark task.
 
 | Command | Answers |
 | --- | --- |
-| `daymark ready [-n N] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. |
+| `daymark ready [-n N] [--project ID] [--move person\|answer\|agent] [--scope NAME \| --unscoped]` | What can be acted on now, most pressing first. A project selects its explicitly linked tasks across scopes. |
+| `daymark --as WORKER take --project ID` | Claim one unclaimed, ready, explicitly delegated member of this project in one transaction. Scope and context filters can narrow it further. |
 | `daymark agenda [--days N] [--deadlines]` | Overdue, today, each coming day, waiting, proposed. With `--deadlines`, show only accepted live tasks whose hard deadline is overdue, today or within the horizon. |
 | `daymark show ID` | One entity with its dates, blockers, dependents, children, reminders, notes and history. For tasks it explains each fact keeping the item out of this actor’s ready list. |
 | `daymark find --status proposed` | Pending task proposals. Use `ready --move answer` for tasks awaiting a decision. |
 | `daymark find [TEXT] [--kind K] [--status S]` | Title and description search. Add `--archived` for archived records only. |
 | `daymark workspaces` | The workspaces in this database, and which one you are in. |
-| `daymark projects` | Every project with its roll-up: done, overdue, date span, milestones. |
+| `daymark projects [--scope NAME]` | Projects with done, overdue, date span and milestones. A scope selects projects by their own scope and counts all their members. |
 | `daymark plan PROJECT` | One project as a board: each stage with its tasks in the project's order, dates, owners, and what blocks them from outside. |
 
 If a queue looks unexpectedly short, repeat `ready` with `--explain` and
@@ -91,6 +97,16 @@ Each hit gives an ID, title, kind, status, version and any scope. Read a full
 record with `show ID`. When the page returns `next`, repeat the search with
 the same filters and `--after ID`. Results follow ID order within this
 workspace. Newly inserted records before a saved cursor appear on a new search.
+
+Plain and paged searches match title and description using the same Unicode
+case folding. For example, `STRASSE` finds `Straße`. Plain text keeps dates,
+live claims and other listing details. An ordinary `find TEXT --json`
+returns an array of matching records. Add `--page` for compact hits and a
+continuation. Python’s `tasks.find(text, limit=3)` returns up to three full
+stored records. The current service selects their IDs and reads the result
+in one snapshot. A rare substring can still require scanning the candidate
+titles and descriptions. An older server can require the client to filter
+a larger entity query.
 
 Use `daymark find TEXT --archived` to recover an archived task or add
 `--kind memory` for a retired fact. This implies `--page` and marks every
@@ -270,7 +286,7 @@ should treat it as read-only. Do not set or clear it without the person.
 
 ## Ways of working
 
-`daymark ready` lists eligible work in its ordinary order, 20 rows by default. A
+`daymark ready` lists eligible work in its ordinary order, 20 rows by default. For an agent reading a queue, `ready --brief --json` returns short titles, IDs, versions and ordering reasons. The MCP ready view with `json=true` gives the same rows in `items`. Open a selected task with `show ID --brief` for notes. A
 workspace can also have a **profile**, a bundle of strategies that shapes what
 you offer the person:
 
@@ -618,9 +634,11 @@ measures 14 mm with gauge K-17. On sheet 7 align the overlay at F3. The
 inner margin is still unmeasured.” Use `note ID TEXT` while the work is
 underway so an unexpected stop still leaves a trace.
 
-Returning to one task? Start with `show ID --brief` or `show --source REF
---brief`. Read earlier notes with the returned `--before-note` cursor and
-open a truncated note with `--note NOTE_ID`. Check later corrections before
+Returning to one task? Start with `show ID --brief` or
+`show --source REF --brief`. Follow the printed older-note and full-note
+reads to recover evidence. In service mode, append the printed `show`
+arguments to your original service command so the endpoint and bearer
+credential still select the same workspace. Check later corrections before
 acting. Report who holds the claim separately from what the notes say was
 checked. If the record gives no stopping point, say so and ask the worker
 or inspect the referenced artifact.
@@ -694,8 +712,10 @@ gets a conflict. In MCP, call `daymark_act` with
 `daymark show ID --brief` returns the current version, readiness, live claim,
 next move and dates. It previews the title, description and three latest notes
 at up to 240 characters each. Each note carries its original ID, author and
-timestamp. The view shows up to five unresolved dependency IDs and five
-active child IDs, with counts for anything omitted.
+timestamp. The view shows up to five unresolved dependency IDs, five active
+child IDs and the first three IDs each for labels and contexts. The
+`omitted` counts identify additional entries. Use full `show ID --json`
+to verify fields outside the brief before reporting them as absent.
 
 When a task’s outstanding prerequisite or unfinished child leads back to the
 task, detail can also show a circular wait. For example, `bind → child collate

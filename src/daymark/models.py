@@ -13,17 +13,7 @@ from dateutil.rrule import rrulestr
 from dateutil.tz import datetime_exists, resolve_imaginary
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-
-class DomainError(ValueError):
-    """A domain failure with a stable code.
-
-    ``details`` names offending fields and rules only; it never echoes input values.
-    """
-
-    def __init__(self, code: str, message: str, details: list[str] | None = None):
-        self.code = code
-        self.details = details or []
-        super().__init__(message)
+from daymark.errors import DomainError
 
 
 def require_active_round(record, action):

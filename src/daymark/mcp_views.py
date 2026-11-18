@@ -64,6 +64,8 @@ def read_view(tasks, args, *, read_only=False):
         }
         if "context" in args:
             filters["context"] = args["context"]
+        if "project" in args:
+            filters["project"] = args["project"]
         if args.get("explain"):
             data = tasks.explain_ready(**filters)
             if structured:
@@ -92,7 +94,7 @@ def read_view(tasks, args, *, read_only=False):
                 return StructuredView(page)
             return render.search_text(page, mcp=True)
         return render.listing(
-            tasks.find(args.get("text"), limit=args.get("limit", 50)), now, "No matches."
+            tasks.find(args.get("text"), limit=args.get("limit", 50), brief=True), now, "No matches."
         )
 
     if view == "show":
@@ -109,7 +111,7 @@ def read_view(tasks, args, *, read_only=False):
         if args.get("brief") or "before_note" in args:
             data = tasks.brief(id, before_note=args.get("before_note"), source=source)
             data = _proposal_detail(data, data["status"], read_only)
-            return StructuredView(data) if structured else render.brief_text(data, timezone=tasks.timezone)
+            return StructuredView(data) if structured else render.brief_text(data, timezone=tasks.timezone, mcp=True, source=source)
         if "note" in args:
             data = tasks.read_note(id, args["note"], source=source)
             return StructuredView(data) if structured else render.note_text(data)
@@ -199,7 +201,7 @@ def read_view(tasks, args, *, read_only=False):
         return render.plan_text(data, now, by=args.get("by") or "stage")
 
     if view == "projects":
-        data = tasks.projects()
+        data = tasks.projects(scope=args.get("scope"))
         if structured:
             return StructuredView(
                 {

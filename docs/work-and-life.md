@@ -110,6 +110,15 @@ nothing. When the issue reopened, recording the new observation held the
 booking again. At both transitions the agent had to check the issue and
 record the change. Booking the slot remained its own action.
 
+“Keep the cover review as a possibility” poses a different problem. A
+Todoist project export can contain two identically named tasks with
+different schedules. Ask which original task the person means. With its
+ID and their confirmation, Daymark can hold a proposal with Wednesday as
+the intended workday and Friday as the deadline. If the person later
+renames it, the same source finds the proposal again. The other cover
+review and its reminders can stay in Todoist.
+[Worked CSV and Things example](research/capture-clarification.md#reconcile-one-external-task)
+
 For a recent test of startup, handoff and task selection, see the
 [agent journeys](research/agent-journeys.md).
 

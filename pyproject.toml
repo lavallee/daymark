@@ -42,6 +42,7 @@ include = [
     "src/daymark",
     "tests",
     "docs",
+    "deploy",
     "skills",
     "scripts",
     ".github/workflows",

@@ -3,42 +3,104 @@
 Daymark gives a client six tools over stdio. Start with `daymark_prime` to see the
 database, workspace, actor, local date and current work. Use `{"brief":true}` when
 the client already knows the commands. The full startup guide uses
-the tools this client can call. Pass a named scope on the first read. Use
-`show` directly when the person supplied a record ID or exact source.
+the tools this client can call. Pass a named scope on the first read. For an exact source inside that scope, use `find` with both `source` and
+`scope`. A direct `show` reads the full record.
 
-## Connect a workspace
+## Connect two agents in five minutes
 
-Choose an absolute path to the database. Create it once with
-`daymark --db /path/to/tasks.sqlite3 init`. Supply that same path in your
-client configuration so its working directory cannot change which tasks it
-opens. Give each cooperating agent its own actor name so claims distinguish
-them.
+The walkthrough uses the development CLI (`0.6.0.dev0`). The tagged
+`0.5.0` serves six tools and prints its onboarding snippet. The read-only
+MCP switch, `where`, and `onboard --check` require the development version.
+If using a source checkout, start there:
 
-```json
-{
-  "mcpServers": {
-    "daymark": {
-      "command": "daymark",
-      "args": [
-        "--db", "/path/to/tasks.sqlite3",
-        "--workspace", "sample-project",
-        "--as", "sample-reviewer",
-        "--tz", "UTC",
-        "mcp"
-      ]
-    }
-  }
-}
+```sh
+uv sync
+. .venv/bin/activate
+command -v daymark
+daymark --version
+daymark mcp --help
 ```
 
-If the host cannot find `daymark`, set `command` to the installed executable's
-absolute path. Keep the arguments as separate list entries. A client can also
-start `daymark --url URL --token-env DAYMARK_TOKEN mcp` with the optional
-service dependencies installed. The HTTP credential selects the workspace and
-the server records its authenticated principal. Prime reports the workspace
-and actor confirmed by a current service, even when local `--workspace` and
-`--as` labels differ. `daymark where` explains the selected connection
-without contacting the service.
+Use the reported absolute executable path for both editors. Change to
+the project directory in this shell for the following steps.
+
+1. **Review before setup.** Run `daymark where --json` to see how a database
+   would be selected. It leaves the database unopened. Run `daymark onboard` to preview the
+   project instructions. Read existing `AGENTS.md` and `CLAUDE.md` files before
+   installing the snippet. If Beads owns code issues and a board owns approvals,
+   keep those assignments and specify which commitments belong in Daymark.
+   `daymark onboard --check AGENTS.md` checks only that file and returns 1
+   when Daymark instructions are missing or outdated.
+2. **Choose one database.** For a new project, run `daymark init --here`
+   once. It creates `.daymark/daymark.sqlite3`. For an existing database,
+   use its absolute path. From the project directory, verify the first
+   actor’s selection with the following command. Repeat it with
+   `--as sample-planner` for the second actor.
+
+   ```sh
+   db="$(pwd -P)/.daymark/daymark.sqlite3"
+   daymark --db "$db" --workspace sample-project --as sample-reviewer where --json
+   ```
+
+   Both reports should have `file_exists: true`, the same database and
+   workspace, and distinct actors. Compare `resolved_database` if a symlink is
+   involved. `file_exists` checks presence; the primer checks that Daymark
+   can read the database. If the selected file is missing, correct the path. To intentionally
+   create a new file at a chosen path, use `daymark --db "$db" init`.
+3. **Open two read-only sessions.** Use the launch configuration below for
+   the first agent. Replace the executable and database placeholders with
+   absolute paths; a desktop editor may use a different PATH and working
+   directory. Copy the configuration for the second agent, changing only
+   `sample-reviewer` to `sample-planner`. Keep each argument separate. If your
+   host uses another configuration format, copy the executable and argument
+   list into its stdio server settings.
+
+   ```json
+   {
+     "mcpServers": {
+       "daymark": {
+         "command": "/absolute/path/to/daymark",
+         "args": [
+           "--db", "/absolute/path/to/project/.daymark/daymark.sqlite3",
+           "--workspace", "sample-project",
+           "--as", "sample-reviewer",
+           "mcp", "--read-only"
+         ]
+       }
+     }
+   }
+   ```
+
+4. **Verify from inside each agent.** List the tools: both should see
+   `daymark_prime` and `daymark_view`. Call `daymark_prime` with
+   `{"brief":true}` in each session. Compare the reported database, workspace
+   and actor again. This confirms the launched processes actually received
+   the intended arguments, even if there are zero tasks. Paths are local to a host.
+   For agents on different machines, use the same authenticated service. When a person wants
+   an agent to change tasks, remove `--read-only` for that agent and reconnect.
+   A writable MCP launch can initialize a previously missing file.
+   To adopt the snippet, use `daymark onboard --write AGENTS.md` or
+   `daymark onboard --write CLAUDE.md` for each file that needs it.
+
+### Connecting to an HTTP workspace
+
+Install the `client` extra in the environment running the MCP executable.
+For a checkout, `uv sync --extra client` includes it. Configure the launch
+arguments as `--url URL --token-env DAYMARK_TOKEN mcp --read-only` and make
+the bearer token available in that process’s environment. Give cooperating
+agents credentials for distinct principals in the same workspace.
+
+`daymark --url URL where --json` reports the endpoint without contacting
+it. A successful handshake or tool list also proves only that the local
+MCP process started. Call `daymark_prime {"brief":true}` to verify that
+a current HTTP service accepts the credential and confirms the workspace
+and actor. Local `--workspace` and `--as` labels do not select HTTP identity.
+The primer reports the endpoint origin and authenticated workspace. If a proxy
+serves several base paths, compare the full base URLs in the two host configurations.
+Only the service operator can confirm the underlying database file. If prime reports
+`unauthenticated`, correct the host’s credential and restart the process.
+A rejected `ready` limit can be corrected on the same connection by passing
+a value between 1 and 1,000.
 
 An initial note on an ordinary authenticated capture records the principal
 handling that write. Separate note operations follow the same rule. Raw API
@@ -59,15 +121,15 @@ authority. Older HTTP services must confirm support before a filtered primer
 can run. If the service lacks it, keep the same scope on the ready and
 memory-find views.
 
+For a portfolio, call `daymark_view` with `{"view":"projects","scope":"studio"}`.
+The project itself must belong to the selected scope. Its rollup still
+counts all member tasks, including ones blocked by a prerequisite elsewhere.
+When a linked lead or goal belongs elsewhere the structured result identifies
+its role under `outside_scope` and omits its identity.
+
 ## Give a reviewer a read-only connection
 
-For questions such as “which task is blocking the shipment?”, configure the
-MCP process with `--read-only` after `mcp`. Keep the database and workspace
-arguments before the subcommand. For example:
-
-```json
-{"command":"daymark","args":["--db","/path/to/tasks.sqlite3","--workspace","sample-project","mcp","--read-only"]}
-```
+Place `--read-only` after the `mcp` subcommand as in the setup above.
 
 The client discovers `daymark_prime` and `daymark_view`. It can inspect tasks,
 history, search pages and advice. Direct calls to a write name, including a
@@ -76,7 +138,9 @@ prime identify the session as read-only.
 
 Locally, this opens an existing database with SQLite `mode=ro` and requires
 the current schema. Separate read calls see committed changes from other
-workers. An HTTP-backed session accepts the same switch. Its Daymark client
+workers. SQLite may create `-wal` and `-shm` sidecar files in a writable
+directory during a read-only session. To inspect the selected path without
+opening SQLite, use `where`. [SQLite read-only WAL behavior](https://www.sqlite.org/wal.html#read_only_databases). An HTTP-backed session accepts the same switch. Its Daymark client
 permits GETs and the read-only search, query and advice POST routes. The HTTP credential’s
 authority in other processes and the host’s other configured tools are
 configured separately.
@@ -124,6 +188,10 @@ A successful `take`, `claim` or `release` also includes `claimed_by` and
 task without picking an ID first, call
 `daymark_act {"action":"take","scope":"workshop","op":"shift-01"}`.
 An empty take returns `{"task":null}` in structured output.
+For an assignment bound to one project, supply `"project":"press"` on the
+take itself. The service checks membership while claiming, and the receipt
+identifies the selected project. If a coordinator moves a task before the
+claim, it is no longer a candidate for the old project.
 
 To assign responsibility, send `assignee` on `daymark_add` or `daymark_edit`.
 It accepts an existing person or principal ID, or an exact display name
@@ -168,6 +236,11 @@ Clients using the 2024-11-05 or 2025-03-26 revision receive the JSON in `content
 For `explore`, scope selects conditions. Linked work in other scopes still counts toward gaps and blocked conditions. A condition’s optional `outside_scope` reports aggregate links without identifying those other records.
 
 A ready row carries its ID, title, current version and the reason for its place.
+For “What can I do on the print project?”, use
+`{"view":"ready","project":"press","json":true}`. Add `"explain":true` for
+exact counts and examples of project members being held. Scope and context
+can narrow the selection further. A task linked only as a child of a project
+member has its own project membership.
 Supply `context` with a context entity ID to filter ready work, its explanation, advice or the agenda.
 Capture and edit accept `contexts`, an array of context IDs. When advice holds
 ready work back, the text includes a ready-view call for the same connection.

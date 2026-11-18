@@ -3,26 +3,9 @@
 from __future__ import annotations
 
 from typing import Any, Self
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from .models import DomainError, SourceRef
-
-
-class ClientError(Exception):
-    """Safe failure containing a status code, never server bodies or credentials."""
-
-    def __init__(self, status_code: int | None = None) -> None:
-        self.status_code = status_code
-        self.code = {401: "unauthenticated", 403: "forbidden", 404: "not_found", 409: "conflict", 422: "invalid"}.get(
-            status_code, "remote"
-        )
-        super().__init__(f"Daymark request failed ({status_code or 'transport'})")
-
-
-    @property
-    def uncertain(self) -> bool:
-        """A transport or service failure can hide a committed operation."""
-        return self.status_code is None or self.status_code >= 500
+from .errors import ClientError, DomainError
 
 
 class Client:
@@ -40,7 +23,8 @@ class Client:
             ) from None
 
         if not token:
-            raise ValueError("Bearer credential required")
+            raise DomainError("unauthenticated", "A bearer credential is required",
+                              ["For CLI or MCP, set the environment variable named by --token-env (default DAYMARK_TOKEN)."])
         self.read_only = read_only
         self.legacy_search = False
         self._legacy_orientation = False
@@ -71,7 +55,16 @@ class Client:
         }:
             raise DomainError("forbidden", "This read-only connection cannot send a write")
         try:
-            result = self._http.request(method, path, **kwargs)
+            target = path
+            if params := kwargs.pop("params", None):
+                # Older HTTPX versions treat a literal %2F in a parameter as
+                # pre-escaped. Encode once so imported IDs remain distinct.
+                query = urlencode({
+                    key: str(value).lower() if isinstance(value, bool) else value
+                    for key, value in params.items()
+                })
+                target = httpx.URL(path).copy_with(query=query.encode("ascii"))
+            result = self._http.request(method, target, **kwargs)
             result.raise_for_status()
             return result.json()
         except httpx.HTTPStatusError as exc:
@@ -83,17 +76,17 @@ class Client:
         self, operation_id: str, action: str, payload: dict[str, Any], expected_version: int,
         *, attribute_capture_note: bool = False,
     ) -> Any:
-        return self._request(
-            "POST",
-            "/v1/operations",
-            json={
-                "operation_id": operation_id,
-                "action": action,
-                "payload": payload,
-                "expected_version": expected_version,
-                **({"attribute_capture_note": True} if attribute_capture_note else {}),
-            },
-        )
+        body = {
+            "operation_id": operation_id,
+            "action": action,
+            "payload": payload,
+            "expected_version": expected_version,
+            **({"attribute_capture_note": True} if attribute_capture_note else {}),
+        }
+        if action == "take":
+            return self._selected_request("POST", "/v1/operations", project=payload.get("project"),
+                                          context=payload.get("context"), json=body)
+        return self._request("POST", "/v1/operations", json=body)
 
     def create(self, operation_id: str, entity: dict[str, Any]) -> Any:
         return self.execute(operation_id, "create", entity, 0)
@@ -121,14 +114,20 @@ class Client:
         return self._request("GET", "/v1/entities", params={"kind": kind} if kind else {})
 
     def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
-               claimed=False, archived=False, now=None, source=None):
-        if type(archived) is not bool:
-            raise DomainError("invalid", "archived must be true or false")
-        from .search import validate_filters
+               claimed=False, archived=False, now=None, source=None, context=None, projection=None):
+        from .search import validate_claim_filters, validate_filters
 
         validate_filters(text, kind, status, scope, after, limit)
-        if archived and claimed:
-            raise DomainError("invalid", "Choose either archived records or live claims")
+        validate_claim_filters(kind, archived, claimed)
+        if projection not in (None, "line", "entity"):
+            raise DomainError("invalid", "Search projection must be line or entity")
+        if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
+            raise DomainError("invalid", "Context must be a nonempty entity ID of at most 128 characters")
+        params = self._params(context=context, projection=projection)
+        if params and not self.supports_search_options(*params):
+            raise DomainError("invalid", "Upgrade the service for the requested search fields")
+        from .models import SourceRef
+
         ref = SourceRef.parse_ref(source).model_dump() if source is not None else None
         upgrade = ("Upgrade the service to find an exact source with search filters" if ref is not None
                    else "Upgrade the service to search archived records")
@@ -138,7 +137,7 @@ class Client:
             body["source"] = ref
         if not self.legacy_search:
             try:
-                result = self._request("POST", "/v1/search", json=body)
+                result = self._request("POST", "/v1/search", json=body, params=params)
             except ClientError as error:
                 if (archived or ref is not None) and error.status_code == 422:
                     raise DomainError("invalid", upgrade) from None
@@ -146,6 +145,8 @@ class Client:
                     raise
                 self.legacy_search = True
             else:
+                if params and (not isinstance(result, dict) or any(result.get(k) != v for k, v in params.items())):
+                    raise DomainError("invalid", "The service did not confirm the requested search fields")
                 if ref is not None:
                     if not isinstance(result, dict) or result.get("source") != ref:
                         raise DomainError("invalid", upgrade)
@@ -160,6 +161,8 @@ class Client:
                 if archived and result.get("archived") is not True:
                     raise DomainError("invalid", upgrade)
                 return result
+        if params:
+            raise DomainError("invalid", "Upgrade the service for the requested search fields")
         if archived or ref is not None:
             raise DomainError("invalid", upgrade)
         if claimed:
@@ -167,6 +170,19 @@ class Client:
         from .search import legacy_page
 
         return legacy_page(self, text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+
+    def supports_search_options(self, *fields):
+        """Older services can ignore query parameters. Check before sending a constrained read."""
+        if self.legacy_search:
+            return False
+        try:
+            operation = self._paths().get("/v1/search", {}).get("post", {})
+        except ClientError as error:
+            if error.status_code in {404, 405}:
+                return False
+            raise
+        available = {p.get("name") for p in operation.get("parameters", [])}
+        return all(field in available for field in fields)
 
     def query(self, filters: dict[str, Any]) -> Any:
         return self._request("POST", "/v1/query", json={"filters": filters})
@@ -189,12 +205,30 @@ class Client:
             self._service_paths = document["paths"]
         return self._service_paths
 
-    def _require_filter(self, path, field):
+    def _require_filter(self, path, field, *, recovery=None):
         """Older servers ignore unknown query parameters. Never silently widen a filtered read."""
         parameters = self._paths().get(path, {}).get("get", {}).get("parameters", ())
         if not any(parameter["name"] == field for parameter in parameters):
             raise DomainError("invalid", f"This service does not support {field} on {path}",
-                              ["Upgrade the service or choose a supported filter."])
+                              [recovery or "Upgrade the service or choose a supported filter."])
+
+    def _selected_request(self, method, path, *, project, context, **options):
+        if project is None:
+            return self._request(method, path, **options)
+        self._require_filter(
+            "/v1/ready" if method == "POST" else path, "project",
+            recovery="Upgrade the service for project selection. The project plan lists its members and their recorded state.",
+        )
+        try:
+            return self._request(method, path, **options)
+        except ClientError as exc:
+            if exc.status_code != 404:
+                raise
+            message = "Project or context not found" if context is not None else "Project not found"
+            details = ["Find the project ID on the same connection with daymark find --kind project --page."]
+            if context is not None:
+                details.append("Check the context ID with daymark find --kind context --page.")
+            raise DomainError("not_found", message + " in the service workspace", details) from None
 
     def ready(
         self,
@@ -204,13 +238,15 @@ class Client:
         mine: bool = False,
         owner: str | None = None,
         next_move: str | None = None,
-        context: str | None = None, scope: str | None = None,
+        context: str | None = None, scope: str | None = None, project: str | None = None,
         brief: bool = False,
     ) -> Any:
         if context is not None:
             self._require_filter("/v1/ready", "context")
-        params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move, scope=scope, context=context, brief=brief or None)
-        rows = self._request("GET", "/v1/ready", params=params)
+        params = self._params(now=now, limit=limit, owner=owner, mine=mine or None, next_move=next_move,
+                              scope=scope, context=context, project=project, brief=brief or None)
+        rows = self._selected_request("GET", "/v1/ready", project=project, context=context, params=params)
+        self._check_project_rows(rows, project)
         if brief:
             # A 0.5 service ignores the brief query parameter. Keep these
             # rows bounded before returning them to a session or MCP host.
@@ -221,12 +257,25 @@ class Client:
             return [ready_record(row, instant) if "created_at" in row else row for row in rows]
         return rows
 
-    def explain_ready(self, *, limit=20, now=None, owner=None, next_move=None, context: str | None = None, scope: str | None = None, mine=False):
+    @staticmethod
+    def _check_project_rows(rows, project):
+        if project is not None and (not isinstance(rows, list) or any(
+            not isinstance(row, dict) or row.get("project_id") != project for row in rows
+        )):
+            raise DomainError("invalid", "The service returned work outside the requested project")
+
+    def explain_ready(self, *, limit=20, now=None, owner=None, next_move=None, context: str | None = None, scope: str | None = None, project=None, mine=False):
         if context is not None:
             self._require_filter("/v1/ready/explanation", "context")
         params = self._params(limit=limit, now=now, owner=owner, next_move=next_move,
-                              scope=scope, context=context, mine=mine or None)
-        return self._request("GET", "/v1/ready/explanation", params=params)
+                              scope=scope, context=context, project=project, mine=mine or None)
+        result = self._selected_request("GET", "/v1/ready/explanation", project=project, context=context, params=params)
+        if project is not None:
+            filters = result.get("filters") if isinstance(result, dict) else None
+            if not isinstance(filters, dict) or filters.get("project") != project:
+                raise DomainError("invalid", "The service did not confirm the requested project")
+            self._check_project_rows(result.get("ready"), project)
+        return result
 
     def agenda(
         self, *, now: Any = None, days: int = 7, context: str | None = None,
@@ -414,16 +463,22 @@ class Client:
 
     def projects(self, *, now: Any = None, scope: str | None = None) -> Any:
         if scope is not None:
-            self._require_filter("/v1/projects", "scope")
+            self._require_filter(
+                "/v1/projects", "scope",
+                recovery="Upgrade the service for scoped rollups. For names only, find kind=project with the same scope.",
+            )
         result = self._request("GET", "/v1/projects", params=self._params(now=now, scope=scope))
-        if scope is not None and (
+        if scope is None:
+            return result
+        if (
             not isinstance(result, dict) or result.get("scope") != scope
+            or result.get("member_scope") != "whole_project"
             or not isinstance(result.get("projects"), list)
             or any(not isinstance(p, dict) or "scope" not in p or (p["scope"] or "") != scope
                    for p in result["projects"])
         ):
             raise DomainError("invalid", "The service did not confirm the requested project scope")
-        return result
+        return {key: result[key] for key in ("projects", "scope", "member_scope")}
 
     def plan(self, project_id: str, *, now: Any = None) -> Any:
         return self._read_id("projects/{id}/plan", "project-plan", "project_id", project_id, now=now)

@@ -46,7 +46,7 @@ def test_cli_recovers_committed_capture_without_echoing_content(monkeypatch, cap
         error = json.loads(err)["error"]
         key = error["operation_id"]
         assert key == posted[0] and (supplied is None or supplied == key)
-        assert shlex.quote(key) in error["details"][0]
+        assert error["details"][0].endswith("--op " + shlex.quote(key))
         assert all(data not in err for data in ("Measure the sample", "J-12", "fixture-token"))
         assert cli.main(command + ["--op", key]) == 0
         record = store.get("lab", json.loads(capsys.readouterr().out)["id"])

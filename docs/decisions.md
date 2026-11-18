@@ -172,6 +172,12 @@ SQLite file and SQLite sidecars when the directory has no ignore file.
 The project owner controls existing ignore rules. Project instruction updates
 remain opt-in and preserve the text around Daymark's marked section.
 
+Ordinary workspace display commands require a recognized Daymark file.
+Previously a typo created an empty database, and a read of another tracker’s
+SQLite file installed Daymark tables there. An explicit first write can still
+initialize a new file. Recognized older Daymark databases follow the usual
+upgrade rules.
+
 ### Accepting a proposal with a recorded wait
 
 A proposal created with `--waiting-on` records a dependency on an outside

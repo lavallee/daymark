@@ -22,7 +22,7 @@ _OP = {"type": "string", "minLength": 1}
 
 _FIELDS = {
     **{key: {"type": "string"} for key in ("due", "plan", "start", "target")},
-    "every": {"type": "string", "description": "day/week/month/year, weekdays, mon,thu"},
+    "every": {"type": "string"},
     "after_completion": {"type": "boolean"},
     "priority": {"type": "integer", "minimum": 0, "maximum": 4},
     "description": {"type": "string"},
@@ -42,7 +42,7 @@ _FIELDS = {
     "type": {"type": "string"},
     "values": {"type": "object"},
 }
-_DATES = "due=hard, plan=intended, start=earliest, target=soft. "
+_DATES = "due=hard,plan=intended,start=earliest,target=soft. "
 _DATE_FORMS = "YYYY-MM-DD[THH:MM], today/tomorrow/fri/+Nd/+Nw/+Nm."
 _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim",
@@ -60,7 +60,7 @@ TOOLS = [
     {
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
-        "description": "json=true: data. show: id/source. ready: explain. agenda: deadlines. "
+        "description": 'json=true: data. scope ""=unscoped. show: id/source. ready: project,explain. agenda: deadlines. '
         "find: task, source+scope. advise: set STRATEGY[.PARAM=VALUE]/drop. profiles: strategy.",
         "inputSchema": {
             "type": "object",
@@ -91,6 +91,7 @@ TOOLS = [
                 "claimed": {"type": "boolean"},
                 "archived": {"type": "boolean"},
                 "context": {"type": "string"},
+                "project": {"type": "string"},
                 "before_note": {"type": "string"},
                 "since_version": {"type": "integer", "minimum": 1},
                 "after": {"type": ["integer", "string"]},
@@ -101,7 +102,7 @@ TOOLS = [
                 "deadlines": {"type": "boolean"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
                 "move": {"type": "string", "enum": ["person", "answer", "agent"]},
-                "scope": {"type": "string", "description": '"" = unscoped'},
+                "scope": {"type": "string"},
                 "by": {"type": "string"},
                 "profile": {"type": "string"},
                 "strategy": {"type": "string"},
@@ -116,7 +117,7 @@ TOOLS = [
     },
     {
         "name": "daymark_add",
-        "description": "proposed=true suggests. assignee: name as given (person+principal) or ID. after=prerequisite IDs. source=system:kind:id. " + _DATES + _DATE_FORMS,
+        "description": "proposed=true: idea. assignee: exact name (person+principal) or ID. after=prerequisite IDs. source=system:kind:id. " + _DATES + _DATE_FORMS + " every:day/week/month/year/weekdays/mon,thu.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -135,7 +136,7 @@ TOOLS = [
     },
     {
         "name": "daymark_edit",
-        "description": "Fields as add. Empty date clears. Guard: show review_token.",
+        "description": 'As add. Clear date="". Guard: show review_token.',
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -153,9 +154,9 @@ TOOLS = [
     },
     {
         "name": "daymark_act",
-        "description": "note/done/release: text. wait: on/until. defer: until. block/unblock: on. "
-        "take: omit id. move: stage/place. assess: state/text. "
-        "remind: when=local date/time + recipient ID; default local recording. use_profile: id=name or set/drop. restore_profile: receipt id+expected_version.",
+        "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
+        "take:omit id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
+        "remind: local when + recipient ID, default local recording. use_profile: id=name or set/drop. restore_profile: receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -171,6 +172,7 @@ TOOLS = [
                 "when": {"type": "string"},
                 "recipient": {"type": "string"},
                 "context": {"type": "string"},
+                "project": {"type": "string"},
                 "scope": {"type": "string"},
                 "minutes": {"type": "integer"},
                 "state": {
@@ -178,7 +180,7 @@ TOOLS = [
                     "enum": ["met", "partly_met", "unmet", "unknown"],
                 },
                 "stage": {"type": "string"},
-                "place": {"type": "string", "description": "after:ID|before:ID|first|last"},
+                "place": {"type": "string"},
                 "op": _OP,
             },
             "required": ["action"],
@@ -186,7 +188,7 @@ TOOLS = [
     },
     {
         "name": "daymark_remember",
-        "description": "Keep a fact.",
+        "description": "Save fact.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -205,18 +207,23 @@ for tool in TOOLS:
     tool["inputSchema"]["additionalProperties"] = False
 _TOOLS = {tool["name"]: tool for tool in TOOLS}
 _READ_NAMES = frozenset({"daymark_prime", "daymark_view"})
+_SCOPE_GUIDE = (
+    "For scoped goal conditions, use explore with scope. Its outside_scope counts include linked work elsewhere. "
+    "Use find with scope and source for scoped source checks. Show includes related records across scopes; "
+    "use it only when full detail is within the request."
+)
 _READ_GUIDE = (
-    "Read-only Daymark session. Given a task ID or source, start with daymark_view show using that id or source. "
+    "Read-only Daymark session. Given a named scope, pass it to daymark_prime. " + _SCOPE_GUIDE
+    + " For a known ID or source when full detail is requested, use daymark_view show. "
     "Use brief=true for attributed note previews. A claim identifies the holder. Look for progress in the notes. "
-    "Given a named scope, pass it to daymark_prime. Use ready for eligible tasks, explore for goal conditions "
-    "and gaps in a scope, find for records, and activity to catch up on workspace changes."
+    "Use ready for eligible tasks, find for records, and activity for workspace changes."
 )
 _TYPES = {"string": str, "boolean": bool, "integer": int, "array": list, "object": dict}
 
 # The multiplexed tools have one schema each. Refuse arguments intended for a
 # different verb so a filter or write instruction can never silently disappear.
 _VIEW_ARGS = {
-    "ready": {"limit", "move", "scope", "explain", "context"},
+    "ready": {"limit", "move", "scope", "explain", "context", "project"},
     "advise": {"context", "scope", "profile", "set", "drop"},
     "profiles": {"profile", "strategy"},
     "explore": {"id", "scope"},
@@ -225,6 +232,7 @@ _VIEW_ARGS = {
     "show": {"id", "source", "brief", "note", "before_note", "since_version"},
     "find": {"source", "text", "limit", "after", "kind", "status", "scope", "claimed", "archived"},
     "plan": {"id", "by"},
+    "projects": {"scope"},
     "goal": {"id"},
 }
 _ACT_ARGS = {
@@ -235,7 +243,7 @@ _ACT_ARGS = {
     "undo": {"expected_version", "review_token"},
     "use_profile": {"id", "set", "drop", "expected_version"},
     "restore_profile": {"expected_version"},
-    "take": {"scope", "context", "minutes"},
+    "take": {"scope", "context", "project", "minutes"},
     "note": {"text"},
     "done": {"text"},
     "release": {"text"},
@@ -383,6 +391,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
                 tasks.take(
                     scope=args.get("scope"),
                     context=args.get("context"),
+                    project=args.get("project"),
                     minutes=args.get("minutes", 60),
                     op=args.get("op"),
                 )
@@ -528,8 +537,7 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                 "instructions": _READ_GUIDE
                 if read_only
                 else "Start with daymark_prime for orientation. If the request names a scope, pass scope on the first read. "
-                "For a known ID or source, use show. For goal conditions or gaps, use explore with the same scope. "
-                "Settings and memories are shared across this workspace. "
+                + _SCOPE_GUIDE + " Settings and memories are shared across this workspace. "
                 "Apply personal or time-limited choices per call unless the person asks to share them. "
                 "For each write, choose a fresh op "
                 "and reuse it if that same write needs a retry. Never invent dates or completions.",
@@ -581,6 +589,8 @@ def handle(tasks, message, *, context=None, protocol=_PROTOCOLS[-1], read_only=F
                     result["structuredContent"].update(
                         claimed_by=value.get("claimed_by"), claim_until=value.get("claim_until")
                     )
+                    if arguments["action"] == "take" and "project" in arguments:
+                        result["structuredContent"]["project_id"] = value["project_id"]
         else:
             text = value
             if name == "daymark_act" and arguments["action"] == "take" and protocol >= "2025-06-18":

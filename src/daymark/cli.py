@@ -74,18 +74,19 @@ def resolve_db(explicit: str | None) -> str | None:
 
 
 def _where(args) -> int:
-    from .render import endpoint_origin
-
     if args.url:
+        from .render import endpoint_origin
+
         result = {"source": "--url", "endpoint": endpoint_origin(args.url),
                   "identity_source": "server credential"}
         message = f"Endpoint {result['endpoint']} (--url). The server credential selects the workspace and actor."
     else:
         file, source = _location(args.db)
         database = str(Path(file).absolute()) if file and file != ":memory:" else file
+        actor = "agent" if args.actor is None else args.actor
         result = {"database": database, "source": source, "workspace": args.workspace,
-                  "actor": args.actor, "file_exists": bool(file and Path(file).is_file())}
-        message = f"Workspace {args.workspace}, actor {args.actor}."
+                  "actor": actor, "file_exists": bool(file and Path(file).is_file())}
+        message = f"Workspace {args.workspace}, actor {actor}."
         if file:
             message += f"\nDatabase {database} (selected by {source})."
             if file != ":memory:":
@@ -163,6 +164,13 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
 STATES = ["met", "partly_met", "unmet", "unknown"]
 
 
+def _scope_filter(parser, help_text):
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--scope", metavar="NAME", help=help_text)
+    group.add_argument("--unscoped", action="store_const", const="", dest="scope",
+                       help="Only records with no scope")
+
+
 def _simple_commands(sub) -> None:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="Compact JSON instead of text")
@@ -176,10 +184,7 @@ def _simple_commands(sub) -> None:
     init = sub.add_parser("init", help="Create a database: per-user, or --here for this folder")
     init.add_argument("--here", action="store_true", help="Use ./.daymark/ in this directory")
     prime = add("prime", "Print the current state and workflow guide; read this first")
-    prime_scope = prime.add_mutually_exclusive_group()
-    prime_scope.add_argument("--scope", help="Return a compact orientation for one scope")
-    prime_scope.add_argument("--unscoped", action="store_const", const="", dest="scope",
-                             help="Return an orientation for records with no scope")
+    _scope_filter(prime, "Return a compact orientation for one scope")
     prime.add_argument("--brief", action="store_true", help="Skip the workflow guide")
     onboard = sub.add_parser("onboard", help="Print (or --write) the snippet for AGENTS.md")
     mode = onboard.add_mutually_exclusive_group()
@@ -188,9 +193,8 @@ def _simple_commands(sub) -> None:
     mode.add_argument("--check", metavar="FILE", help="Check the snippet without writing (1 if missing or outdated)")
     advise = add("advise", "What to offer and what to mention, by the workspace's profile")
     advise.add_argument("--profile", metavar="NAME", help="Try a profile without adopting it")
-    advise.add_argument("--scope", metavar="NAME", help="Only this scope")
+    _scope_filter(advise, "Only this scope")
     advise.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
-    advise.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     profile = add("profile", "Show or choose the way of working for this workspace", writes=True)
     profile.add_argument("name", nargs="?", help="Adopt this profile (see `daymark strategies`)")
     profile_action = profile.add_mutually_exclusive_group()
@@ -210,19 +214,20 @@ def _simple_commands(sub) -> None:
     methods = add("strategies", "List strategies and profiles, or inspect one strategy")
     methods.add_argument("strategy", nargs="?", metavar="NAME", help="Show purpose, parameters and limits")
     ready = add("ready", "Tasks that can be done now, most pressing first")
+    ready.add_argument("--project", metavar="ID", help="Only explicit members of this project")
     ready.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
-    ready.add_argument("--explain", action="store_true", help="Show why live work is held back within these filters")
+    ready_detail = ready.add_mutually_exclusive_group()
+    ready_detail.add_argument("--explain", action="store_true", help="Show why live work is held back within these filters")
+    ready_detail.add_argument("--brief", action="store_true", help="Short task previews and ordering reasons")
     ready.add_argument("-n", "--limit", type=int, default=20)
     ready.add_argument("--move", choices=["person", "answer", "agent"], help="Only this next move")
     for view in (ready,):
-        view.add_argument("--scope", metavar="NAME", help="Only this scope")
-        view.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+        _scope_filter(view, "Only this scope")
     agenda = add("agenda", "Overdue, today, the days ahead, waiting and proposed")
     agenda.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     agenda.add_argument("--days", type=int, default=7)
     agenda.add_argument("--deadlines", action="store_true", help="Only overdue and upcoming hard deadlines, including today")
-    agenda.add_argument("--scope", metavar="NAME", help="Only this scope")
-    agenda.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+    _scope_filter(agenda, "Only this scope")
     activity = add("activity", "Recent workspace changes and handoff notes")
     activity.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Read on from a saved cursor")
     activity.add_argument("-n", "--limit", type=int, default=20, help="Events per page (1–100)")
@@ -272,9 +277,8 @@ def _simple_commands(sub) -> None:
     take = add("take", "Claim one ready task explicitly delegated to an agent", writes=True)
     take.add_argument("--minutes", type=int, default=60, help="Claim length (default 60)")
     take.add_argument("--context", metavar="ID", help="Only take tasks tagged with this context")
-    take_scope = take.add_mutually_exclusive_group()
-    take_scope.add_argument("--scope", metavar="NAME", help="Only take from this scope")
-    take_scope.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
+    take.add_argument("--project", metavar="ID", help="Only take an explicitly delegated member of this project")
+    _scope_filter(take, "Only take from this scope")
     note = add("note", "Append a progress note", writes=True)
     note.add_argument("id")
     note.add_argument("text")
@@ -303,8 +307,7 @@ def _simple_commands(sub) -> None:
     find.add_argument("--source", metavar="SYSTEM:KIND:ID", help="Match one exact source with the other filters")
     find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
     find.add_argument("--limit", "-n", type=int, default=50, metavar="N")
-    find.add_argument("--scope", metavar="NAME", help="Filter by scope (uses compact hits)")
-    find.add_argument("--unscoped", action="store_true", help="Only unscoped hits")
+    _scope_filter(find, "Filter by scope (uses compact hits)")
     remember = add("remember", "Keep a durable fact for later sessions", writes=True)
     remember.add_argument("text")
     remember.add_argument("--scope", metavar="NAME", help="Where this preference or fact applies")
@@ -356,7 +359,8 @@ def _simple_commands(sub) -> None:
     configure.add_argument("--apply", metavar="FILE", help="JSON with stages, types, fields")
     configure.add_argument("--preset", metavar="NAME", help="Apply a preset's configuration")
     action("presets", "Starting configurations and what each sets", writes=False)
-    add("projects", "Projects with their roll-ups and health")
+    projects = add("projects", "Projects with their roll-ups and health")
+    _scope_filter(projects, "Projects belonging to this scope, including all their members in counts")
     plan = add("plan", "One project: by stage, in its order, with roll-ups and health")
     plan.add_argument("project")
     plan.add_argument(
@@ -408,10 +412,7 @@ def _simple_commands(sub) -> None:
     assess.add_argument("--evidence", metavar="TEXT", help="What shows it")
     explore = add("explore", "A goal's conditions: what is met, what is next, where nothing moves")
     explore.add_argument("goal", nargs="?", help="Goal ID (default: every goal)")
-    explore_scope = explore.add_mutually_exclusive_group()
-    explore_scope.add_argument("--scope", help="Show conditions and named links only in this scope")
-    explore_scope.add_argument("--unscoped", action="store_const", const="", dest="scope",
-                               help="Show conditions and named links with no scope")
+    _scope_filter(explore, "Show conditions and named links only in this scope")
     sub.add_parser("workspaces", help="List the workspaces in this database")
     mcp = sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
     mcp.add_argument("--read-only", action="store_true", help="Expose only prime and view; open the local database read-only")
@@ -546,6 +547,9 @@ def _copy_database(source: Path, destination: Path) -> None:
         try:
             with closing(sqlite3.connect(prepared)) as writer:
                 reader.backup(writer)
+                # A sealed backup may live on a read-only volume without WAL sidecars.
+                # Daymark re-enables WAL when a restored path is opened for writing.
+                writer.execute("PRAGMA journal_mode=DELETE")
                 if writer.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("Database integrity check failed")
             # Publish a closed, checked snapshot. A competing creator keeps its file.
@@ -589,16 +593,16 @@ def _stored_schema(path):
         return None
 
 
-def _open_store(path, *, read_only=False):
+def _open_store(path, *, read_only=False, require_existing=False):
     """Open a Store the way every command does: upgrading an older database in place.
     The upgrade is one-way, so the first one is announced on standard error."""
     from . import __version__
     from .store import SCHEMA, Store
 
     if read_only:
-        return Store(path, read_only=True)
+        return Store(path, read_only=True, require_existing=True)
     before = _stored_schema(path)
-    if path and path != ":memory:":
+    if not require_existing and path and path != ":memory:":
         # SQLite derives WAL and shared-memory permissions from the main file.
         # Set the mode before the first connection creates those companions.
         try:
@@ -607,7 +611,7 @@ def _open_store(path, *, read_only=False):
             pass
         else:
             os.close(fd)
-    store = Store(path)
+    store = Store(path, require_existing=require_existing)
     try:
         if before is not None and before != SCHEMA:
             print(
@@ -673,6 +677,16 @@ def _onboard(args) -> int:
     return 0
 
 
+def _simple_write(args):
+    """The parser offers --op on write verbs. Profiles and project config also allow reads."""
+    if args.command == "profile":
+        operations = (args.name, args.save_as, args.remove, args.undo, args.from_file)
+        return bool(args.set or args.drop) or any(value is not None for value in operations)
+    if args.command == "project" and args.action == "config":
+        return bool(args.apply or args.preset)
+    return hasattr(args, "op")
+
+
 def _simple(args, engine) -> int:
     """Run one everyday verb and print a lean rendering of its result."""
     from . import render
@@ -682,10 +696,7 @@ def _simple(args, engine) -> int:
     tasks = Tasks(engine, args.workspace, actor=args.actor, timezone=args.tz)
     now, name, as_json = tasks.now(), args.command, getattr(args, "json", False)
     op = getattr(args, "op", None)
-    # --op is present on write commands, with two mixed read/write surfaces.
-    # Profile writes are local-only. Reading project configuration is a GET.
-    config_read = name == "project" and args.action == "config" and not (args.apply or args.preset)
-    if args.url and hasattr(args, "op") and name != "profile" and not config_read:
+    if args.url and name != "profile" and _simple_write(args):
         op = args.retry_op = tasks._op_id(op)
 
     def out(value, text):
@@ -694,7 +705,7 @@ def _simple(args, engine) -> int:
     def entity(item):
         out(render.compact(item), render.line(item, now, timezone=tasks.timezone))
 
-    scope = "" if getattr(args, "unscoped", False) else getattr(args, "scope", None)
+    scope = getattr(args, "scope", None)
 
     if name == "prime":
         context = render.session_context(tasks, database=args.db, url=args.url)
@@ -747,15 +758,20 @@ def _simple(args, engine) -> int:
             session = render.session_context(tasks, database=args.db, url=args.url)
             out(lean, render.advice_text(advice, now, session=session))
     elif name == "ready":
+        filters = {"limit": args.limit, "move": args.move, "scope": scope, "context": args.context, "project": args.project}
+        empty = "Nothing is ready" + (" for these filters" if scope is not None or args.move or args.context or args.project else "")
+        empty += ". Repeat with --explain to see what is held."
         if args.explain:
-            view = tasks.explain_ready(limit=args.limit, move=args.move, scope=scope, context=args.context)
+            view = tasks.explain_ready(**filters)
             out(view, render.ready_explanation(view))
+        elif args.brief:
+            rows = tasks.ready_summary(**filters)
+            out([render.compact(row) for row in rows], render.ready_previews(rows) or empty)
         else:
-            items = tasks.ready(limit=args.limit, move=args.move, scope=scope, context=args.context)
-            empty = "Nothing is ready" + (" for these filters" if scope is not None or args.move or args.context else "")
+            items = tasks.ready(**filters)
             out(
                 [{**render.compact(x), "why": render.why(x, now)} for x in items],
-                render.listing(items, now, empty + ". Repeat with --explain to see what is held."),
+                render.listing(items, now, empty),
             )
     elif name == "agenda":
         view = tasks.agenda(args.days, scope=scope, context=args.context, deadlines=args.deadlines)
@@ -779,7 +795,8 @@ def _simple(args, engine) -> int:
         out(comparison, render.comparison_text(comparison))
     elif name == "show" and (args.brief or args.before_note is not None):
         brief = tasks.brief(args.id, before_note=args.before_note, source=args.source)
-        out(brief, render.brief_text(brief, timezone=tasks.timezone))
+        session = render.session_context(tasks, database=args.db, url=args.url)
+        out(brief, render.brief_text(brief, timezone=tasks.timezone, session=session, source=args.source))
     elif name == "show" and args.note is not None:
         note = tasks.read_note(args.id, args.note, source=args.source)
         out(note, render.note_text(note))
@@ -842,7 +859,7 @@ def _simple(args, engine) -> int:
     elif name == "focus":
         entity(tasks.focus(args.id, args.rank, op=op))
     elif name == "take":
-        selected = tasks.take(scope=scope, context=args.context, minutes=args.minutes, op=op)
+        selected = tasks.take(scope=scope, context=args.context, project=args.project, minutes=args.minutes, op=op)
         if selected is None:
             out(None, render.EMPTY_TAKE)
         else:
@@ -870,8 +887,11 @@ def _simple(args, engine) -> int:
                                 archived=args.archived, source=args.source)
             out(page, render.search_text(page))
         else:
-            items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
-            out([render.compact(x) for x in items], render.listing(items, now, "No matches."))
+            items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit, brief=not as_json)
+            if as_json:
+                _print([render.compact(x) for x in items])
+            else:
+                print(render.listing(items, now, "No matches."))
     elif name == "remember":
         entity(tasks.remember(args.text, scope=args.scope, source=args.source, op=op))
     elif name == "project":
@@ -903,7 +923,7 @@ def _simple(args, engine) -> int:
         entity(tasks.move(args.id, stage=args.stage, after=args.after, before=args.before,
                           first=args.first, last=args.last, op=op))  # fmt: skip
     elif name == "projects":
-        view = tasks.projects()
+        view = tasks.projects(scope=scope)
         out(view, render.projects_text(view))
     elif name == "plan":
         view = tasks.plan(args.project)
@@ -1016,7 +1036,7 @@ def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
     if code == "conflict" and args.command in {"edit", "accept", "dismiss", "undo"} and getattr(args, "if_version", None):
         details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]
     if retry_op is not None:
-        hint = f"Write outcome uncertain. Repeat the same command and flags with --op {shlex.quote(retry_op)}."
+        hint = f"Write outcome uncertain. Repeat the same command and flags with --op {shlex.quote(retry_op)}"
         details = [*details, hint]
     if getattr(args, "json", False):
         error = {"code": code, "message": message, "details": list(details)}
@@ -1037,8 +1057,7 @@ def _fail(args, code: str, message: str, details=(), *, retry_op=None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    from .client import ClientError
-    from .models import DomainError
+    from .errors import ClientError, DomainError
 
     try:
         if args.command == "where":
@@ -1049,7 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
             return _onboard(args)
         if not args.url:
             found = resolve_db(args.db)
-            if found is None and args.command in SIMPLE:
+            if found is None and (args.command in SIMPLE or args.command == "workspaces"):
                 return _fail(
                     args,
                     "no_database",
@@ -1091,7 +1110,13 @@ def main(argv: list[str] | None = None) -> int:
 
             engine = Client(args.url, os.environ.get(args.token_env, ""), read_only=getattr(args, "read_only", False))
         else:
-            engine = _open_store(args.db, read_only=getattr(args, "read_only", False))
+            # The first explicit write may create a file. An ordinary workspace
+            # read may upgrade recognized Daymark data, but must never create it.
+            ordinary_read = args.command == "workspaces" or (
+                args.command in SIMPLE and args.command != "mcp" and not _simple_write(args)
+            )
+            engine = _open_store(args.db, read_only=getattr(args, "read_only", False),
+                                 require_existing=ordinary_read and args.db != ":memory:")
         try:
             ws = [] if args.url else [args.workspace]
             if args.command == "workspaces":

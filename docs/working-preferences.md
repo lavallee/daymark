@@ -51,8 +51,9 @@ tasks as well, read `daymark agenda --deadlines --days 14`.
 
 When reviewing a goal, `frontier-first` can also explain an empty ready list.
 A next condition may have a proposed move awaiting a decision. The note
-names the condition, and `daymark explore GOAL` shows the linked tasks and
-their recorded status. The proposal stays pending until someone authorized
+names the condition. Use `daymark explore GOAL --scope NAME` to see linked
+work in the same scope and counts of work outside it. Use `daymark explore
+GOAL` for a workspace-wide review. The proposal stays pending until someone authorized
 to decide accepts or dismisses it.
 
 A decision batch reports how many reviewed ready tasks need the person's
@@ -260,6 +261,18 @@ that starts next week, depends on someone else, or is claimed by another
 worker already supplies a next action. `daymark plan PROJECT` shows the
 details. The scoped review uses the project's own scope. Use
 `daymark edit PROJECT --scope studio` if the person wants to assign one.
+For the underlying counts, use `daymark projects --scope studio`. A
+project's blocked, waiting and proposed members count even when their tasks
+belong to another scope. The scoped response omits the names of a lead or
+goal outside that scope. An older service that cannot apply this portfolio
+filter reports that it needs upgrading.
+
+To choose the next action within a project, use `daymark ready --project
+PROJECT`. It can return a task assigned to that project even if the task
+belongs to another scope. Add `--scope studio` when the person asks for
+the intersection. `--explain` gives the eligible count and the reasons other
+members are held. A high-priority task in a different project cannot take a
+place on this list.
 
 An empty project can mean the next action needs capturing or the outcome is
 already complete. Ask which applies. `daymark add "Check the paper samples"

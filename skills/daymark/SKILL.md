@@ -11,10 +11,13 @@ facts. Preserve the scope on any follow-up queue or search. For an exact externa
 reference inside a scope, use `find --source SYSTEM:KIND:ID --scope NAME`
 or MCP `view=find` with both fields. The full MCP primer gives native tool arguments.
 A pending task proposal uses `find --status proposed`. For a decision the person can act on, use `ready --move answer`.
-For an exact ID or source, a direct `show` can answer the first question.
+For an exact source inside a named scope, use `find --source REF --scope NAME`.
+A direct `show` reads the full record when that is what the person requested.
 Memories and settings are shared within the workspace. Keep a personal
 or time-limited display choice with the current request or its authorized
 host until the person agrees to share it.
+
+For two agents, verify the same absolute database path and workspace with a separate `--as` actor for each. Start both with `mcp --read-only` and compare the two brief primers before enabling writes.
 
 Check the database and workspace with `daymark where` in an unfamiliar
 folder. If no database exists, choose `daymark init` for a per-user database
@@ -27,13 +30,17 @@ The installed CLI prints this guide with `daymark onboard --skill`. For project 
 
 Then work in this loop:
 
-1. `daymark ready` shows what can be done now. `daymark agenda` shows the days
+1. `daymark ready` shows what can be done now. For a compact queue use `ready --brief --json` or the MCP ready view with `json=true`. `daymark agenda` shows the days
    ahead, earlier plans, waits and proposals. A past intended work day alone is never overdue. For hard deadlines, use
    `daymark agenda --deadlines --days 2` or MCP
    `daymark_view` with `{"view":"agenda","deadlines":true,"days":2}`. It includes
    accepted live work that is overdue, due today or due through the next two
    local days, including waiting and blocked tasks. Use `ready --explain` with
-   the same scope and context to understand a short or empty ready queue.
+   the same filters to understand a short or empty ready queue. For the next
+   action in a particular project use `ready --project ID`. Add `--scope`
+   or `--context` when the request also specifies the task's own scope or context.
+   When assigned to take delegated work only from that project, use
+   `daymark --as WORKER take --project ID` so selection and claim stay together.
 2. `daymark show ID` before acting. Check its readiness reasons and the notes left by earlier sessions. If a circular wait is shown, inspect the named prerequisite and child links with the person before repairing one.
 3. Use a distinct `DAYMARK_ACTOR` for each concurrent worker, then `daymark claim ID`.
 4. Do the work. `daymark note ID "what happened"` whenever you learn something
@@ -52,6 +59,8 @@ the match with `show ID --brief --json`; use its `--if-review TOKEN` with
 `edit ID --title TEXT` or `forget ID`. Forgetting archives the memory and
 retains its history. Keep one-time requests in the current interaction.
 
+Plain and paged `find` match titles and descriptions, including Unicode
+case variants. Use `--page --json` for compact IDs and a continuation.
 Use `daymark find TEXT --archived` for archived tasks or add `--kind memory`
 for retired facts. Archived search returns compact pages. Keep `--archived`
 and the same filters when continuing with `--after ID`, and use `show ID` to
@@ -110,6 +119,8 @@ returns built-in advice for the authenticated workspace and lists skipped
 stages. A legacy service yields a labeled plain fallback. Save changes locally.
 For a requested project review, `advise --profile plain --set project-review
 --set shortlist.size=1` names open projects with no open or waiting action.
+Use `daymark projects --scope NAME` or the MCP `projects` view with `scope`
+for a portfolio review. Counts include every member of each selected project.
 Use `daymark strategies NAME` to inspect parameters and ranges. The MCP
 profiles view lists adjustment defaults and accepts `strategy` for details.
 For a requested standing change, read `daymark profile --json`, supply its
@@ -126,6 +137,8 @@ retry. If a remote write reports an uncertain result, keep its command and flags
 When returning to a known task, start with `show ID --brief` or
 `show --source REF --brief`. Follow `next_before_note` for older notes and
 read truncated evidence with `show ID --note NOTE_ID`. Check for corrections.
+The brief previews up to three labels and three contexts. Use full
+`show ID --json` to check fields outside the preview.
 Report an unknown stopping point if the record only establishes who claimed
 the task. When leaving work, note the last verified check and next action.
 

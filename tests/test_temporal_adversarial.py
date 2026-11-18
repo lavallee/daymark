@@ -1,4 +1,4 @@
-"""Pure temporal adversarial checks; no package init, Store, network or real records.
+"""Pure temporal adversarial checks independent of Store, network and real records.
 
 Policy checks are named explicitly. Calendar invalid-day skipping follows the
 current RRULE contract; gap advance and first fold are explicit Daymark policies.
@@ -742,6 +742,7 @@ def run_bounded_rule(rule, start="2000-01-01", current="2026-11-09"):
         m = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = m
         spec.loader.exec_module(m)
+        assert "daymark.store" not in sys.modules
         try:
             anchor = m.Temporal(date=start, timezone='UTC')
             recurrence = m.Recurrence(rule=rule, anchor=anchor, timezone='UTC')

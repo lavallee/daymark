@@ -122,3 +122,18 @@ def test_scope_echo_without_matching_nested_records_refuses_before_rendering(sec
         result = prime(Tasks(c), "studio")
     assert result["structuredContent"]["error"]["code"] == "invalid"
     assert "Sensitive sample" not in str(result) and "42" not in str(result)
+
+
+@pytest.mark.parametrize("verb", [
+    ["prime"], ["advise"], ["ready"], ["agenda"], ["take"], ["find"], ["projects"], ["explore", "goal"],
+])
+def test_named_scope_and_unscoped_are_mutually_exclusive(verb):
+    from daymark.cli import parser
+
+    cli = parser()
+    assert cli.parse_args([*verb, "--scope", "studio"]).scope == "studio"
+    assert cli.parse_args([*verb, "--unscoped"]).scope == ""
+    assert cli.parse_args(verb).scope is None
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args([*verb, "--scope", "studio", "--unscoped"])
+    assert error.value.code == 2

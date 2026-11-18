@@ -46,7 +46,11 @@ or an embedded application, see the examples below.
 
 Run `daymark prime` when a session starts. It identifies the workspace and
 shows what is ready, what is waiting, and which facts earlier sessions kept.
-`daymark onboard --write AGENTS.md` adds the startup instructions to a project.
+`daymark onboard` previews the startup instructions. Use
+`daymark onboard --write AGENTS.md` to install them when they fit the project.
+To verify two agents share the intended workspace before creating a task,
+see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-minutes).
+Its enforced read-only sessions use the development checkout.
 
 | You want | Command |
 | --- | --- |

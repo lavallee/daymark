@@ -1,6 +1,7 @@
 """Bounded session pickup retains exact authors, note IDs, ordering and access."""
 
 import json
+import shlex
 import sqlite3
 from contextlib import closing
 
@@ -112,6 +113,46 @@ def test_link_counts_and_lease_agree_with_full_detail_and_ready():
         store.close()
 
 
+@pytest.mark.parametrize("compat", [False, True])
+def test_tag_previews_expand_to_exact_label_and_context_ids(compat, tmp_path, capsys):
+    class Connection(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if compat and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    path = tmp_path / "tagged.db"
+    with closing(sqlite3.connect(path, factory=Connection)) as connection:
+        store = Store(connection)
+        tasks = Tasks(store, "studio", actor="reader")
+        tasks.add("Review cover", id="cover", source="press:job:S-41")
+        plain = tasks.brief("cover")
+        assert {"label_ids", "context_ids"}.isdisjoint(plain)
+        links = {}
+        for kind in ("label", "context"):
+            ids = [f"{kind}-{n}" for n in (5, 2, 4, 3, 1)]
+            for id in ids:
+                tasks.add(id, kind=kind, id=id)
+            links[kind + "s"] = ids
+        tasks.edit("cover", **links)
+        page = tasks.brief("cover")
+        for kind in ("label", "context"):
+            key = kind + "_ids"
+            assert page[key] == links[kind + "s"][:3] and page["omitted"][key] == 2
+
+        text = call(tasks, "daymark_view", {"view": "show", "source": "press:job:S-41", "brief": True})
+        name, args = text.split("Read all labels and contexts: ")[1].splitlines()[0].split(" ", 1)
+        assert json.loads(args) == {"view": "show", "source": "press:job:S-41"}
+        expanded = call(tasks, name, json.loads(args))
+        assert "labels: " + ", ".join(links["labels"]) in expanded
+        assert "contexts: " + ", ".join(links["contexts"]) in expanded
+        connection.commit()
+    assert main(["--db", str(path), "--workspace", "studio", "show", "cover", "--brief"]) == 0
+    follow = shlex.split(capsys.readouterr().out.split("Read all labels and contexts: ")[1].splitlines()[0])
+    assert main(follow[1:]) == 0
+    assert "label-1" in capsys.readouterr().out
+
+
 def test_http_serializes_a_bounded_payload_and_accepts_exact_note_id():
     store = Store(":memory:")
     try:
@@ -148,7 +189,7 @@ def test_cli_and_mcp_expose_bounded_pickup_and_note_expansion(tmp_path, capsys):
         brief = tasks.brief("proof")
         assert call(
             tasks, "daymark_view", {"view": "show", "id": "proof", "brief": True}
-        ) == brief_text(brief)
+        ) == brief_text(brief, mcp=True)
         expected = tasks.get("proof")["notes"][-1]
         note = call(tasks, "daymark_view", {"view": "show", "id": "proof", "note": expected["id"]})
         assert expected["text"] in note
@@ -170,6 +211,43 @@ def test_cli_and_mcp_expose_bounded_pickup_and_note_expansion(tmp_path, capsys):
     for options, result in ((["--brief"], brief), (["--note", expected["id"]], expected)):
         assert main([*base, *options, "--json"]) == 0
         assert json.loads(capsys.readouterr().out) == result
+
+
+def test_printed_note_followups_preserve_selector_and_workspace(tmp_path, capsys):
+    path = str(tmp_path / "notes and proofs.db")
+    workspace = "night shift"
+    task_id = "-press proof"
+    ref = "press:job:sample's $41"
+    with closing(Store(path)) as store:
+        tasks = Tasks(store, workspace, actor="writer")
+        tasks.add("Sample proof", id=task_id, source=ref)
+        for i in range(5):
+            tasks.note(task_id, (f"Margin {i}. " * 40) + f"Evidence {i}")
+        hold = tasks.brief(task_id)
+        for args in ({"id": task_id}, {"source": ref}):
+            text = call(tasks, "daymark_view", {"view": "show", "brief": True, **args})
+            for label, want in (("Read older notes: ", "Margin 0"), ("Read full note: ", "Evidence 2")):
+                native = next(line.split(label)[1] for line in text.splitlines() if label in line)
+                name, params = native.split(" ", 1)
+                params = json.loads(params)
+                assert all(params[k] == v for k, v in args.items())
+                assert want in call(tasks, name, params)
+    prefix = ["--db", path, "--workspace", workspace, "--as", "new worker", "--tz", "UTC"]
+    for selector in (["--", task_id], ["--source", ref]):
+        assert main([*prefix, "show", "--brief", *selector]) == 0
+        text = capsys.readouterr().out
+        for label, want in (("Read older notes: ", "Margin 0"), ("Read full note: ", "Evidence 2")):
+            line = next(line.split(label)[1] for line in text.splitlines() if label in line)
+            argv = shlex.split(line)
+            assert argv[0] == "daymark" and f"--workspace={workspace}" in argv
+            assert main(argv[1:]) == 0
+            assert want in capsys.readouterr().out
+    # The remote command is a suffix for the same service/credential, including
+    # mounted URLs that cannot safely be reconstructed from a display origin.
+    remote = brief_text(hold, session={"endpoint": "https://sample.invalid"}, source=ref)
+    assert "original daymark --url and --token-env" in remote
+    follow = shlex.split(remote.split("Read full note: ", 1)[1].splitlines()[0])
+    assert follow == ["show", "--source", ref, "--note", hold["notes"][0]["id"]]
 
 
 @pytest.mark.parametrize("compat", [False, True])

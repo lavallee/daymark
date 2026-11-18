@@ -172,3 +172,22 @@ JSON. Its median across the unrelated interval was 11.470 ms. SQLite's
 top-level JSON field comparisons preserved the membership results and
 were faster in this run. An embedded SQLite build without JSON functions
 uses a streaming Python check.
+
+
+## Process startup and a persistent client
+
+We ran eight measured, alternating fresh processes for each command on the
+same Linux host, Python 3.14, with the interpreter and dependencies already
+installed. Deferring public imports until the caller requests an object
+reduced median process CPU for `daymark --help` from 210 to 70 ms and for
+local `daymark where --json` from 209 to 72 ms. A ready query still needs the
+engine and its validation models. Its median CPU was 192 ms before and
+186 ms afterward in this run. Full public imports were 189 and 191 ms.
+
+A separate trial exercised five fresh stdio MCP sessions against one
+40-task workspace. Each session performed ten five-item ready reads,
+alternating with a new CLI process reading those same five items. The
+median MCP handshake took 197 ms. A read on an established session took
+1.1 ms elapsed, versus 246 ms for a fresh CLI process. These are local
+synthetic measurements of Daymark. They exclude model generation and
+network latency.

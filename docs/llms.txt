@@ -1,16 +1,20 @@
 # Daymark
 
-> A task system that simplifies the complexities of real life. For AI agents handling a person's projects and life: separate hard deadlines from plans, fixed and after-completion recurrence, a single "what is ready now" rule, claims, notes, proposals a person accepts, and durable reminders. One SQLite file; no cloud, model or account. Python 3.11+, MIT.
+> Daymark keeps one person's commitments across agent sessions. Plans, deadlines, earliest starts and hoped-for finishes carry different meanings. An agent can recover a handoff, propose work for a person to decide on, and adapt advice to a request. The core uses SQLite and Python 3.11 or newer.
 
-Start with `daymark init` for a per-user database or `daymark init --here` for a project. Run `daymark prime` for live work and the workflow guide. Returning sessions can use `daymark prime --brief`.
+Check `daymark --version`. The tagged source release is 0.5.0. This development checkout identifies itself as 0.6.0.dev0. For the guide that matches an installed development CLI, run `daymark onboard --skill`.
 
-## Docs
+## Start here
 
-- [Agent guide](https://github.com/lavallee/daymark/blob/main/docs/agents.md): every everyday command, the date grammar, output and error codes, MCP setup
-- [Work and life](https://github.com/lavallee/daymark/blob/main/docs/work-and-life.md): what Daymark is for, how it differs from Beads, what it leaves to other layers
-- [README](https://github.com/lavallee/daymark/blob/main/README.md): install, quickstart, the typed engine
-- [Decisions](https://github.com/lavallee/daymark/blob/main/docs/decisions.md): the contract behind each default
-- [Operations](https://github.com/lavallee/daymark/blob/main/docs/operations.md): HTTP service, reminder worker, backup and restore
+- [Agent guide](agents.md) covers first use, dates, reading, writing, errors and safe retries.
+- [MCP clients](mcp.md) covers a read-only first connection, scoped pickup, structured results and recovery after a lost reply.
+- [Working with a person's preferences](working-preferences.md) covers one answer, a standing workspace choice and a personal choice that expires.
+- [Work and life](work-and-life.md) shows how Daymark can work beside Beads, Things and Todoist.
+- [Operations](operations.md) covers authenticated HTTP, recording reminders, transfers and restoring a backup.
+- [Architecture](architecture.md) and [strategy extensions](strategy-plugins.md) explain which facts belong in the engine and how a host can supply another way of working.
 
-- [Working preferences](https://github.com/lavallee/daymark/blob/main/docs/working-preferences.md) covers one-call changes and explicit workspace preferences.
-- [MCP clients](https://github.com/lavallee/daymark/blob/main/docs/mcp.md) covers stdio setup, replay and structured results.
+## Evidence and source
+
+- [Agent journeys](research/agent-journeys.md) includes a reproducible synthetic client evaluation.
+- [MCP trials](research/mcp-client-trials.md) records the actual clients, outcomes and limits.
+- [Project source and installation](https://github.com/lavallee/daymark) provides the README and release tags.

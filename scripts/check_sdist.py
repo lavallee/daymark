@@ -23,6 +23,7 @@ REQUIRED = [
     "scripts/agent_journey.py",
     "scripts/smoke_install.py",
     "scripts/smoke_http.py",
+    "deploy/daymark-recorder.service",
     "scripts/smoke_client.py",
     "scripts/smoke_mcp.py",
     "scripts/check_sdist.py",

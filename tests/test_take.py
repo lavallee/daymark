@@ -199,3 +199,50 @@ def test_take_context_is_an_exact_delegation_filter_bound_to_the_operation():
             t.take(context="")
     finally:
         store.close()
+
+
+def test_project_take_handles_reassignment_original_receipts_and_empty_queues(tmp_path, capsys):
+    import json
+    from contextlib import closing
+
+    from daymark.client import Client
+    from daymark.mcp import handle
+
+    path = tmp_path / "worker.sqlite"
+    with closing(Store(path)) as store, closing(Store(path)) as coordinator:
+        seed = Tasks(coordinator, "trial", actor="coordinator")
+        worker = Tasks(store, "trial", actor="reader")
+        seed.project("Print program", id="press", scope="studio")
+        seed.project("Other studio work", id="other", scope="studio")
+        seed.add("Off-project job", id="outside", project="other", scope="studio", priority=1, move="agent")
+        seed.add("Human decision", id="human", project="press", move="answer")
+        seed.add("Prepare proof", id="proof", project="press", move="agent")
+        assert [r["id"] for r in worker.ready(project="press", move="agent")] == ["proof"]
+        seed.edit("proof", project="other")
+        assert worker.take(project="press", op="empty") is None
+        seed.edit("proof", project="press")
+        assert worker.take(project="press", op="empty") is None
+        auth = {"token": {"workspace": "trial", "principal": "reader"}}
+        with TestClient(create_app(store, auth)) as app, Client(
+            "http://sample.invalid", "token", transport=app._transport
+        ) as client:
+            remote = Tasks(client, actor="different-local-label")
+            args = {"action": "take", "project": "press", "op": "select"}
+            msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": "daymark_act", "arguments": args}}
+            receipt = handle(remote, msg)["result"]["structuredContent"]
+            assert (receipt["id"], receipt["project_id"], receipt["claimed_by"]) == ("proof", "press", "reader")
+        worker.release("proof")
+        seed.edit("proof", project="other")
+        assert worker.take(project="press", op="select")["project_id"] == "press"
+        assert worker.get("proof")["claimed_by"] is None and worker.get("outside")["claimed_by"] is None
+        with pytest.raises(DomainError, match="different request"):
+            worker.take(project="other", op="select")
+        # The same operation submitted with the pre-project payload still replays.
+        original = store.execute("trial", "legacy", "take",
+                                 {"owner": "reader", "scope": None, "lease_seconds": 3600},
+                                 expected_version=0, actor="reader")
+        assert worker.take(op="legacy") == original["task"]
+    assert main(["--db", str(path), "--workspace", "trial", "--as", "reader",
+                 "take", "--project", "press", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) is None

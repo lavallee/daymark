@@ -14,7 +14,7 @@ from .views import claim_holder, why
 
 _DEFAULTS = Entity(id="x", workspace="x", kind="task").model_dump(mode="json")
 _ALWAYS = ("id", "kind", "title", "status", "version")
-EMPTY_TAKE = "No unclaimed agent task is ready in this scope."
+EMPTY_TAKE = "No unclaimed agent task is ready for this selection."
 _BOOKKEEPING = {"workspace", "created_at", "updated_at"}
 _ROW_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
@@ -48,7 +48,6 @@ _LIST_FIELDS = (
     "stage",
     "assignee_id",
 )
-
 
 def list_record(entity, now, *, line_fields=False):
     """List fields as data. Keep detail bodies off queue reads and compact service transfers."""
@@ -183,15 +182,16 @@ def line(item: dict, now=None, reason=True, *, timezone="UTC", multiline=False) 
     return row if multiline else _single_line(row)
 
 
+def ready_previews(rows):
+    return "\n".join(_single_line(f"{item['id']}  {item['title']}  [{item['why']}]") for item in rows)
+
+
 def ready_explanation(view):
     ready, held = view["ready_count"], view["held_count"]
     if not ready and not held:
         return "No live tasks match this view."
     out = [f"{ready} ready, {held} held"]
-    out.extend(
-        _single_line(f"  {item['id']}  {item['title']}  [{item['why']}]")
-        for item in view["ready"]
-    )
+    out.extend("  " + row for row in ready_previews(view["ready"]).splitlines())
     if len(view["ready"]) < ready:
         out.append(f"  Showing {len(view['ready'])} of {ready}. Use --limit for more.")
     labels = {
@@ -280,18 +280,28 @@ def _read_hint(view, options, session, mcp):
         import json
 
         return "daymark_view " + json.dumps({"view": view, **options}, separators=(",", ":"))
-    command = ["daymark"]
+    # A service URL can contain a private mount path or credentials. A show
+    # suffix can be reused with the caller's original global service options.
+    remote_show = view == "show" and session and "endpoint" in session
+    command = [] if remote_show else ["daymark"]
     if session and "database" in session and session["database"] != ":memory:":
         command += [f"--db={session['database']}", f"--workspace={session['workspace']}",
                     f"--as={session['actor']}", f"--tz={session['timezone']}"]
     command.append(view)
     for key, value in options.items():
+        if view == "show" and key == "id":
+            continue
+        flag = "--" + key.replace("_", "-")
         if key == "scope" and value == "":
             command.append("--unscoped")
         elif str(value).startswith("-"):
-            command.append(f"--{key}={value}")
+            command.append(f"{flag}={value}")
         else:
-            command.extend([f"--{key}", str(value)])
+            command.extend([flag, str(value)])
+    if view == "show" and "id" in options:
+        if options["id"].startswith("-"):
+            command.append("--")
+        command.append(options["id"])
     return join(command)
 
 
@@ -545,7 +555,7 @@ def _cycle_line(id, cycle):
     return f"Circular wait. {chain}. Review the prerequisite or parent link."
 
 
-def brief_text(view: dict, *, timezone="UTC") -> str:
+def brief_text(view: dict, *, timezone="UTC", session=None, mcp=False, source=None) -> str:
     clipped = view.get("truncated", [])
     title = view["title"] + ("…" if "title" in clipped else "")
     archived = "archived, " if view.get("archived") else ""
@@ -597,13 +607,27 @@ def brief_text(view: dict, *, timezone="UTC") -> str:
             out.append(key.replace("_", " ") + ": " + (_blocker_labels(view) if key == "blocked_by" else ", ".join(view[key]))
                        + (f" (+{extra} more)" if extra else ""))
     omitted_notes = view["omitted"]["notes"]
+    selector = {"source": source} if source is not None else {"id": view["id"]}
+    more_tags = False
+    for key, label in (("label_ids", "Labels"), ("context_ids", "Contexts")):
+        if values := view.get(key):
+            remaining = view["omitted"].get(key, 0)
+            more_tags = more_tags or bool(remaining)
+            out.append(_single_line(f"{label}: " + ", ".join(values) + (f" (+{remaining} more)" if remaining else "")))
+    if not mcp and session and "endpoint" in session and (more_tags or omitted_notes or any(n.get("truncated") for n in view["notes"])):
+        out.append("For the following reads, append the show arguments to your original daymark --url and --token-env options.")
+    if more_tags:
+        out.append("Read all labels and contexts: " + _read_hint("show", selector, session, mcp))
     if omitted_notes:
-        out.append(f"{omitted_notes} earlier notes. Read before note {view['next_before_note']}.")
+        hint = _read_hint("show", {**selector, "before_note": view["next_before_note"]}, session, mcp)
+        out.append(f"{omitted_notes} earlier notes. Read older notes: {hint}")
     if view["omitted"]["newer_notes"]:
         out.append(f"{view['omitted']['newer_notes']} newer notes outside this page")
-    out.extend(note_text(note) for note in view["notes"])
-    if any(note.get("truncated") for note in view["notes"]):
-        out.append("Read a full note: daymark show ID --note NOTE_ID")
+    for note in view["notes"]:
+        out.append(note_text(note))
+        if note.get("truncated"):
+            hint = _read_hint("show", {**selector, "note": note["id"]}, session, mcp)
+            out.append(f"Read full note: {hint}")
     return "\n".join(out)
 
 
@@ -648,8 +672,9 @@ def show_text(ctx: dict, now=None) -> str:
     for key in ("project_id", "parent_id", "goal_id", "assignee_id"):
         if item[key]:
             out.append(f"{key.removesuffix('_id')}: {item[key]}")
-    if item.get("context_ids"):
-        out.append("contexts: " + ", ".join(item["context_ids"]))
+    for key, label in (("label_ids", "labels"), ("context_ids", "contexts")):
+        if item.get(key):
+            out.append(_single_line(label + ": " + ", ".join(item[key])))
     for check in item["checklist"]:
         out.append(f"  [{'x' if check['completed'] else ' '}] {check['text']}")
     if ctx["blocked_by"]:
@@ -847,6 +872,11 @@ def projects_text(view: dict) -> str:
         + "]"
         for p in view["projects"]
     ]
+    if "scope" in view:
+        label = view["scope"] or "(unscoped)"
+        if not out:
+            return f"No projects in {label}."
+        out.insert(0, f"Projects in {label}. Counts include all members of each project.")
     return "\n".join(out) if out else "No projects. Create one with `daymark project add TITLE`."
 
 
@@ -926,7 +956,8 @@ def presets_text(presets: dict) -> str:
 
 MCP_GUIDE = (
     "Use Daymark for the person's request\n"
-    '• Named scope or known ID? Use it on the first read. daymark_prime takes scope. For studio '
+    '• Keep a named scope on the first read. Use find with source and scope for an exact match. '
+    'daymark_prime takes scope. For studio '
     'decisions, daymark_view with view=ready, scope=studio and move=answer lists the relevant '
     'items. Keep the answer within the requested scope.\n'
     '• Read agenda with deadlines=true for hard cutoffs, including waiting work. Use show with '
@@ -967,7 +998,7 @@ Commands (add --json to any for structured output)
   daymark where                     explain database selection without opening it
   daymark prime --brief             current session without the command guide
   daymark onboard --skill           full agent skill for the installed CLI
-  daymark ready [--scope NAME] [--context ID] [--explain]   actionable work, with optional reasons work is held
+  daymark ready [--project ID] [--scope NAME] [--context ID] [--brief | --explain]   actionable work and holding reasons
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
     --deadlines                     hard deadlines only, including waiting and blocked tasks
   daymark show ID [--since-version N]   current detail or changes since a reviewed version
@@ -985,7 +1016,7 @@ Commands (add --json to any for structured output)
   daymark profile --saved           inspect named choices locally or on a current service
       advise runs service built-ins for the authenticated workspace. Save preferences locally.
       MCP use_profile receipts include restore_call for a version-checked reversal.
-  daymark --as WORKER take [--scope NAME] [--context ID]   claim the next unclaimed ready agent task
+  daymark --as WORKER take [--project ID] [--scope NAME] [--context ID]   claim a delegated ready task
   daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
   daymark note ID "text"            progress or context for the next session
   If a remote write is uncertain, repeat the same command and flags with the returned --op.
@@ -999,7 +1030,7 @@ Commands (add --json to any for structured output)
   daymark edit ID [--if-version N] [--due D] ...   (--due "" clears)
   daymark edit ID --waiting-on WHO  park open work; resume ID when the wait ends
   daymark block ID --on OTHER / unblock ID --on OTHER
-  daymark find TEXT [--kind memory] [--page]   find work or a remembered fact
+  daymark find TEXT [--kind memory] [--page]   match titles and descriptions; --page gives compact hits
   daymark find --source SYSTEM:KIND:ID --scope NAME   check a source inside a scope
   daymark find --status proposed    list tasks awaiting acceptance
   daymark find TEXT --archived [--kind memory]   search archived records only
@@ -1009,7 +1040,7 @@ Commands (add --json to any for structured output)
   daymark forget MEMORY_ID [--if-review TOKEN]   retire a remembered fact from pickup
   daymark undo ID --if-version N --if-review TOKEN   reverse the reviewed latest change
 Projects (as plain or as structured as the work needs)
-  daymark projects / plan P [--by milestone|type|parent|FIELD]   see a project
+  daymark projects [--scope NAME] / plan P [--by milestone|type|parent|FIELD]
   daymark add "T" --project P [--stage S] [--assignee NAME] [--milestone M]
   daymark move ID [--stage S] [--after X|--before X|--first|--last]
       a stage sets the status; done, cancel and reopen move the card too
@@ -1026,7 +1057,7 @@ ONBOARD = """\
 <!-- daymark:begin -->
 ## Tasks: Daymark
 
-This project tracks tasks, plans and deadlines in Daymark.
+Use Daymark for commitments assigned to it by this project.
 
 - Run `daymark prime` at the start of a session for the workflow and current state.
 - Use `daymark ready`, `daymark show ID`, `daymark claim ID`, `daymark note ID "..."`

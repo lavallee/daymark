@@ -125,7 +125,7 @@ def in_scope(item, scope) -> bool:
     return scope is None or (item["scope"] or "") == scope
 
 
-def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None, context=None, brief=False):
+def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, scope=None, context=None, project=None, brief=False):
     """Open tasks that can be acted on now, most pressing first.
 
     A task is ready when it is open and unarchived, its earliest start has
@@ -136,18 +136,20 @@ def ready(store, workspace, *, now=None, limit=50, owner=None, next_move=None, s
     ``scope`` narrows to one scope, or with ``""`` to items that have none.
     Tasks the person has put in focus come first, in their order.
     """
-    _check_ready_query(limit, next_move, scope)
+    _check_ready_query(limit, next_move, scope, project)
     now = normalize_now(now)
-    return _read_ready(store, workspace, now, owner, next_move, scope, context=context, limit=limit, brief=brief)
+    return _read_ready(store, workspace, now, owner, next_move, scope, context=context, project=project, limit=limit, brief=brief)
 
 
-def _check_ready_query(limit, next_move, scope):
+def _check_ready_query(limit, next_move, scope, project):
     if type(limit) is not int or not 1 <= limit <= 1000:
         raise DomainError("invalid", "Limit must be between 1 and 1000")
     if next_move not in (None, "person", "answer", "agent"):
         raise DomainError("invalid", "next_move must be person, answer or agent")
     if scope is not None and not isinstance(scope, str):
         raise DomainError("invalid", "Scope must be a name or an empty string")
+    if project is not None and (not isinstance(project, str) or not 1 <= len(project) <= 128):
+        raise DomainError("invalid", "Project must be a nonempty entity ID of at most 128 characters")
 
 
 def _readiness_reasons(item, now, owner, *, blocked, has_children):
@@ -188,7 +190,7 @@ _READY_FIELDS = (
 )
 
 
-def _task_fields(store, workspace, statuses, fields, *, next_move=None, scope=None, context=None, deadlines=False):
+def _task_fields(store, workspace, statuses, fields, *, next_move=None, scope=None, context=None, project=None, deadlines=False):
     if scope is not None and not isinstance(scope, str):
         raise DomainError("invalid", "Scope must be a name or an empty string")
     marks = ",".join("?" * len(statuses))
@@ -197,17 +199,19 @@ def _task_fields(store, workspace, statuses, fields, *, next_move=None, scope=No
         f"AND status IN ({marks})"
     )
     args = [workspace, *statuses]
-    if context is not None:
-        if not isinstance(context, str) or not 1 <= len(context) <= 128:
-            raise DomainError("invalid", "Context must be a nonempty entity ID")
+    for kind, field, target in (("context", "context_ids", context), ("project", "project_id", project)):
+        if target is None:
+            continue
+        if not isinstance(target, str) or not 1 <= len(target) <= 128:
+            raise DomainError("invalid", f"{kind.capitalize()} must be a nonempty entity ID")
         found = store.db.execute("SELECT kind FROM daymark_entities WHERE workspace=? AND id=?",
-                                 (workspace, context)).fetchone()
-        if not found or found[0] != "context":
-            raise DomainError("not_found", "Context not found in this workspace",
-                              ["List available contexts with daymark find --kind context."])
+                                 (workspace, target)).fetchone()
+        if not found or found[0] != kind:
+            raise DomainError("not_found", f"{kind.capitalize()} not found in this workspace",
+                              [f"List available {kind}s with daymark find --kind {kind}."])
         base += (" AND id IN (SELECT source_id FROM daymark_refs "
-                 "WHERE workspace=? AND field='context_ids' AND target_id=?)")
-        args.extend((workspace, context))
+                 "WHERE workspace=? AND field=? AND target_id=?)")
+        args.extend((workspace, field, target))
     base_args = tuple(args)
     paths = ",".join(f"'$.{field}'" for field in fields)
     query = f"SELECT id,status,json_extract(data,{paths})" + base
@@ -300,9 +304,13 @@ def _entity_previews(store, workspace, ids):
     return found
 
 
-def _ready_summaries(store, workspace, top, now):
+def _ready_summaries(store, workspace, top, now, project=None):
     details = _entity_previews(store, workspace, [item["id"] for item in top])
-    return [ready_record({**item, **details[item["id"]]}, now) for item in top]
+    records = [ready_record({**item, **details[item["id"]]}, now) for item in top]
+    if project is not None:
+        for row in records:
+            row["project_id"] = project
+    return records
 
 
 def blocker_previews(store, workspace, blocked):
@@ -381,30 +389,34 @@ def _is_ready(item, now, owner, blocked, containers):
     )
 
 
-def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=False, context=None):
+def _read_ready(store, workspace, now, owner, next_move, scope, *, limit, brief=False, context=None, project=None):
     """Rank projected fields and hydrate the selected page inside the same read snapshot."""
     with store._lock:
         if not _usable(store):
+            if project is not None:
+                raise DomainError("not_found", "Project not found in this workspace")
             return []
         with store._transaction(write=False):
             blocked, containers = _readiness_links(store, workspace)
             items = _task_fields(
-                store, workspace, ("open",), _READY_FIELDS, next_move=next_move, scope=scope, context=context
+                store, workspace, ("open",), _READY_FIELDS, next_move=next_move, scope=scope, context=context, project=project
             )
             eligible = (item for item in items if _is_ready(item, now, owner, blocked, containers))
             top = heapq.nsmallest(limit, eligible, key=lambda item: urgency(item, now)[0])
             if brief:
-                return _ready_summaries(store, workspace, top, now)
+                return _ready_summaries(store, workspace, top, now, project)
             full = _fetch(store, workspace, (item["id"] for item in top))
             return [full[item["id"]] for item in top]
 
 
-def explain_ready(store, workspace, *, now=None, limit=20, owner=None, next_move=None, scope=None, context=None):
+def explain_ready(store, workspace, *, now=None, limit=20, owner=None, next_move=None, scope=None, context=None, project=None):
     """The ready page and a census of live tasks held back within the selected filters."""
-    _check_ready_query(limit, next_move, scope)
+    _check_ready_query(limit, next_move, scope, project)
     now = normalize_now(now)
     result = {"ready": [], "ready_count": 0, "held_count": 0, "reasons": {},
               "filters": {"move": next_move, "scope": scope, **({"context": context} if context is not None else {})}}
+    if project is not None:
+        result["filters"]["project"] = project
 
     def eligible(items, blocked, containers):
         for item in items:
@@ -432,14 +444,16 @@ def explain_ready(store, workspace, *, now=None, limit=20, owner=None, next_move
 
     with store._lock:
         if not _usable(store):
+            if project is not None:
+                raise DomainError("not_found", "Project not found in this workspace")
             return result
         with store._transaction(write=False):
             blocked, containers = _readiness_links(store, workspace)
             items = _task_fields(store, workspace, LIVE, _READY_FIELDS,
-                                 next_move=next_move, scope=scope, context=context)
+                                 next_move=next_move, scope=scope, context=context, project=project)
             top = heapq.nsmallest(limit, eligible(items, blocked, containers),
                                   key=lambda item: urgency(item, now)[0])
-            result["ready"] = _ready_summaries(store, workspace, top, now)
+            result["ready"] = _ready_summaries(store, workspace, top, now, project)
     return result
 
 

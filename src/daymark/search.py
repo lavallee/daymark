@@ -6,11 +6,26 @@ import unicodedata
 from typing import get_args
 
 from .models import DomainError, Entity, SourceRef, normalize_now
-from .views import _usable, claim_holder
+from .views import _id_pages, _usable, claim_holder
 
 
 def fold_text(text):
     return unicodedata.normalize("NFC", text.casefold())
+
+
+def matches_text(needle, title, description):
+    return not needle or needle in fold_text(title) or needle in fold_text(description)
+
+
+def validate_claim_filters(kind, archived, claimed):
+    if type(archived) is not bool:
+        raise DomainError("invalid", "archived must be true or false")
+    if type(claimed) is not bool:
+        raise DomainError("invalid", "claimed must be true or false")
+    if archived and claimed:
+        raise DomainError("invalid", "Choose either archived records or live claims")
+    if claimed and kind != "task":
+        raise DomainError("invalid", "Only tasks have work claims")
 
 
 _KINDS = get_args(Entity.model_fields["kind"].annotation)
@@ -45,7 +60,7 @@ def validate_filters(text, kind, status, scope, after, limit):
         raise DomainError("invalid", "Limit must be between 1 and 1000")
 
 
-def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now, *, archived, source=None):
+def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now, *, archived, source=None, context=None):
     sql = " FROM daymark_entities WHERE workspace=? AND kind=? AND archived=?"
     args = [workspace, kind, int(archived)]
     if source is not None:
@@ -57,6 +72,10 @@ def _rows(store, workspace, kind, status, scope, after, search_description, clai
     if after is not None:
         sql += " AND id>?"
         args.append(after)
+    if context is not None:
+        sql += (" AND id IN (SELECT source_id FROM daymark_refs WHERE workspace=? "
+                "AND field='context_ids' AND target_id=?)")
+        args.extend([workspace, context])
     # Indexable filters use relational columns. Keep note trails and other large
     # JSON fields inside SQLite, even when only a few hits match the text.
     description = "json_extract(data,'$.description')" if search_description else "''"
@@ -106,7 +125,7 @@ def _rows(store, workspace, kind, status, scope, after, search_description, clai
 def _matches(rows, needle, limit, *, archived=False):
     out = []
     for id, kind, state, version, title, scope, description, *claim in rows:
-        if needle and needle not in fold_text(title) and needle not in fold_text(description):
+        if not matches_text(needle, title, description):
             continue
         if len(out) == limit:
             return {"items": out, "next": out[-1]["id"]}
@@ -119,6 +138,49 @@ def _matches(rows, needle, limit, *, archived=False):
             hit["scope"] = scope
         out.append(hit)
     return {"items": out, "next": None}
+
+
+# The data needed for the ordinary text listing. Keep note/description bodies
+# off the wire even when the selected entity has years of recorded work.
+_HIT_FIELDS = ("id", "kind", "status", "title", "version")
+_REMINDER_FIELDS = ("scheduled_at", "reminder_state", "recipient_id", "channel", "task_id")
+_LINE_FIELDS = _HIT_FIELDS + (
+    "priority", "archived", "created_at", "deadline", "planned", "earliest_start",
+    "latest_target", "waiting_on", "recurrence", "condition", "advances", "focus",
+    "scope", "stage", "milestone", "next_move", "estimate_minutes", "claimed_by",
+    "claim_until", "depends_on",
+) + _REMINDER_FIELDS
+
+
+def line_record(item):
+    out = {}
+    for key in _LINE_FIELDS:
+        if key in _REMINDER_FIELDS and item["kind"] != "reminder":
+            continue
+        if key in item and (key in _HIT_FIELDS or item[key]):
+            out[key] = item[key]
+    return out
+
+
+def _records(store, workspace, hits, projection):
+    """Hydrate selected IDs in their original order within the search snapshot."""
+    out = []
+    paths = ",".join(f"'$.{key}'" for key in _LINE_FIELDS)
+    for ids in _id_pages(store, [hit["id"] for hit in hits]):
+        marks = ",".join("?" * len(ids))
+        table = f" FROM daymark_entities WHERE workspace=? AND id IN ({marks}) ORDER BY id"
+        if projection == "line":
+            try:
+                rows = store.db.execute(f"SELECT json_extract(data,{paths})" + table, (workspace, *ids))
+                out.extend(line_record(dict(zip(_LINE_FIELDS, json.loads(row), strict=True))) for (row,) in rows)
+                continue
+            except sqlite3.OperationalError as exc:
+                if "no such function: json_extract" not in str(exc):
+                    raise
+        rows = store.db.execute("SELECT data" + table, (workspace, *ids))
+        items = (json.loads(row) for (row,) in rows)
+        out.extend(map(line_record, items) if projection == "line" else items)
+    return out
 
 
 def entity_filters(kind, status, *, scope=None, context=None):
@@ -176,30 +238,36 @@ def page(
     source=None,
     claimed_by=None,
     now=None,
+    context=None,
+    projection=None,
 ):
     validate_filters(text, kind, status, scope, after, limit)
     if claimed_by is not None and (
         not isinstance(claimed_by, str) or not 1 <= len(claimed_by) <= 200
     ):
         raise DomainError("invalid", "A claim owner must contain 1 to 200 characters")
-    if type(archived) is not bool:
-        raise DomainError("invalid", "archived must be true or false")
-    if archived and claimed_by is not None:
-        raise DomainError("invalid", "Choose either archived records or live claims")
-    if claimed_by is not None and kind != "task":
-        raise DomainError("invalid", "Only tasks have work claims")
+    validate_claim_filters(kind, archived, claimed_by is not None)
+    if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
+        raise DomainError("invalid", "Context must be a nonempty entity ID of at most 128 characters")
+    if projection not in (None, "line", "entity"):
+        raise DomainError("invalid", "Search projection must be line or entity")
     ref = SourceRef.parse_ref(source) if source is not None else None
     instant = normalize_now(now) if claimed_by else None
     needle = fold_text(text or "")
-    with store._lock:
+    with store.read_snapshot() if projection else store._lock:
         if _usable(store):
             rows = _rows(
                 store, workspace, kind, status, scope, after, bool(needle), claimed_by, instant,
-                archived=archived, source=ref,
+                archived=archived, source=ref, context=context,
             )
             result = _matches(rows, needle, limit, archived=archived)
         else:
             result = {"items": [], "next": None}
+        if projection:
+            result["items"] = _records(store, workspace, result["items"], projection)
+            result["projection"] = projection
+    if context is not None:
+        result["context"] = context
     if ref is not None:
         result["source"] = ref.model_dump()
     if archived:

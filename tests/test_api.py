@@ -652,3 +652,25 @@ def test_backup_on_filesystem_without_links_and_empty_source(tmp_path, monkeypat
         assert db.execute("SELECT value FROM items").fetchall() == [("proof",)]
     with pytest.raises(FileExistsError):
         _copy_database(source, destination)
+
+
+def test_online_backup_is_a_self_contained_read_only_file(tmp_path):
+    from contextlib import closing
+
+    from daymark import Store, Tasks
+    from daymark.cli import _copy_database
+
+    live = tmp_path / "live.db"
+    destination = tmp_path / "archive"
+    destination.mkdir()
+    copy = destination / "backup.db"
+    with closing(Store(live)) as writer:
+        Tasks(writer, "sample").add("Proof forms", id="proof")
+        _copy_database(live, copy)
+        assert writer.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        with closing(Store(copy, read_only=True)) as reader:
+            assert reader.db.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+            assert reader.get("sample", "proof")["title"] == "Proof forms"
+            assert list(destination.iterdir()) == [copy]
+    with closing(Store(copy)) as restored:
+        assert restored.db.execute("PRAGMA journal_mode").fetchone() == ("wal",)

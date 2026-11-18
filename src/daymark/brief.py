@@ -12,6 +12,8 @@ _NOTE_LIMIT = 3
 _TEXT_LIMIT = 240
 _PREVIEW_BYTES = 4 * (_TEXT_LIMIT + 1)
 _LINK_LIMIT = 5
+_TAG_FIELDS = ("label_ids", "context_ids")
+_TAG_LIMIT = 3
 _FIELDS = (
     "id",
     "kind",
@@ -37,17 +39,26 @@ _FIELDS = (
 
 def _projected_row(store, workspace, id, before_note):
     paths = ",".join(f"'$.{key}'" for key in _FIELDS)
+    # Keep each list's order and total without transferring all its IDs.
+    tags = []
+    for key in _TAG_FIELDS:
+        indices = ",".join(f"'$.{key}[{i}]'" for i in range(_TAG_LIMIT))
+        tags.extend([f"json_extract(data,{indices})", f"json_array_length(data,'$.{key}')"])
     row = store.db.execute(
         f"SELECT json_extract(data,{paths}), "
         "substr(CAST(json_extract(data,'$.title') AS BLOB),1,?),"
         "substr(CAST(json_extract(data,'$.description') AS BLOB),1,?), "
-        "json_array_length(data,'$.notes'), substr(CAST(json_extract(data,'$.series_id') AS BLOB),1,?) "
+        "json_array_length(data,'$.notes'), substr(CAST(json_extract(data,'$.series_id') AS BLOB),1,?), "
+        f"{','.join(tags)} "
         "FROM daymark_entities WHERE workspace=? AND id=?",
         (_PREVIEW_BYTES, _PREVIEW_BYTES, _PREVIEW_BYTES, workspace, id),
     ).fetchone()
     if row is None:
         raise DomainError("not_found", "Entity not found")
     item = dict(zip(_FIELDS, json.loads(row[0])))
+    for key, values, total in zip(_TAG_FIELDS, row[5::2], row[6::2], strict=True):
+        item[key] = [v for v in json.loads(values) if v is not None]
+        item[key + "_count"] = total or 0
     encoding = store._text_encoding()
     item.update(
         title=(row[1] or b"").decode(encoding, errors="ignore"),
@@ -210,6 +221,12 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None, actor=
         "blocked_by": len(blocked) - len(out["blocked_by"]),
         "active_children": child_count - len(children),
     }
+    for key in _TAG_FIELDS:
+        if values := item.get(key):
+            out[key] = values[:_TAG_LIMIT]
+            total = item.get(key + "_count", len(values))
+            if total > len(out[key]):
+                out["omitted"][key] = total - len(out[key])
     if refs:
         out["source_refs"] = refs
     if source_count > len(refs):

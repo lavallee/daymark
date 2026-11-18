@@ -87,7 +87,7 @@ REFS = {
 
 
 class Store:
-    def __init__(self, path, *, upgrade=True, read_only=False):
+    def __init__(self, path, *, upgrade=True, read_only=False, require_existing=False):
         """Open a database path (Store owns its commits) or a caller's connection.
 
         A database written by an older Daymark is upgraded in place on open, inside
@@ -95,23 +95,35 @@ class Store:
         ``upgrade=False`` an older or missing schema is refused with ``conflict``
         instead, and nothing is written. A schema newer than this code is always
         refused: Daymark never downgrades a file. With `read_only=True`, a path
-        opens via SQLite mode=ro and local reads see committed updates.
+        opens via SQLite mode=ro and local reads see committed updates. With
+        require_existing=True, open an existing Daymark database and allow recognized
+        older schemas to upgrade according to the upgrade option.
         """
         self._owned = not isinstance(path, sqlite3.Connection)
+        existing_file = self._owned and (read_only or require_existing)
         if read_only:
             if not self._owned:
                 raise DomainError("invalid", "Open a caller-owned connection with SQLite mode=ro and upgrade=False")
-            if not Path(path).is_file():
-                raise DomainError("no_database", "A read-only session needs an existing database")
-            path = Path(path).resolve().as_uri() + "?mode=ro"
             upgrade = False
+        if existing_file:
+            if not Path(path).is_file():
+                raise DomainError(
+                    "no_database", "The selected path does not name an existing database file",
+                    ["Inspect the selection with daymark where. For a new file, use daymark --db PATH init."],
+                )
+            path = Path(path).resolve().as_uri() + ("?mode=ro" if read_only else "?mode=rw")
         self._upgrade = upgrade
         self.db = (
-            sqlite3.connect(path, check_same_thread=False, timeout=30, uri=read_only) if self._owned else path
+            sqlite3.connect(path, check_same_thread=False, timeout=30, uri=existing_file) if self._owned else path
         )
         self._lock = threading.RLock()
         self._actor = None  # Who is acting in the current execute; recorded on its events.
         try:
+            if require_existing and not self._has_schema():
+                raise DomainError(
+                    "no_database", "This file contains no Daymark database",
+                    ["Inspect the selection with daymark where. To initialize a new Daymark file, use daymark --db PATH init."],
+                )
             self._check_schema(upgrading=upgrade)
             if not upgrade:
                 return
@@ -132,8 +144,13 @@ class Store:
                     "Stored schema is older than this Daymark and the connection is "
                     "read-only; open it writable once to upgrade it",
                 ) from None
-        except BaseException:
+        except BaseException as exc:
             self.close()
+            if existing_file and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_NOTADB:
+                raise DomainError(
+                    "invalid", "SQLite could not recognize the selected database file",
+                    ["Check the selected path with daymark where."],
+                ) from None
             raise
 
     def stored_schema(self):
@@ -1015,7 +1032,7 @@ class Store:
             # attribute its event to the caller's actual operation ID.
             action = "claim"
             expected_version = candidate["version"]
-            payload = {key: value for key, value in payload.items() if key not in {"scope", "context"}}
+            payload = {key: value for key, value in payload.items() if key not in {"scope", "context", "project"}}
             payload["id"] = candidate["id"]
         before = None
         if action == "create":
@@ -1255,7 +1272,7 @@ class Store:
 
     def _take_candidate(self, workspace, payload, now):
         """Selection uses the same readiness and ordering that the worker sees."""
-        if set(payload) - {"owner", "scope", "context", "lease_seconds"}:
+        if set(payload) - {"owner", "scope", "context", "project", "lease_seconds"}:
             invalid("Unexpected take fields")
         owner, scope = payload.get("owner"), payload.get("scope")
         if not isinstance(owner, str) or not owner.strip() or len(owner) > 200:
@@ -1270,8 +1287,8 @@ class Store:
         context = payload.get("context")
         if context is not None and (not isinstance(context, str) or not 1 <= len(context) <= 128):
             invalid("Context must be an entity ID")
-        ready = self.ready(workspace, now=now, limit=1, next_move="agent", scope=scope,
-                           **({"context": context} if context is not None else {}))
+        filters = {key: payload[key] for key in ("context", "project") if key in payload}
+        ready = self.ready(workspace, now=now, limit=1, next_move="agent", scope=scope, **filters)
         return ready[0] if ready else None
 
     def _claim_action(self, raw, before, action, payload, now):
@@ -2140,12 +2157,13 @@ class Store:
         return compile_node(ast, 0)
 
     def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
-               archived=False, source=None, claimed_by=None, now=None):
+               archived=False, source=None, claimed_by=None, now=None, context=None, projection=None):
         """Search titles and descriptions. Continue from the last ID with the same filters."""
         from .search import page
 
         return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit,
-                    archived=archived, source=source, claimed_by=claimed_by, now=now)
+                    archived=archived, source=source, claimed_by=claimed_by, now=now,
+                    context=context, projection=projection)
 
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
@@ -2167,19 +2185,19 @@ class Store:
             rows = self._rows(workspace, kind=narrowed.get("kind"), status=status)
         return [item for item in rows if test(item)]
 
-    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, brief=False):
+    def ready(self, workspace, *, now=None, limit=50, owner=None, next_move=None, context=None, scope=None, project=None, brief=False):
         """Open tasks that can be acted on now, most pressing first. See views.ready."""
         from . import views
 
         return views.ready(
-            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, brief=brief
+            self, workspace, now=now, limit=limit, owner=owner, next_move=next_move, scope=scope, context=context, project=project, brief=brief
         )
 
-    def explain_ready(self, workspace, *, now=None, limit=20, owner=None, next_move=None, context=None, scope=None):
+    def explain_ready(self, workspace, *, now=None, limit=20, owner=None, next_move=None, context=None, scope=None, project=None):
         from . import views
 
         return views.explain_ready(self, workspace, now=now, limit=limit,
-                                   owner=owner, next_move=next_move, scope=scope, context=context)
+                                   owner=owner, next_move=next_move, scope=scope, context=context, project=project)
 
     def agenda(self, workspace, *, now=None, days=7, context=None, scope=None, deadlines=False):
         """Overdue, today, upcoming, waiting and proposed tasks. See views.agenda."""

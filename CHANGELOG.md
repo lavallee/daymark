@@ -9,6 +9,8 @@ remains `0.5.0`.
 
 ### Upgrade and compatibility
 
+- Ordinary workspace display commands return `no_database` for missing paths or SQLite files with no Daymark tables. Use `where` to check the selection and `init` to create a database.
+
 - Make a native SQLite backup before upgrading. The schema marker stays at
   6. A writable open installs setting-revision tracking, including for later
   writes by a v0.5.0 process. A caller-owned connection must commit this
@@ -40,14 +42,22 @@ remains `0.5.0`.
 - `agenda --deadlines --days N` shows agreed hard cutoffs, including work
   that is waiting or blocked. The ordinary text agenda separates earlier
   plans from work due or planned today.
+- `ready --brief --json` returns the same compact queue rows as the structured MCP ready view. UIs can show the reason for each suggestion without loading its note history.
 - `ready --explain` counts eligible and held tasks and gives examples for
   each reason. A brief shows the reviewed task's blockers, claim, attributed
   notes and source. It can identify a circular wait through a dependency
   and an unfinished child. A recurring brief names the round and date advanced.
+- `ready --project ID` selects eligible project members before applying
+  the limit. `take --project ID` claims an explicitly delegated member inside
+  the same selection transaction. `projects --scope NAME` selects projects by their own scope
+  and keeps their whole-project rollups.
 - `find --page` supports cursor-based results and filters for scope, kind,
   status, active claims and archived work. `--source SYSTEM:KIND:ID` checks
   an exact external reference within the filters. `show --source REF`
-  retrieves a known record, including archived records.
+  retrieves a known record, including archived records. Ordinary and paged
+  text search share Unicode matching. Bounded ordinary searches load detail
+  only for selected records. Plain listings keep note bodies off the wire on
+  the current service.
 - `daymark activity --after CHECKPOINT` follows changes and handoff notes.
   `show ID --since-version N` compares the current record with a reviewed
   version, including field excerpts and attributed note changes. Use
@@ -92,6 +102,10 @@ remains `0.5.0`.
   and cancels an outstanding retry.
 
 ### Installing and embedding
+
+- SQLite backups contain the committed WAL data and can be read from a sealed,
+  read-only folder as a single file. A writable Daymark open selects WAL
+  again. A pre-existing backup destination is preserved.
 
 - The wheel includes the matching agent skill, available through `onboard
   --skill`. The source distribution includes contributor guides and verification

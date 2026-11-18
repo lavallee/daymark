@@ -65,7 +65,7 @@ def test_client_can_distinguish_protocol_failure(tasks, message, code):
         ("daymark_add", {"title": "Compare samples", "priority": 5}),
         ("daymark_act", {"id": "sample", "action": "done", "until": "tomorrow"}),
         ("daymark_remember", {"text": "Use metric samples", "op": ""}),
-        ("daymark_view", {"view": "projects", "scope": "sample"}),
+        ("daymark_view", {"view": "projects", "days": 3}),
     ],
 )
 def test_bad_tool_arguments_get_recoverable_errors_before_any_write(tasks, name, fields):

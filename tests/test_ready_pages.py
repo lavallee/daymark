@@ -1,5 +1,6 @@
 """Ready's bounded read must preserve ordering, snapshots and the full entity."""
 
+import json
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -200,3 +201,23 @@ def test_views_page_ids_with_the_embedding_connections_sqlite_limit():
         assert handoff["blocked_by"] == ids[:5] and handoff["omitted"]["blocked_by"] == 37
         assert {item["id"] for item in tasks.ready(limit=42)} == set(ids)
         assert {item["id"] for item in tasks.agenda()["today"]} == set(ids)
+
+
+def test_cli_ready_brief_and_mcp_structured_queue_return_the_same_small_page(tmp_path, capsys):
+    from daymark.cli import main
+    from daymark.mcp_views import read_view
+
+    path = tmp_path / "sample.db"
+    with closing(Store(path)) as store:
+        tasks = Tasks(store, "default")
+        tasks.add("Check " + "labels " * 60, id="check", note="Sample trail " * 650)
+        expected = read_view(tasks, {"view": "ready", "json": True}).data["items"]
+    cli = ["--db", str(path), "ready"]
+    assert main([*cli, "--brief", "--json"]) == 0
+    compact = capsys.readouterr().out
+    assert json.loads(compact) == expected
+    assert "Sample trail" not in compact and len(compact.encode()) < 650
+    assert main([*cli, "--json"]) == 0
+    assert "Sample trail" in capsys.readouterr().out
+    assert main([*cli, "--brief"]) == 0
+    assert expected[0]["why"] in capsys.readouterr().out

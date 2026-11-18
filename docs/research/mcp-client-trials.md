@@ -210,6 +210,46 @@ an undated task with a note while waiting and added another note after
 setting the deadline. The observed difference was in partial capture and
 note-taking. Both sessions preserved the uncertainty about the instant.
 
+## First setup alongside two existing trackers
+
+We opened a synthetic checkout with one instruction file assigning code
+issues to Beads and another assigning approval decisions to an editorial
+board. The published 0.5.0 CLI printed the onboarding snippet and exposed
+six tools. Its MCP primer did not report the launched database, workspace
+or actor. It lacked the read-only switch and instruction-check command.
+
+A clean development wheel let us preview the instructions and check file
+selection before setup. After one project initialization, two independent
+stdio clients in different working directories each reported two tools,
+the same absolute database and workspace, and their distinct actor names.
+A symlink resolved to the expected file; a second initialized file with
+the same workspace produced a different path. No tasks or events were
+needed. Both databases kept their byte hashes. SQLite created WAL sidecars
+for the first read of one database.
+
+Both baseline executables treated a mistyped database filename as an empty
+ready queue and added eight Daymark tables to a second tracker’s SQLite file
+on a read. The corrected wheel refused both selections. The missing file
+remained absent and the tracker kept its single table. A first write to a
+deliberately selected new file still worked. Both instruction files retained
+their original tracker rules outside Daymark's section.
+
+A fresh read-only Claude Code worker read both instruction files. It assigned
+the defect to Beads and the approval to the editorial board. It left the
+printer follow-up unassigned, reported the correct workspace and actor, and
+found zero tasks. After the person assigned personal follow-ups to Daymark,
+it selected only the printer call and explained that the instruction files
+had not recorded this choice for future sessions. The files retained their
+hashes, with zero entities and zero events. An earlier harness configuration
+timed out before emitting its first session event.
+
+On HTTP the base wheel identified the required client extra. An absent token
+and a rejected token each produced `unauthenticated`. A stdio client with an
+invalid token still listed tools, then failed on its first data read. With
+valid credentials both clients confirmed the shared remote workspace and
+their respective service actors. A rejected limit of 1,001 could be
+corrected on the same connection.
+
 ## TypeScript SDK across local and authenticated connections
 
 The official TypeScript SDK 1.32.1 on Node.js 25.1.0 completed the same
@@ -247,6 +287,27 @@ at version 2. JSON views and errors remained available as text. A separate
 wire-level check exercised March's required batch support, including
 notification-only batches and hidden write refusal in a read-only session.
 [March 2025 protocol](https://modelcontextprotocol.io/specification/2025-03-26/basic).
+
+## A scoped goal with work in another scope
+
+Three studio conditions shared a goal elsewhere. One had an in-scope proposed
+task and an open task in another scope, one had no linked work, and one
+depended on a prerequisite elsewhere. A read-only worker was asked which
+conditions could move, which lacked work and which remained blocked.
+The first worker made 26 calls, never used `explore`, confused an empty
+ready-task list with an empty condition frontier and named the other goal
+and prerequisite. Two follow-up workers found the scoped condition view
+but still used full record detail and repeated out-of-scope information.
+
+The scoped `explore` result reports related work in other scopes by count
+and status. Session guidance distinguishes those aggregates from full detail.
+A fourth fresh worker used eight reads, all scoped, named both conditions
+that could move and identified the true gap and the blocked condition.
+It reported the one open linked task elsewhere without naming that task,
+its goal or the prerequisite. It also inferred that neither condition was
+actually being advanced. Task status and linkage establish recorded work;
+they cannot establish whether a person is working at the moment.
+All four trials left the seven fixture events intact.
 
 ## Undo after another worker has edited the task
 
@@ -345,7 +406,11 @@ With an exact `source` filter on `find`, fresh workers correctly returned
 case. The latter took a single call. The former used two calls after a
 rejected attempt at scoped full detail. Neither opened home detail or
 changed a record. In a separate larger queue, a scoped prime followed by
-scoped ready returned all eleven eligible studio IDs in two calls.
+scoped ready returned all eleven eligible studio IDs in two calls. After the
+session instructions also distinguished full detail from a scoped source
+check, two more fresh workers each used one scoped source search. Their
+answers identified the studio task and correctly reported the home-only
+source as “No match.”
 
 ## Choosing the first read
 

@@ -785,7 +785,7 @@ class Tasks:
             id, "claim", {"owner": self.actor, "lease_seconds": int(minutes) * 60}, op=op
         )
 
-    def take(self, *, scope=None, context=None, minutes=60, op=None):
+    def take(self, *, scope=None, context=None, project=None, minutes=60, op=None):
         """Claim the first unclaimed ready task explicitly delegated to an agent.
 
         Selection and claim share one transaction. Returns None for an empty
@@ -798,6 +798,8 @@ class Tasks:
         selection = {"owner": self.actor, "scope": scope, "lease_seconds": minutes * 60}
         if context is not None:
             selection["context"] = context
+        if project is not None:
+            selection["project"] = project
         result = self.engine.execute(
             *self._ws, self._op_id(op), "take", selection,
             expected_version=0, **self._who,
@@ -955,29 +957,31 @@ class Tasks:
             return {}
         return {"owner": self.actor} if self._ws else {"mine": True, "owner": self.actor}
 
-    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, brief=False):
-        """``scope`` narrows to one scope; ``""`` to tasks that have none."""
+    def ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None, brief=False):
+        """Select eligible tasks by their own scope, context memberships and explicit project."""
         return self.engine.ready(
             *self._ws,
             now=self._now,
             limit=limit,
             **self._read_owner(mine),
             **({"context": context} if context is not None else {}),
+            **({"project": project} if project is not None else {}),
             next_move=move,
             **({"brief": True} if brief else {}),
             **({} if scope is None else {"scope": scope}),
         )
 
-    def explain_ready(self, *, limit=20, move=None, mine=True, context=None, scope=None):
+    def explain_ready(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None):
         """Count actionable and held work and name examples of each holding reason."""
         return self.engine.explain_ready(
             *self._ws, now=self._now, limit=limit, next_move=move, scope=scope, context=context,
+            **({"project": project} if project is not None else {}),
             **self._read_owner(mine),
         )
 
-    def ready_summary(self, *, limit=20, move=None, mine=True, context=None, scope=None):
+    def ready_summary(self, *, limit=20, move=None, mine=True, context=None, scope=None, project=None):
         """Orientation-sized records, in precisely the same order as ready."""
-        return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, brief=True)
+        return self.ready(limit=limit, move=move, mine=mine, scope=scope, context=context, project=project, brief=True)
 
     def agenda(self, days=7, *, context=None, scope=None, deadlines=False):
         extra = {} if scope is None else {"scope": scope}
@@ -1310,20 +1314,31 @@ class Tasks:
             *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
         )
 
-    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None):
-        """Case-insensitive title or description search within one kind."""
-        from .search import entity_filters
+    def find(self, text=None, *, kind="task", status=None, limit=50, scope=None, context=None, brief=False):
+        """Find full records by title or description. A brief retains the fields for a listing."""
+        from .search import entity_filters, fold_text, line_record, matches_text
+        from .store import Store
 
-        items = self.engine.query(*self._ws, entity_filters(kind, status, scope=scope, context=context))
+        filters = entity_filters(kind, status, scope=scope, context=context)
+        # Keep Python slice semantics for unbounded reads (also used by caller
+        # strategies). A service with only the original query API still gets
+        # all scope and context predicates before it returns any records.
+        bounded = type(limit) is int and 1 <= limit <= 1000 and (text is None or len(text) <= 2000)
+        if bounded and isinstance(self.engine, (Store, Client)):
+            options = {"projection": "line" if brief else "entity"}
+            if context is not None:
+                options["context"] = context
+            if self._ws or self.engine.supports_search_options(*options):
+                return self.engine.search(*self._ws, text, kind=kind, status=status, scope=scope,
+                                          limit=limit, **options)["items"]
+        items = self.engine.query(*self._ws, filters)
         if scope is not None:
             items = [item for item in items if (item["scope"] or "") == scope]
         if context is not None:
             items = [item for item in items if context in item["context_ids"]]
         if text:
-            needle = text.lower()
-            items = [
-                x
-                for x in items
-                if needle in x["title"].lower() or needle in x["description"].lower()
-            ]
+            needle = fold_text(text)
+            items = [x for x in items if matches_text(needle, x["title"], x["description"])]
+        if brief:
+            return [line_record(item) for item in items[:limit]]
         return items[:limit]
