@@ -62,6 +62,8 @@ class Snapshot:
     proposed: tuple[dict, ...]
     # Conditions behind the workspace's goals: see ``Tasks.explore``.
     exploration: dict = field(default_factory=dict)
+    context: str | None = None
+    projects: tuple[dict, ...] = ()
 
 
 @dataclass
@@ -83,12 +85,14 @@ class Advice:
     profile: str = "plain"
     scope: str | None = None
     profile_source: dict | None = None
+    context: str | None = None
 
     def to_dict(self) -> dict:
         return {
             "profile": self.profile,
             **({"profile_source": self.profile_source} if self.profile_source else {}),
             **({"scope": self.scope} if self.scope is not None else {}),
+            **({"context": self.context} if self.context is not None else {}),
             "picks": self.picks,
             "notes": [{"strategy": n.strategy, "text": n.text, "ids": n.ids} for n in self.notes],
             "suggestions": self.suggestions,
@@ -112,7 +116,7 @@ class Strategy:
     def __post_init__(self):
         if self.kind not in KINDS or self.evidence not in EVIDENCE:
             raise ValueError("unknown strategy kind or evidence level")
-        if set(self.reads) - set(SNAPSHOT_READS):
+        if set(self.reads) - {*SNAPSHOT_READS, "projects"}:
             raise ValueError("unknown strategy snapshot field")
 
 
@@ -150,6 +154,28 @@ def available() -> list[Strategy]:
     from . import builtin  # noqa: F401
 
     return sorted(_REGISTRY.values(), key=lambda s: (KINDS.index(s.kind), s.name))
+
+
+def describe(name: str) -> dict:
+    """Inspect one registered strategy without importing unselected plugins."""
+    found = next((strategy for strategy in available() if strategy.name == name), None)
+    if found is None:
+        raise DomainError("not_found", "No registered strategy with that name")
+    return {
+        "name": found.name,
+        "kind": found.kind,
+        "summary": found.summary,
+        "evidence": found.evidence,
+        "parameters": {
+            key: {
+                "default": param.default,
+                "help": param.help,
+                **({"minimum": param.minimum} if param.minimum is not None else {}),
+                **({"maximum": param.maximum} if param.maximum is not None else {}),
+            }
+            for key, param in found.params.items()
+        },
+    }
 
 
 def resolve(strategy: Strategy, given: dict | None) -> dict:
@@ -239,15 +265,53 @@ def edit_profile(profile: dict, settings: list[str], drops: list[str]) -> dict:
     return {**edited_profile, "skipped": skipped} if skipped else edited_profile
 
 
-def snapshot(tasks, *, scope: str | None = None, reads=SNAPSHOT_READS) -> Snapshot:
+def _review_projects(tasks, scope):
+    projects = [p for p in tasks.projects()["projects"] if p["status"] == "open"]
+    if scope is None or not projects:
+        return projects
+    # The projects view includes all member tasks, which may have distinct
+    # scopes. A scoped project review selects the project itself.
+    matched = set()
+    cursor = None
+    while True:
+        page = tasks.search(kind="project", status="open", scope=scope, limit=1000, after=cursor)
+        matched.update(p["id"] for p in page["items"])
+        cursor = page["next"]
+        if cursor is None:
+            return [p for p in projects if p["id"] in matched]
+
+
+def snapshot(
+    tasks, *, scope: str | None = None, context: str | None = None, reads=SNAPSHOT_READS
+) -> Snapshot:
     """Read ready picks and the additional views used by this profile."""
-    ready = tasks.ready(limit=READY_LIMIT, scope=scope)
+    filters = {"scope": scope, **({"context": context} if context is not None else {})}
+    ready = tasks.ready(limit=READY_LIMIT, **filters)
     opened = []
     if "open" in reads:
         opened = tasks.find(status="open", limit=None)
         if scope is not None:
             opened = [x for x in opened if (x["scope"] or "") == scope]
-    agenda = tasks.agenda(days=0, scope=scope) if "waiting" in reads or "proposed" in reads else {}
+        if context is not None:
+            opened = [x for x in opened if context in x["context_ids"]]
+    agenda = tasks.agenda(days=0, **filters) if "waiting" in reads or "proposed" in reads else {}
+    exploration = tasks.explore(scope=scope) if "exploration" in reads else {}
+    if exploration and context is not None:
+        # A task can move a condition from this context. That link says nothing
+        # about where someone could address a gap with no task attached.
+        linked = {condition for item in ready for condition in item["advances"]}
+        selected = {item["id"] for item in ready}
+        exploration = {
+            "goal": exploration["goal"],
+            "frontier": [id for id in exploration["frontier"] if id in linked],
+            "conditions": [
+                {**c, "advancing": [item for item in c["advancing"] if item["id"] in selected]}
+                for c in exploration["conditions"]
+                if c["id"] in linked
+            ],
+            "gaps": [],
+            "unassessed": [],
+        }
     return Snapshot(
         now=tasks.now(),
         timezone=tasks.timezone,
@@ -260,11 +324,17 @@ def snapshot(tasks, *, scope: str | None = None, reads=SNAPSHOT_READS) -> Snapsh
             if x["status"] == "waiting"
         ),
         proposed=tuple(agenda.get("proposed", [])),
-        exploration=tasks.explore(scope=scope) if "exploration" in reads else {},
+        exploration=exploration,
+        context=context,
+        projects=tuple(_review_projects(tasks, scope))
+        if "projects" in reads and context is None
+        else (),
     )
 
 
-def advise(tasks, profile: dict | None = None, *, scope: str | None = None) -> Advice:
+def advise(
+    tasks, profile: dict | None = None, *, scope: str | None = None, context: str | None = None
+) -> Advice:
     """Run a profile over the current state. Reads only; returns advice."""
     from .profiles import PROFILES
 
@@ -272,15 +342,15 @@ def advise(tasks, profile: dict | None = None, *, scope: str | None = None) -> A
     profile = validate_profile(profile or PROFILES["plain"])
     stages = [(get(stage["use"]), stage["with"]) for stage in profile["strategies"]]
     reads = {name for strategy, _ in stages for name in strategy.reads}
-    view = snapshot(tasks, scope=scope, reads=reads)
-    advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope)
+    view = snapshot(tasks, scope=scope, context=context, reads=reads)
+    advice = Advice(picks=list(view.ready), profile=profile["name"], scope=scope, context=context)
     if skipped:
         advice.notes.append(
             Note("profile", "The profile names strategies that could not be used: "
                  + ", ".join(skipped) + ". Fix with `daymark profile`.", [])
         )  # fmt: skip
     if len(view.ready) == READY_LIMIT:
-        total = tasks.summary(scope=scope)["ready"]
+        total = tasks.summary(scope=scope, context=context)["ready"]
         if total > READY_LIMIT:
             advice.notes.append(
                 Note("profile", f"Advice covers the first {READY_LIMIT} of {total} ready tasks.")

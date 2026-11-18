@@ -264,7 +264,7 @@ def test_the_command_line_announces_an_upgrade_once(cli, tmp_path):
     status, out, err = cli("--db", str(old), "--workspace", "home", "ready")
     assert status == 0 and "Buy seeds" in out
     assert err == (f"daymark: upgraded {old} from schema 4 to {SCHEMA} (Daymark {RELEASE}); "
-                   "older versions can no longer open it\n")  # fmt: skip
+                   "use a pre-upgrade backup to return to an older schema\n")  # fmt: skip
     assert cli("--db", str(old), "--workspace", "home", "ready")[2] == ""
     fresh = tmp_path / "fresh.sqlite3"
     assert cli("--db", str(fresh), "init")[2] == ""

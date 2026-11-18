@@ -35,6 +35,28 @@ start `daymark --url URL --token-env DAYMARK_TOKEN mcp` with the optional
 service dependencies installed. The HTTP credential selects the workspace and
 the server records its authenticated principal.
 
+## Give a reviewer a read-only connection
+
+For questions such as “which task is blocking the shipment?”, configure the
+MCP process with `--read-only` after `mcp`. Keep the database and workspace
+arguments before the subcommand. For example:
+
+```json
+{"command":"daymark","args":["--db","/path/to/tasks.sqlite3","--workspace","sample-project","mcp","--read-only"]}
+```
+
+The client discovers `daymark_prime` and `daymark_view`. It can inspect tasks,
+history, search pages and advice. Direct calls to a write name, including a
+retry with an existing operation ID, receive a refusal. Initialization and
+prime identify the session as read-only.
+
+Locally, this opens an existing database with SQLite `mode=ro` and requires
+the current schema. Separate read calls see committed changes from other
+workers. An HTTP-backed session accepts the same switch. Its Daymark client
+permits GETs and the read-only search/query POST routes. The HTTP credential’s
+authority in other processes and the host’s other configured tools are
+configured separately.
+
 ## Take one task through a session
 
 | Tool | Arguments | What to look for |
@@ -55,7 +77,11 @@ including its original version. Read `show` for the latest state. For an edit
 based on that read, pass its `version` as `expected_version` to `daymark_edit`.
 The same guard is available for `accept` and `dismiss`.
 If a teammate has changed the task, Daymark returns `conflict` and the newer
-state survives.
+state survives. For a decision or edit based on a specific read, retain its
+`review_token` from show or brief and pass that string in the write. It detects
+a hard delete followed by recreation at the same ID and version. The token
+comes from existing event evidence and can be null after a partial import.
+Changes to other tasks leave it usable.
 
 With protocol revision 2025-06-18 or 2025-11-25, a successful write returns the
 entity's ID, kind, title, status and version in `structuredContent`. Machine clients
@@ -87,6 +113,8 @@ Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
 | --- | --- |
 | What can this agent pick up? | `{"view":"ready","move":"agent","scope":"workshop","json":true}` |
 | Why is this queue empty? | `{"view":"ready","scope":"workshop","explain":true,"json":true}` |
+| Which tasks am I still holding? | `{"view":"find","claimed":true,"json":true}` |
+| What changed since the person approved version 1? | `{"view":"show","id":"sample","since_version":1,"json":true}` |
 | What did the last worker record? | `{"view":"show","id":"sample","brief":true,"json":true}` |
 | Which task came from this external reference? | `{"view":"show","source":"samples:sheet:Q-41","brief":true,"json":true}` |
 | Can I read the whole note? | `{"view":"show","id":"sample","note":"NOTE_ID","json":true}` |
@@ -94,8 +122,9 @@ Clients using the 2024-11-05 revision receive the JSON in `content[0].text`.
 | Which tasks changed after my cursor? | `{"view":"activity","after":10,"limit":5,"json":true}` |
 
 A ready row carries its ID, title, current version and the reason for its place.
-Supply `context` with a context entity ID to filter ready work or its explanation.
-Capture and edit accept `contexts`, an array of context IDs.
+Supply `context` with a context entity ID to filter ready work, its explanation, advice or the agenda.
+Capture and edit accept `contexts`, an array of context IDs. Tagged ready rows
+show up to three context IDs and a count of any additional ones.
 A search page returns `items` and `next`. To continue, supply `next` as the
 string `after` and keep the original filters. Activity uses a numeric cursor.
 Show accepts exactly one of `id` or `source`. Its brief supplies individual note
@@ -105,7 +134,11 @@ timestamps and text.
 ## Change a local working preference
 
 Use `daymark_view {"view":"profiles","json":true}` to discover available
-profiles and the active version. Preview a different working style with
+profiles, the active version and adjustment names with their defaults. For
+parameter limits and the basis of a strategy, use
+`{"view":"profiles","strategy":"time-fit","json":true}`. That read describes
+minutes per individual task, its default of 30, and its range of 1 to 1,440.
+Preview a different working style with
 `{"view":"advise","profile":"plain"}`. To adopt it for this workspace on the
 local database, send `daymark_act` an action such as the following.
 
@@ -134,7 +167,9 @@ on both sides, upgrade the stdio process as well as the service.
 ## Handle refusals
 
 An invalid date, a live claim held by another actor, or a missing task produces
-a tool result with `isError: true`. Read the stable code in its text. Correct
+a tool result with `isError: true`. Modern clients can branch on
+`structuredContent.error.code` and display its `message`, optional `details`
+and `recovery`. All revisions carry the code in the text. Correct
 an invalid argument, re-read a conflicted task, or ask the person for a
 decision when a policy refuses the action. Input types matter. JSON
 `false` is a boolean, and `"false"` is a string. A parameter that belongs to a

@@ -315,9 +315,55 @@ def test_cli_prints_reversible_quoted_command_and_accepts_retries(tmp_path, monk
     assert main(args) == 0
     first = capsys.readouterr().out
     command = shlex.split(first.split("Restore the previous settings in this database with ")[1])
+    assert command[1] == f"--db={tmp_path / 'test.sqlite3'}"
+    monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "other.sqlite3"))
     assert main(command[1:]) == 0
+    assert not (tmp_path / "other.sqlite3").exists()
+    monkeypatch.setenv("DAYMARK_DB", str(tmp_path / "test.sqlite3"))
     restored = capsys.readouterr().out
     assert "profile: plain" in restored and "active version 2" in restored
     assert main(args) == 0 and capsys.readouterr().out == first
     assert main(["--workspace=--studio group", "profile", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["version"] == 2
+
+
+def test_catalog_discovers_a_time_window_and_inspects_bounds_without_loading_plugins(
+    tmp_path, monkeypatch, capsys
+):
+    db = tmp_path / "preferences.db"
+    monkeypatch.setenv("DAYMARK_DB", str(db))
+    store = Store(db)
+    try:
+        tasks = Tasks(store)
+        for i in range(32):
+            tasks.save_profile(f"studio-{i}", profile="assistant")
+        catalog = tasks.profile_catalog()
+        assert catalog["adjustments"]["time-fit"] == {"minutes": 30}
+        assert all(set(entry) == {"name", "version"} for entry in catalog["saved"])
+        assert len(json.dumps(catalog, separators=(",", ":"))) < 2500
+        mcp_catalog = call(tasks, "daymark_view", {"view": "profiles"})
+        assert "time-fit.minutes=30" in mcp_catalog
+        mcp_detail = call(
+            tasks, "daymark_view", {"view": "profiles", "strategy": "time-fit", "json": True}
+        )
+        detail = json.loads(mcp_detail)
+        param = detail["parameters"]["minutes"]
+        assert (param["minimum"], param["default"], param["maximum"]) == (1, 30, 1440)
+        assert detail["evidence"] == "practitioner" and "individually" in detail["summary"]
+        assert main(["strategies", "time-fit", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out) == detail
+        fails(
+            "invalid",
+            call,
+            tasks,
+            "daymark_view",
+            {"view": "profiles", "profile": "plain", "strategy": "time-fit"},
+        )
+
+        def unexpected_plugin_import(*args, **kwargs):
+            pytest.fail("Strategy discovery evaluated an installed package")
+
+        monkeypatch.setattr("importlib.metadata.entry_points", unexpected_plugin_import)
+        fails("not_found", tasks.profile_catalog, strategy="not-loaded")
+    finally:
+        store.close()

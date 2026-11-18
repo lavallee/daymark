@@ -76,6 +76,18 @@ give it a `--plan` day if it should not be done early. Order: overdue
 deadlines, due today, planned for today or earlier, due within a week, soft
 target within a week, then everything else by date, priority and age.
 
+For a repeating task, `show ID --brief` names the round, cadence, time zone
+and date that advances. If both a plan and a hard deadline are present, the
+next occurrence advances the plan and copies the existing deadline. For a
+weekly task with a fresh deadline each week, give it just the recurring due
+date. If the person asks for both dates to move independently, clarify their
+intended schedule before adding the series. [Recurring work examples](research/recurring-work.md)
+
+Adding a waiting reason to an open task with `edit ID --waiting-on WHO` parks
+that task immediately. A proposal keeps its waiting reason for acceptance.
+Changing or clearing the reason on a waiting task keeps it waiting. Use
+`resume ID` when the person says the wait has ended.
+
 ## Writing
 
 ```sh
@@ -93,7 +105,7 @@ daymark propose "Check the smoke alarms" --plan +2w --source mail:message:42
 | `focus ID [--rank N]` / `unfocus ID` | Put a task on, or take it off, the person's own short list. Focus is their ordering, set at their request. It is not a date or a priority, and finishing a task clears it. |
 | `claim ID [--minutes N]` / `release ID [--note TEXT]` | Take or give back a task. A claim lapses on its own (default 60 minutes), so a crashed session cannot hold work forever. |
 | `note ID "text"` | Append a progress note with your actor name and the time. Notes cannot be rewritten. |
-| `done ID [--note T]` | Complete. A repeating task creates its next round, named `ID.1`, `ID.2`, and so on. |
+| `done ID [--note T]` | Complete. A repeating task creates its next round when the rule supplies one. Its event in `activity` gives the actual ID, including when a usual round name was already in use. |
 | `skip ID` | Pass over one round of a repeating task. Nothing is recorded as completed. |
 | `wait ID --on WHO [--until D]` / `resume ID` | Park on a person or event. `resume` makes the task actionable now, lifting a start date that is still ahead. |
 | `defer ID D` | Hide until a date. The deadline does not move. |
@@ -233,7 +245,9 @@ When someone asks to reuse a configuration occasionally, `daymark profile
 `daymark profile --saved NAME` and use it with `advise --profile NAME`. To
 change or remove an existing copy, pass the version you just read using
 `--if-version N`. MCP's `daymark_view` accepts `view="profiles"` with an
-optional `profile` name for inspection.
+optional `profile` name for inspection. The catalog lists available adjustments.
+Use `daymark strategies NAME` or the MCP profiles view with `strategy=NAME`
+to inspect a parameter, its default, and its supported range.
 
 Once the person asks for a standing change, pass the active `--if-version`
 from `daymark profile --json` and a fresh `--op`. The result identifies the
@@ -338,6 +352,10 @@ that was broken. With `--json` the same content is a JSON object.
 
 ## MCP
 
+For a status check or review, `daymark mcp --read-only` advertises only
+`daymark_prime` and `daymark_view`. Direct write calls are refused. This opens
+a local database read-only and also works with an HTTP-backed MCP session.
+
 For a workspace-bound client configuration, a handoff example, write receipts
 and retry behavior, see [Use Daymark from an MCP client](mcp.md).
 
@@ -380,7 +398,9 @@ a stale read, such as a live claim held by someone else, is raised unchanged.
   lies about its name or edits the file. `daymark policy --clear` lifts it.
 - Claims and `next_move` are coordination, not access control. An agent can
   still create an open task directly; proposing is a discipline the policy
-  supports but does not force.
+  supports but does not force. General lifecycle changes and snapshot restore use
+  workspace write authority. A person seeking evidence of approval should
+  inspect the recorded decision and its provenance. [Proposal policy scope](operations.md#what-the-proposal-policy-enforces)
 - One SQLite file is the authority. There is no sync between machines.
 - The default reminder worker records deliveries; it sends nothing. See the
   [operations guide](operations.md).
@@ -441,6 +461,11 @@ over a person's tasks, decisions and tasks whose next move is unset. Use
 `claim ID` when choosing a particular task. Over HTTP, the worker identity
 comes from its bearer token.
 
+A returning worker can run `daymark --as proof-worker-2 find --claimed`
+to recover every task it still holds, including tasks now waiting or blocked.
+Each hit includes its version and lease expiry. Open one with `show ID --brief`
+before resuming. Use `--scope`, `--status` or `--after` to narrow or continue.
+
 An empty queue succeeds with JSON `null`. A retry with the same operation ID
 returns the original result, even if work has since become available or the
 lease has expired. Start a new selection with a new operation ID. An
@@ -486,8 +511,21 @@ Read `daymark show ID --brief` for the proposal's source, notes, version and
 any recorded wait. A person who approves version 3 can run
 `daymark accept ID --if-version 3`. To decline that version, use
 `daymark dismiss ID --if-version 3`. A concurrent edit produces a conflict.
-Read the revised proposal before deciding again. The workspace's decider
-policy applies to both commands.
+Compare the terms with `daymark show ID --since-version 3`. This shows every
+field whose current value differs from the reviewed record, plus attributed
+note additions or removals. Long changes carry excerpts around the first
+difference. A missing or ambiguous historical snapshot is reported explicitly.
+Read the revised proposal with the person before deciding again. The
+workspace's decider policy applies to both commands.
+
+For a decision that may outlive the task itself, retain the `review_token`
+from that original `show` or `brief`. Pass it as `--if-review TOKEN` on
+`accept`, `dismiss` or `edit`. A record that was hard-deleted and recreated
+can start again at version 1. A version number alone cannot distinguish those
+lifetimes. The token identifies the observed entity event in its workspace
+and survives unrelated changes to other records. If an imported record lacks
+the event for its current state, the token is null. A fresh decision on a
+replacement task requires a new review.
 
 An accepted proposal with a named wait enters the waiting list. It becomes
 actionable when resumed and its other readiness conditions are satisfied.
@@ -503,6 +541,7 @@ Use the person's own vocabulary.
 daymark add "Phone calls" --kind context --id phone
 daymark add "Confirm delivery window" --scope studio --context phone --id delivery
 daymark ready --scope studio --context phone
+daymark advise --scope studio --context phone --set time-fit.minutes=20
 daymark agenda --context phone
 ```
 
@@ -511,3 +550,10 @@ the limit. Untagged tasks stay in the ordinary ready list. A blocked phone task
 stays blocked even if its prerequisite belongs to another context. Use
 `daymark find --kind context --page` to discover existing IDs and
 `daymark ready --context phone --explain` to inspect the held work.
+
+
+In a context-filtered advice request, picks, stale-work reviews and waiting
+checks cover tasks carrying that context. The assistant profile can promote
+matching tasks that move the next condition for a goal. For goal gaps and
+unassessed conditions, use `daymark explore`. A gap alone supplies no evidence
+about where its first task could happen.

@@ -169,3 +169,65 @@ def test_cli_and_mcp_expose_bounded_pickup_and_note_expansion(tmp_path, capsys):
     for options, result in ((["--brief"], brief), (["--note", expected["id"]], expected)):
         assert main([*base, *options, "--json"]) == 0
         assert json.loads(capsys.readouterr().out) == result
+
+
+@pytest.mark.parametrize("compat", [False, True])
+def test_full_context_projects_related_titles_status_and_reminder_without_note_trails(compat):
+    class CompatibilityConnection(sqlite3.Connection):
+        def execute(self, sql, *args):
+            if compat and "json_extract(" in sql:
+                raise sqlite3.OperationalError("no such function: json_extract")
+            return super().execute(sql, *args)
+
+    connection = sqlite3.connect(":memory:", factory=CompatibilityConnection)
+    try:
+        store = Store(connection)
+        tasks = Tasks(store, "sample")
+        tasks.add("Set of samples", id="set")
+        title = "Proof\x00📖"
+        tasks.add(title, id="page", parent="set", after="set", note="note " * 1000)
+        tasks.add("Closed", id="closed", parent="set", after="set")
+        tasks.done("closed")
+        tasks.add("Reader", id="reader", kind="person")
+        reminder = tasks.remind("set", "2030-01-01T14:00:00Z", recipient="reader")
+        result = tasks.show("set")
+        assert result["children"] == [
+            {"id": "closed", "title": "Closed", "status": "completed"},
+            {"id": "page", "title": title, "status": "open"},
+        ]
+        assert result["dependents"] == ["page"]
+        assert result["readiness"]["active_children"] == ["page"]
+        assert result["reminders"] == [
+            {"id": reminder["id"], "scheduled_at": reminder["scheduled_at"], "state": "pending"}
+        ]
+    finally:
+        connection.close()
+
+
+def test_brief_identifies_period_and_the_date_that_really_advances():
+    store = Store(":memory:")
+    try:
+        tasks = Tasks(store, now="2030-04-01T12:00:00Z", timezone="UTC")
+        tasks.add("Inspect sample", id="inspect", every="week", plan="2030-04-04", due="2030-04-05")
+        first = tasks.brief("inspect")
+        assert first["series_id"] == "inspect"
+        assert first["recurrence"] == {
+            "mode": "fixed",
+            "rule": "FREQ=WEEKLY",
+            "timezone": "UTC",
+            "occurrence_index": 0,
+            "advances": "planned",
+        }
+        assert "Round 1 in series inspect" in brief_text(first)
+        tasks.done("inspect")
+        second = tasks.brief("inspect.1")
+        assert second["recurrence"]["occurrence_index"] == 1 and second["series_id"] == "inspect"
+        assert (
+            second["planned"]["date"] == "2030-04-11" and second["deadline"]["date"] == "2030-04-05"
+        )
+        tasks.add("Post sample", id="post", every="week", due="2030-04-08")
+        assert tasks.brief("post")["recurrence"]["advances"] == "deadline"
+        tasks.done("post")
+        assert tasks.brief("post.1")["deadline"]["date"] == "2030-04-15"
+    finally:
+        store.close()

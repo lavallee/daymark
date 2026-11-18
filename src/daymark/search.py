@@ -4,8 +4,8 @@ import json
 import sqlite3
 import unicodedata
 
-from .models import DomainError
-from .views import _usable
+from .models import DomainError, normalize_now
+from .views import _usable, claim_holder
 
 
 def _fold(text):
@@ -28,7 +28,7 @@ def _check(text, kind, status, scope, after, limit):
         raise DomainError("invalid", "Limit must be between 1 and 1000")
 
 
-def _rows(store, workspace, kind, status, scope, after, search_description):
+def _rows(store, workspace, kind, status, scope, after, search_description, claimed_by, now):
     sql = " FROM daymark_entities WHERE workspace=? AND kind=? AND archived=0"
     args = [workspace, kind]
     if status is not None:
@@ -37,18 +37,28 @@ def _rows(store, workspace, kind, status, scope, after, search_description):
     if after is not None:
         sql += " AND id>?"
         args.append(after)
-    sql += " ORDER BY id"
     # Indexable filters use relational columns. Keep note trails and other large
     # JSON fields inside SQLite, even when only a few hits match the text.
     description = "json_extract(data,'$.description')" if search_description else "''"
     columns = "id,kind,status,version,json_extract(data,'$.title'),json_extract(data,'$.scope'),"
     try:
-        cursor = store.db.execute("SELECT " + columns + description + sql, args)
+        claim_fields = (
+            ",json_extract(data,'$.claimed_by'),json_extract(data,'$.claim_until')"
+            if claimed_by
+            else ""
+        )
+        claim_filter = " AND json_extract(data,'$.claimed_by')=?" if claimed_by else ""
+        cursor = store.db.execute(
+            "SELECT " + columns + description + claim_fields + sql + claim_filter + " ORDER BY id",
+            [*args, claimed_by] if claimed_by else args,
+        )
     except sqlite3.OperationalError as error:
         if "no such function: json_extract" not in str(error):
             raise
-        for (raw,) in store.db.execute("SELECT data" + sql, args):
+        for (raw,) in store.db.execute("SELECT data" + sql + " ORDER BY id", args):
             item = json.loads(raw)
+            if claimed_by and claim_holder(item, now) != claimed_by:
+                continue
             if scope is None or (item["scope"] or "") == scope:
                 yield (
                     item["id"],
@@ -58,21 +68,26 @@ def _rows(store, workspace, kind, status, scope, after, search_description):
                     item["title"],
                     item["scope"],
                     item["description"],
+                    *((claimed_by, item["claim_until"]) if claimed_by else ()),
                 )
         return
     for row in cursor:
+        if claimed_by and claim_holder({"claimed_by": row[7], "claim_until": row[8]}, now) is None:
+            continue
         if scope is None or (row[5] or "") == scope:
             yield row
 
 
 def _matches(rows, needle, limit):
     out = []
-    for id, kind, state, version, title, scope, description in rows:
+    for id, kind, state, version, title, scope, description, *claim in rows:
         if needle and needle not in _fold(title) and needle not in _fold(description):
             continue
         if len(out) == limit:
             return {"items": out, "next": out[-1]["id"]}
         hit = {"id": id, "kind": kind, "status": state, "version": version, "title": title}
+        if claim:
+            hit.update(claimed_by=claim[0], claim_until=claim[1])
         if scope:
             hit["scope"] = scope
         out.append(hit)
@@ -104,12 +119,31 @@ def legacy_page(client, text, *, kind, status, scope, after, limit):
 
 
 def page(
-    store, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50
+    store,
+    workspace,
+    text=None,
+    *,
+    kind="task",
+    status=None,
+    scope=None,
+    after=None,
+    limit=50,
+    claimed_by=None,
+    now=None,
 ):
     _check(text, kind, status, scope, after, limit)
+    if claimed_by is not None and (
+        not isinstance(claimed_by, str) or not 1 <= len(claimed_by) <= 200
+    ):
+        raise DomainError("invalid", "A claim owner must contain 1 to 200 characters")
+    if claimed_by is not None and kind != "task":
+        raise DomainError("invalid", "Only tasks have work claims")
+    instant = normalize_now(now) if claimed_by else None
     needle = _fold(text or "")
     with store._lock:
         if not _usable(store):
             return {"items": [], "next": None}
-        rows = _rows(store, workspace, kind, status, scope, after, bool(needle))
+        rows = _rows(
+            store, workspace, kind, status, scope, after, bool(needle), claimed_by, instant
+        )
         return _matches(rows, needle, limit)

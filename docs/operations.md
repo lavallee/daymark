@@ -57,6 +57,14 @@ head cursor, in one read), and `/v1/projects/{id}/changes?after=N`
 latest cursor and `/v1/events?project=ID` keeps the events that touch one project.
 Goals read as `GET /v1/goals` and `/v1/goals/{id}/plan`, and `GET /v1/tree/{id}?depth=3`
 gives an item with its children in order.
+Imported IDs can contain path punctuation. For an ID such as `crate/07`,
+pass the exact ID as a query parameter, for example
+`GET /v1/context?entity_id=crate%2F07`. The same form works for
+`/v1/entity` and `/v1/tree` with `entity_id`, `/v1/project-plan` and
+`/v1/project-changes` with `project_id`, `/v1/goal-plan` with `goal_id`,
+and `/v1/receipt` with `operation_id`. Each returns the same value as its
+path form. The Python client chooses the form automatically.
+
 `POST /v1/operations/batch` takes `operations` (up to 100, each shaped like a
 single operation), `atomic` (default true: all or nothing) and optionally
 `request_id` with `request`, which make the batch replay as a unit; it answers 200 with
@@ -64,15 +72,39 @@ single operation), `atomic` (default true: all or nothing) and optionally
 error. `POST /v1/import` accepts `snapshot`, `operation_id`, and
 `expected_version` (use zero as the validated merge precondition). Import must
 reject conflicting existing identities rather than rewind newer state. Schema
-operation IDs remain stable within v1. Each write is recorded with the token's
-principal as its actor; for `claim`, `release` and `note` the principal also
-replaces any owner or author in the request. If the workspace names deciders
+operation IDs remain stable within v1. A live task operation records the token’s
+principal as its event actor. Claims, releases, queue pickup and appended notes
+use this principal for ownership or authorship. Restored historical events keep
+the actor recorded in the snapshot. If the workspace names deciders
 (`daymark --db example.sqlite3 --workspace example policy --deciders operator`),
 `accept` and `dismiss` from any other principal return 403.
 The server resolves the workspace from its token configuration. Do not expose
 this bearer-only service beyond a trusted local boundary without TLS termination
 and your own access policy. CORS is disabled. Request bodies are limited to 1 MiB;
 embedded apps may set a smaller limit with `create_app`.
+
+### What the proposal policy enforces
+
+A decider list governs the recorded decision on a proposal. Choose a person’s
+authenticated service identity as a decider when an agent prepares proposals
+for that person. A reviewed version or review token binds the decision to the
+record the person inspected. A claim coordinates the work that follows.
+
+| Operation | What the engine checks |
+| --- | --- |
+| Accept or dismiss a proposal | Current proposal state, expected revision and the configured deciding actor. Batched decisions use the same checks. |
+| Edit a proposal’s terms | Revision and ordinary field rules. Direct status edits cannot change a task into or out of proposed status. Edited terms remain available for a new review. |
+| Complete, skip or reopen an active proposal | Daymark requires the proposal to be decided first. |
+| General task lifecycle and recovery | Cancellation, archiving, deletion and undo follow their own lifecycle and revision rules. Workspace write access includes these operations. |
+| Native snapshot import | Destination workspace, entity and graph validity, and collisions with existing state. Historical actors and states belong to the supplied snapshot. The destination’s decider configuration stays local. |
+
+A person can rely on a live, authenticated `accept` event under their
+configured policy as a record of that decision. An open task alone supplies
+no such evidence. For instance, a person can enter an open task directly, or
+an operator can restore a workspace from trusted records. When historical
+approval evidence matters, preserve the origin and custody of the database
+or snapshot. Applications requiring separate reader, proposer, editor and
+restore roles need to enforce those permissions at their service boundary.
 
 Integration uses the same engine: `create_app(store, tokens)` accepts an existing
 Store. `create_router(store)` is available for an application's own authentication
@@ -158,17 +190,18 @@ before considering a restore verified. Do not use real household data in example
 ## Upgrading between releases
 
 A newer Daymark upgrades a database in place, in one transaction. **The upgrade
-is one-way**: the older release cannot open the file afterwards, and an older
-process that keeps the file open stops working once anything has upgraded it.
+is one-way**. Stop old clients and workers before an upgrade. Some older
+binaries can still open the changed file. Use the pre-upgrade backup to roll
+back safely.
 
 Two rules decide when that happens:
 
-- **The command line upgrades on any command.** `daymark ready`, `daymark add`,
-  `serve`, `mcp`, `worker` and `init` all open the file upgrading it, because the
+- **Commands that open a writable Store upgrade the file.** `daymark ready`, `daymark add`,
+  `serve`, ordinary `mcp`, `worker` and `init` open the file upgrading it, because the
   command line is the operator's tool and the documented upgrade path. The first
   time it upgrades an existing database it prints one line to standard error, for
   example `daymark: upgraded /data/daymark.sqlite3 from schema 4 to 5 (Daymark
-  0.4.0); older versions can no longer open it`. A new or already current file
+  0.4.0); use a pre-upgrade backup to return to an older schema`. A new or already current file
   prints nothing.
 - **The library's reads never upgrade.** `Store.plan`, `projects`, `changes`,
   `goals`, `tree`, `export`, `get`, `list`, `query` and the ready, agenda and
@@ -179,7 +212,7 @@ Two rules decide when that happens:
   read-only connection on an old schema is refused the same way.
 
 So take the backup **with the release you are leaving, before installing the new
-one** (any `daymark` command of the new release would already upgrade the file).
+one**. A writable Store opened by the new release upgrades the file.
 `daymark backup` copies the file through SQLite's backup API without opening a
 Store, so it never upgrades what it copies:
 
@@ -192,6 +225,31 @@ worker, embedding applications) together. To roll back, stop them, restore the
 backup into a new path and point the older release at it; writes made after the
 upgrade are not in the backup. A database written by a newer Daymark is refused
 with `conflict`; Daymark never downgrades a file.
+
+### What happened with older installations
+
+A drill using wheels built from all five release tags created the same
+two-workspace synthetic database with each release. In the selected
+workspace, one task had a planned day, an independent deadline and a title
+edit. Each old installation made a native backup and restored it into a new
+file. Its own export before backup and after restore was identical.
+
+We opened the original with development commit `5eaeb05` and checked the
+two events, two operation receipts, original fields and second workspace.
+Replaying the original capture returned its original result. Separately,
+importing each release's JSON export into an empty database retained the
+same fields, events and capture replay.
+
+| Release that created the file | Schema before opening | Reading a disposable copy of the upgraded file with that old release |
+| --- | --- | --- |
+| 0.1.0 | Unmarked | `get` succeeded. Its success does not establish compatibility for writes. |
+| 0.2.0 | 3 | `get` failed validation on newer fields. |
+| 0.3.0 | 4 | `get` failed validation on newer fields. |
+| 0.4.0 | 5 | Opening failed with a newer-schema conflict. |
+| 0.5.0 | 6 | No schema upgrade took place. `get` succeeded. |
+
+These checks cover the synthetic task and its history. A complete native
+backup is still necessary for settings, scheduling and delivery state.
 
 ## Boundary review rationale
 

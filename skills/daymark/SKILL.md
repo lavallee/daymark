@@ -22,7 +22,8 @@ Then work in this loop:
    that affects the task. When stopping mid-task, use
    `daymark release ID --note "what is verified and what remains"` so another worker can pick it up.
 5. `daymark done ID [--note TEXT]`, or `daymark wait ID --on WHO` if it now depends on
-   someone else.
+   someone else. An edit with `--waiting-on WHO` also parks an open task. Clearing
+   the reason keeps it waiting until an explicit `resume ID`.
 
 When capturing:
 
@@ -43,8 +44,11 @@ project already uses them, `--stage`, `--type`, `--parent`, `--milestone M` and
 not ask for. A project with `managed by` set belongs to another system: leave it
 alone.
 
+For a review-only MCP connection, launch `daymark mcp --read-only`. It
+exposes prime and view for status checks, blockers and handoffs.
+
 Every command works in one workspace (`--workspace NAME`); workspaces never
-mix, and `daymark prime` says which one you are in. Use `ready --context ID` when the person wants tasks tagged for a particular tool or situation. Discover the IDs with `find --kind context --page`. Inside a workspace,
+mix, and `daymark prime` says which one you are in. Use `ready --context ID` when the person wants tasks tagged for a particular tool or situation. Discover the IDs with `find --kind context --page`. Use `advise --context ID` to apply the same selection to advice. Untagged tasks have no recorded context. Inside a workspace,
 `--scope NAME` filters to one part of life. `daymark focus ID` puts a task on
 the person's own short list; do it only when they ask.
 
@@ -56,6 +60,8 @@ when the person asks for that workspace preference.
 For a recurring situation, `daymark profile --save-as NAME` keeps a named
 copy. Use `daymark advise --profile NAME` for that situation. Saved names and
 the active profile are shared across callers of this local workspace.
+Use `daymark strategies NAME` to inspect parameters and ranges. The MCP
+profiles view lists adjustment defaults and accepts `strategy` for details.
 For a requested standing change, read `daymark profile --json`, supply its
 version with `--if-version`, and reuse the same `--op` on a retry. The
 returned undo command restores the previous settings while that change is current.
@@ -79,7 +85,11 @@ To select work from an agent queue, use `daymark --as WORKER take`, optionally
 with `--scope NAME`, `--context ID` and `--minutes N`. It claims one ready, unclaimed task
 explicitly marked `--move agent`. Each worker needs a distinct name or HTTP
 principal. JSON `null` means the queue is empty. Use a fresh `--op` for each
-new selection and reuse it only to retry that selection.
+new selection and reuse it only to retry that selection. After restart, run
+`daymark --as WORKER find --claimed` to recover work the actor already holds,
+including a task that has since become blocked or waiting. For a
+repeating task, `show ID --brief` records which date advances. A series with
+both a plan and a deadline advances the plan, copying the existing deadline.
 
 For an edit based on an earlier `show`, pass `--if-version N` (MCP
 `expected_version`). Re-read on conflict before deciding whether to edit.
@@ -91,7 +101,12 @@ latest three notes with authors and IDs. Expand one with
 
 When presenting a proposal for a person's decision, show the source, note and
 version from `show ID --brief`. The person can accept or dismiss that exact
-version with `--if-version N`. If it changed, present the revision again.
+version with `--if-version N`. On conflict, use `daymark show ID
+--since-version N` to present the changed terms for a fresh decision.
+If the reviewed snapshot is unavailable, present the current record in full.
+Keep the original `review_token` when approval may span sessions. Pass it as
+`--if-review TOKEN` on a decision or edit to also detect deletion and
+recreation under the same ID and version.
 
 
 When capture reports that a source already belongs to an entity, use

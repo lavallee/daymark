@@ -21,12 +21,13 @@ class ClientError(Exception):
 
 class Client:
     def __init__(
-        self, base_url: str, token: str, *, timeout: float = 10, transport: Any = None
+        self, base_url: str, token: str, *, timeout: float = 10, transport: Any = None, read_only: bool = False
     ) -> None:
         import httpx
 
         if not token:
             raise ValueError("Bearer credential required")
+        self.read_only = read_only
         self.legacy_search = False
         self._read_params = None
         self._http = httpx.Client(
@@ -49,6 +50,10 @@ class Client:
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         import httpx
 
+        if self.read_only and method != "GET" and (method, path) not in {
+            ("POST", "/v1/search"), ("POST", "/v1/query"),
+        }:
+            raise DomainError("forbidden", "This read-only connection cannot send a write")
         try:
             result = self._http.request(method, path, **kwargs)
             result.raise_for_status()
@@ -83,14 +88,23 @@ class Client:
     ) -> Any:
         return self.execute(operation_id, action, {"id": entity_id, **fields}, expected_version)
 
+    def _read_id(self, path, query_path, name, value, **params):
+        """Use query parameters for IDs that gateways may interpret as path segments."""
+        if not isinstance(value, str) or not value:
+            raise DomainError("invalid", "An ID is required")
+        if "/" in value or "%" in value or value in {".", ".."}:
+            return self._request("GET", "/v1/" + query_path, params=self._params(**{name: value}, **params))
+        return self._request("GET", "/v1/" + path.format(id=quote(value, safe="")), params=self._params(**params))
+
     def get(self, entity_id: str) -> Any:
-        return self._request("GET", f"/v1/entities/{quote(entity_id, safe='')}")
+        return self._read_id("entities/{id}", "entity", "entity_id", entity_id)
 
     def list(self, kind: str | None = None) -> Any:
         return self._request("GET", "/v1/entities", params={"kind": kind} if kind else {})
 
-    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
-        body = self._params(text=text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50, claimed=False, now=None):
+        body = self._params(text=text, kind=kind, status=status, scope=scope, after=after, limit=limit,
+                            claimed=claimed or None, now=now if claimed else None)
         if not self.legacy_search:
             try:
                 return self._request("POST", "/v1/search", json=body)
@@ -98,6 +112,10 @@ class Client:
                 if error.status_code not in {404, 405}:
                     raise
                 self.legacy_search = True
+        if claimed:
+            from .models import DomainError
+
+            raise DomainError("invalid", "Upgrade the service to search the authenticated worker's claims")
         from .search import legacy_page
 
         return legacy_page(self, text, kind=kind, status=status, scope=scope, after=after, limit=limit)
@@ -191,6 +209,14 @@ class Client:
         params = self._params(entity_id=entity_id, now=now, owner=owner, mine=mine or None, before_note=before_note)
         return self._request("GET", "/v1/brief", params=params)
 
+    def changes_since(self, entity_id=None, *, version, source=None):
+        if (entity_id is None) == (source is None):
+            raise DomainError("invalid", "Choose exactly one entity ID or source reference")
+        self._require_filter("/v1/comparison", "since_version")
+        if source is not None:
+            return self._source_read(entity_id, source, "changes", since_version=version)
+        return self._request("GET", "/v1/comparison", params={"entity_id": entity_id, "since_version": version})
+
     def read_note(self, entity_id, note_id, *, source=None):
         if source is not None:
             return self._source_read(entity_id, source, "note", note_id=note_id)
@@ -202,8 +228,10 @@ class Client:
     ) -> Any:
         if source is not None:
             return self._source_read(entity_id, source, "show", history=history, now=now, owner=owner, mine=mine or None)
+        if entity_id is None:
+            raise DomainError("invalid", "An entity ID or source reference is required")
         params = self._params(history=history, now=now, owner=owner, mine=mine or None)
-        return self._request("GET", f"/v1/context/{quote(entity_id, safe='')}", params=params)
+        return self._read_id("context/{id}", "context", "entity_id", entity_id, **params)
 
     def receipt_context(self, operation_id: str, *, action: str, entity_id: str | None = None) -> Any:
         try:
@@ -223,7 +251,7 @@ class Client:
     def receipt(self, operation_id: str) -> Any:
         """The stored result of a completed operation ID, or None."""
         try:
-            return self._request("GET", f"/v1/receipts/{quote(operation_id, safe='')}")
+            return self._read_id("receipts/{id}", "receipt", "operation_id", operation_id)
         except ClientError as exc:
             if exc.status_code == 404:
                 return None
@@ -259,27 +287,19 @@ class Client:
         return self._request("GET", "/v1/goals", params=self._params(now=now))
 
     def goal_plan(self, goal_id: str, *, now: Any = None) -> Any:
-        return self._request(
-            "GET", f"/v1/goals/{quote(goal_id, safe='')}/plan", params=self._params(now=now)
-        )
+        return self._read_id("goals/{id}/plan", "goal-plan", "goal_id", goal_id, now=now)
 
     def tree(self, entity_id: str, *, depth: int = 3) -> Any:
-        return self._request(
-            "GET", f"/v1/tree/{quote(entity_id, safe='')}", params={"depth": depth}
-        )
+        return self._read_id("tree/{id}", "tree", "entity_id", entity_id, depth=depth)
 
     def projects(self, *, now: Any = None) -> Any:
         return self._request("GET", "/v1/projects", params=self._params(now=now))
 
     def plan(self, project_id: str, *, now: Any = None) -> Any:
-        return self._request(
-            "GET", f"/v1/projects/{quote(project_id, safe='')}/plan", params=self._params(now=now)
-        )
+        return self._read_id("projects/{id}/plan", "project-plan", "project_id", project_id, now=now)
 
     def changes(self, project_id: str, after: int) -> Any:
-        return self._request(
-            "GET", f"/v1/projects/{quote(project_id, safe='')}/changes", params={"after": after}
-        )
+        return self._read_id("projects/{id}/changes", "project-changes", "project_id", project_id, after=after)
 
     def export(self) -> Any:
         return self._request("GET", "/v1/export")

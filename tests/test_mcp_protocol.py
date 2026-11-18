@@ -147,3 +147,33 @@ def test_legacy_protocol_keeps_text_only_write_results(tasks):
     ]
     assert "Review the draft" in result["content"][0]["text"]
     assert "structuredContent" not in result
+
+
+def test_stale_decision_names_recovery_without_changing_the_proposal(tasks):
+    original = tasks.propose("Review first sample", id="proposal")
+    revised = tasks.edit("proposal", title="Review revised sample")
+    message = tool(
+        "daymark_act", action="accept", id="proposal", expected_version=original["version"]
+    )
+    modern = handle(tasks, message)["result"]
+    error = modern["structuredContent"]["error"]
+    assert modern["isError"] and error["code"] == "conflict"
+    assert "person" in error["recovery"] and "current proposal" in error["recovery"]
+    old = handle(tasks, message, protocol="2024-11-05")["result"]
+    assert "structuredContent" not in old and error["recovery"] in old["content"][0]["text"]
+    assert tasks.get("proposal") == revised
+
+
+def test_http_failure_keeps_the_code_and_excludes_service_response_body():
+    import httpx
+
+    from daymark.client import Client
+
+    with Client(
+        "https://sample.invalid",
+        "example-secret",
+        transport=httpx.MockTransport(lambda _: httpx.Response(403, text="unrelated-private-data")),
+    ) as client:
+        result = handle(Tasks(client), tool("daymark_view", view="show", id="sample"))["result"]
+    assert result["structuredContent"]["error"]["code"] == "forbidden"
+    assert all(value not in str(result) for value in ("unrelated-private-data", "example-secret"))

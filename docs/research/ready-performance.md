@@ -55,3 +55,13 @@ each used 0.4 MiB of traced Python allocations, down from 42.1 MiB when it
 decoded full snapshots for every event. SQL-side comparison cost additional
 processing time on that fixture. This change bounds the amount of historical
 task content held by the client process as the page grows.
+
+Full detail returns its own task body and short summaries of linked records.
+A synthetic parent with 120 children, each also dependent on the parent and
+carrying a 60,000-character description and a 6,000-character note, produced
+10,895 bytes of canonical JSON in both implementations. Projecting the fields
+used by those summaries lowered median warm process CPU from 29.37 ms to
+9.13 ms across seven calls. Peak traced Python allocations fell from 24.36 MiB
+to 0.09 MiB. Both ran against the same local SQLite database and returned
+identical bytes. Setup, serialization, native SQLite memory and transport were
+outside the measurements.

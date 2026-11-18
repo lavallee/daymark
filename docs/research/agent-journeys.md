@@ -135,6 +135,38 @@ checked settings separately at each transition. The script supplied explicit
 user decisions. It establishes what the interfaces preserved across sessions.
 Whether an agent asks at the right moment needs a separate evaluation.
 
+## Previewing and undoing a standing choice over MCP
+
+Two fresh SQLite workspaces each held two phone-tagged tasks estimated at
+10 and 15 minutes and one untagged task estimated at 2 minutes. Independent
+MCP Python SDK clients (1.30.0 and 2.3.0) started the installed wheel through
+stdio and negotiated protocol 2025-11-25. Each client completed these steps.
+
+1. Read active version 0. Preview a 10-minute limit in the phone context.
+   Only the 10-minute phone task appeared. Reading the catalog again returned
+   the same settings and version.
+2. Apply an explicitly requested one-pick standing preference with operation
+   ID and expected version 0. Repeating the request returned the original
+   workspace, version 1 and recovery instructions. One of the two ready phone
+   tasks appeared with a count of one held back.
+3. Run the returned CLI command against the same database. The next MCP read
+   returned both phone tasks and active version 2. A late replay of the
+   original adoption returned the version-1 receipt and left version 2 active.
+
+A repeat of both SDK trials started with tool discovery. The manifest named a
+profiles view but carried no time-fit parameter definitions. The client found
+`time-fit.minutes` in that view, opened its strategy detail, confirmed that
+10 was inside the supported 1–1,440 range, and applied the preview. The
+structured catalog payload measured 453 UTF-8 bytes in the test workspace and
+the single-strategy detail measured 241 bytes (compact JSON, excluding protocol
+wrappers). Saved entries in the catalog carry only their names and revisions.
+A separate 32-profile fixture measured 1,523 bytes, against 12,044 bytes when
+the earlier catalog embedded every saved configuration.
+
+These exercises test interoperability of the installed interfaces under
+scripted choices. The fixture supplies the person's decisions and has no
+measured human response.
+
 ## Running the same dependency handoff in Beads
 
 We ran the official Linux amd64 Beads v1.3.4 executable after checking the
@@ -161,3 +193,56 @@ with `show` and see what must change. The command leaves the workspace alone.
 Two MCP hosts also tried a synthetic workshop handoff. The trial records the
 events each agent actually wrote, a fresh session’s readback, a host-level
 write refusal and measured queue payload sizes. [MCP client trials](mcp-client-trials.md)
+
+## Selecting the right date in a real edit
+
+We gave a local Qwen2.5 7B model a task with a May 3 work day and a May 10
+deadline, then asked it to change one date. Each condition got the same five
+requests and a fresh SQLite database per request. The runner executed the
+returned CLI arguments and compared the entire compact task with the expected
+task. Each cell below is one observation at temperature zero.
+
+| User request | Full startup guide at `5eaeb05` | Short date reference | Reference with a prototype `replan` command |
+| --- | --- | --- | --- |
+| Move the work day to May 6 | Pass | Pass | Invalid flag |
+| Record a filing extension until May 15 | Pass | Pass | Pass |
+| Material first available May 2 | Pass | Pass | Pass |
+| Work on it May 4 instead, keep the due date | Pass | Pass | Changed the earliest start |
+| Hope to finish May 9, retain the May 10 deadline | Replaced the deadline | Pass | Pass |
+
+The short reference named four meanings and the four corresponding flags for
+`edit`. The prototype replaced its planned-day line with a proposed command
+that the runner translated into an ordinary edit. We kept the existing verb
+and added the missing soft target to the startup reference. This comparison
+cannot measure general model performance.
+
+In a separate six-call interactive trial, the same model fulfilled the
+waiting request on both v0.5.0 and the development checkout. Neither run met
+the complete rubric for changing a plan, answering a dependency question or
+returning a temporary scoped selection. Some turns returned an empty command
+instead of a final answer. One checkout session read the correct prerequisite,
+then placed it on hold despite the person's explicit request to leave the work
+alone. The session transcript distinguishes a tool returning the right fact
+from an agent using it correctly.
+
+## Repeating the journeys with your own client
+
+From a development checkout, create a new disposable directory for each run.
+The driver prints one request and the command selecting its database,
+workspace, actor and timezone. Give those to a person or agent using the
+client you want to evaluate. Keep the scorer and rubric out of their prompt.
+
+```sh
+uv run python scripts/agent_journey.py start move-plan /tmp/example-plan-trial
+# After the reader finishes, score the stored facts.
+uv run python scripts/agent_journey.py check /tmp/example-plan-trial
+```
+
+The available scenarios cover a plan with a hard deadline, two kinds of
+dates, waiting for someone, a suggestion, a one-time scoped choice, and a
+blocked task. Run `start --help` for their names. For the last two, supply
+the ID the reader actually reported with `check DIRECTORY --answer ID`.
+Checking opens SQLite read-only and exits 0 for a passing outcome or 1 for
+a miss. Record the client and version, the answer shown to the person, and
+any interventions alongside the score. A state-based pass alone cannot tell
+whether the reader understood the request or found the experience easy.

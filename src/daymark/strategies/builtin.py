@@ -41,6 +41,7 @@ register(
 def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
     minutes = params["minutes"]
     fits, longer, unknown = [], 0, 0
+    considered = len(advice.picks)
     for item in advice.picks:
         estimate = item["estimate_minutes"]
         if estimate is None:
@@ -53,6 +54,10 @@ def _time_fit(view: Snapshot, advice: Advice, params: dict) -> None:
     advice.held_back += longer + unknown
     if fits or longer or unknown:
         message = f"{len(fits)} individually estimated at {minutes} min or less."
+        if considered < len(view.ready):
+            message = (
+                f"This step checked {considered} of {len(view.ready)} ready candidates. " + message
+            )
         if longer:
             message += f" {longer} estimated longer."
         if unknown:
@@ -302,5 +307,61 @@ register(
         evidence="practitioner",  # prerequisite trees; work backward from the outcome
         apply=_frontier_first,
         params={"gaps": Param(3, "How many unmoved conditions to mention", 0, 20)},
+    )
+)
+
+
+def _project_review(view: Snapshot, advice: Advice, params: dict) -> None:
+    if view.context is not None:
+        advice.notes.append(
+            Note("project-review", "Omit the task context filter to review whole projects.")
+        )
+        return
+    missing = []
+    for project in view.projects:
+        counts = project["rollup"]["stages"]
+        active = sum(
+            counts[stage["id"]]
+            for stage in project["stages"]
+            if stage["status"] in {"open", "waiting"}
+        )
+        if not active:
+            missing.append(project)
+    if not missing:
+        text = (
+            f"Each open project has an open or waiting task ({len(view.projects)} reviewed)."
+            if view.projects
+            else "No open projects to review."
+        )
+        advice.notes.append(Note("project-review", text))
+        return
+    for project in missing[: params["limit"]]:
+        proposed = project["rollup"]["proposed"]
+        text = f"{project['title']}: no open or waiting task. "
+        if proposed:
+            noun = "proposal awaits" if proposed == 1 else "proposals await"
+            text += f"{proposed} {noun} a decision."
+        else:
+            text += "What is the next action, or is the project finished?"
+        advice.notes.append(Note("project-review", text, [project["id"]]))
+    remaining = len(missing) - params["limit"]
+    if remaining > 0:
+        advice.notes.append(
+            Note(
+                "project-review",
+                f"{remaining} more projects meet this check. Increase project-review.limit to see more.",
+            )
+        )
+
+
+register(
+    Strategy(
+        name="project-review",
+        reads=("projects",),
+        kind="hygiene",
+        summary="Review open projects with no open or waiting task. Identify outstanding proposals separately.",
+        evidence="practitioner",  # GTD Weekly Review, review project and larger outcome lists
+        apply=_project_review,
+        params={"limit": Param(10, "How many projects to name in one review", 1, 100)},
     )
 )

@@ -24,3 +24,10 @@ Use synthetic examples and fixtures. Do not submit production databases, exports
 Explain the problem, the resulting behavior, and the checks you ran. Keep unrelated formatting changes out of the diff. Contributions are provided under the project's [MIT license](LICENSE).
 
 See [RELEASING.md](RELEASING.md) for maintainer release checks.
+
+## Try a change as a new user or agent
+
+The [agent journeys](docs/research/agent-journeys.md#repeating-the-journeys-with-your-own-client)
+include a local driver for six synthetic requests. Use it to compare what the
+person asked for with what an agent actually stored. It works with the real
+CLI and your choice of client.

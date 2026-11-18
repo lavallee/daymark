@@ -569,3 +569,104 @@ def test_shortlist_reads_only_the_ready_view(tasks, monkeypatch):
         monkeypatch.setattr(tasks, method, unneeded)
     assert [x["id"] for x in tasks.advise(settings=["shortlist"]).picks] == ["sample"]
     assert [x["id"] for x in tasks.advise(profile="gentle").picks] == ["sample"]
+
+
+def test_context_filters_picks_and_review_inputs_without_assigning_untagged_work(tasks):
+    tasks.add("By phone", kind="context", id="phone")
+    tasks.add("At the press", kind="context", id="press")
+    tasks.goal("Print brochure", id="print")
+    tasks.add("Paper confirmed", kind="condition", goal="print", id="paper", condition="unmet")
+    tasks.add("Untouched goal gap", kind="condition", goal="print", id="gap", condition="unknown")
+    tasks.add("Call to confirm stock", id="call", contexts=["phone", "press"], advances=["paper"])
+    tasks.add("At the press only", id="other", contexts=["press"], advances=["paper"])
+    tasks.add("No recorded context", id="uncertain")
+    tasks.add("Match by label alone", id="phone-label", kind="label")
+    tasks.add("Label only", id="labeled", labels=["phone-label"])
+    tasks.add("Proof at the press", id="wait-elsewhere", contexts=["press"], waiting_on="supplier")
+    tasks.propose("Suggested plain task", id="proposed-elsewhere")
+    tasks.add("Separate scope", id="studio", contexts=["phone"], scope="studio")
+
+    snapshot = strategies.snapshot(tasks, scope="", context="phone")
+    assert [t["id"] for t in snapshot.ready] == [t["id"] for t in snapshot.open] == ["call"]
+    assert not snapshot.waiting and not snapshot.proposed
+    assert snapshot.context == "phone"
+    assert [c["id"] for c in snapshot.exploration["conditions"]] == ["paper"]
+    assert [t["id"] for t in snapshot.exploration["conditions"][0]["advancing"]] == ["call"]
+    advice = tasks.advise(profile="assistant", scope="", context="phone").to_dict()
+    assert advice["context"] == "phone"
+    assert [t["id"] for t in advice["picks"]] == ["call"]
+    assert not advice["suggestions"]
+    assert not any(n["ids"] for n in advice["notes"] if n["strategy"] == "frontier-first")
+    assert "uncertain" in {t["id"] for t in tasks.ready()}
+    code("not_found", tasks.advise, context="phone-label")
+
+
+def test_context_counts_and_fallback_keep_both_filters(tasks, monkeypatch):
+    tasks.add("Workstation", kind="context", id="desk")
+    tasks.add("Travel", kind="context", id="travel")
+    for key in ("first", "second", "third"):
+        tasks.add(key, id=key, contexts=["desk"], scope="print")
+    tasks.add("Another task", id="untagged", scope="print")
+    monkeypatch.setattr(strategies, "READY_LIMIT", 2)
+    advice = tasks.advise(scope="print", context="desk", settings=["shortlist.size=1"])
+    assert "first 2 of 3" in advice.notes[0].text
+    assert "daymark ready --scope print --context desk" in advice_text(advice)
+    assert "No ready tasks tagged with context travel." in advice_text(
+        tasks.advise(context="travel")
+    )
+
+
+def test_time_fit_reports_the_candidate_set_a_prior_stage_selected(tasks):
+    tasks.add("Prepare binder", id="long", minutes=90, priority=1)
+    tasks.add("Confirm order", id="short", minutes=5)
+    limited = tasks.advise(profile="plain", settings=["shortlist.size=1", "time-fit.minutes=10"])
+    assert not limited.picks and limited.held_back == 2
+    assert "This step checked 1 of 2 ready candidates." in limited.notes[0].text
+    reordered = tasks.advise(
+        profile="gentle",
+        drops=["shortlist"],
+        settings=["time-fit.minutes=10", "shortlist.size=1"],
+    )
+    assert [item["id"] for item in reordered.picks] == ["short"]
+    assert reordered.held_back == 1
+
+
+def test_optional_project_review_checks_recorded_work_across_task_scopes_and_contexts(tasks):
+    for id in ("empty", "ideas", "held", "working", "closed", "other"):
+        tasks.project(id, id=id, scope="home" if id == "other" else "studio")
+    tasks.done("closed")
+    tasks.add("Wait for proof", id="wait", project="held", waiting_on="printer")
+    tasks.add("Future task", id="later", project="working", scope="home", start="+1w")
+    tasks.propose("A possible cover", id="cover", project="ideas", scope="home")
+    tasks.add("By phone", kind="context", id="phone")
+    before = tasks.engine.export("w")
+    assert not tasks.advise().notes
+    review = tasks.advise(profile="plain", settings=["project-review"], scope="studio")
+    assert [n.ids for n in review.notes] == [["empty"], ["ideas"]]
+    assert "1 proposal awaits a decision" in review.notes[1].text
+    assert not review.suggestions
+    contextual = tasks.advise(
+        profile="plain", settings=["project-review"], scope="studio", context="phone"
+    )
+    assert len(contextual.notes) == 1 and not contextual.notes[0].ids
+    assert "Omit the task context" in contextual.notes[0].text
+    assert tasks.engine.export("w") == before
+    assert tasks.profile()["version"] == 0
+
+    tasks.accept("cover")
+    tasks.add("Inspect first page", project="empty")
+    done = tasks.advise(settings=["project-review"], scope="studio")
+    assert [n.text for n in done.notes] == [
+        "Each open project has an open or waiting task (4 reviewed)."
+    ]
+
+
+def test_project_review_limits_named_projects_and_remains_opt_in(tasks, monkeypatch):
+    for i in range(3):
+        tasks.project(f"Project {i}", id=f"project-{i}")
+    advice = tasks.advise(settings=["project-review.limit=1"])
+    assert advice.notes[0].ids == ["project-0"] and "2 more projects" in advice.notes[1].text
+    monkeypatch.setattr(
+        tasks, "projects", lambda: pytest.fail("A plain listing read project plans")
+    )
+    assert not tasks.advise().notes

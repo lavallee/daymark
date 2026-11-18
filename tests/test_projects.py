@@ -394,7 +394,10 @@ def test_plan_read_resolves_dates_dependencies_people_and_rollups(tasks):
     assert tasks.plan("site")["rollup"]["percent_done"] == 33
     listed = tasks.projects()
     assert [p["id"] for p in listed["projects"]] == ["site"]
-    assert listed["projects"][0]["rollup"]["done"] == 1
+    summary = listed["projects"][0]
+    assert summary["rollup"]["done"] == 1
+    detail = tasks.plan("site")
+    assert all(summary[key] == detail[key] for key in ("facts", "stages", "rollup", "health"))
     code("not_found", tasks.plan, "missing")
     code("not_found", tasks.plan, "map")
     # Another workspace sees none of it.

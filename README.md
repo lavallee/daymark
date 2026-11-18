@@ -106,7 +106,7 @@ a fresh `daymark init` with `DAYMARK_TZ=Europe/London`, and runs as shown):
 
 ```console
 $ daymark project add "Move house" --id move --preset event --target 2030-06-28
-move  Move house
+move  Move house  [target 2030-06-28]
 $ daymark add "Moving day" --project move --id day --is-milestone --due 2030-06-28
 day  Moving day  [due 2030-06-28; milestone]
 $ daymark add "Book the van" --project move --id van --milestone day --stage book --set cost=180 --due 2030-06-01

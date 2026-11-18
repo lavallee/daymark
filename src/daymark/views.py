@@ -107,13 +107,14 @@ def urgency(item, now) -> tuple:
     else:
         soonest = min((x for x in (deadline, planned, target) if x is not None), default=None)
         bucket, when = 5, soonest if soonest is not None else 10**6
-        why = (
-            f"due in {deadline}d"
-            if deadline is not None
-            else f"planned in {planned}d"
-            if planned is not None
-            else "no date"
-        )
+        if soonest is None:
+            why = "no date"
+        elif soonest == deadline:
+            why = f"due in {deadline}d"
+        elif soonest == planned:
+            why = f"planned in {planned}d"
+        else:
+            why = f"target in {target}d"
     # The person's own ordering outranks every computed one.
     focus = item["focus"]
     key = (0 if focus else 1, focus or 0, bucket, when, item["priority"] or 5)
@@ -263,6 +264,11 @@ def ready_record(item, now):
         "claim_until",
     )
     record = {key: item[key] for key in fields}
+    contexts = item.get("context_ids") or []
+    if contexts:
+        record["context_ids"] = contexts[:3]
+        if len(contexts) > 3:
+            record["more_contexts"] = len(contexts) - 3
     title = item["title"]
     record.update(kind="task", status="open", version=item["version"],
                   title=title[:160] + ("…" if len(title) > 160 else ""), why=why(item, now))
@@ -278,12 +284,14 @@ def _ready_summaries(store, workspace, top, now):
         marks = ",".join("?" * len(ids))
         try:
             rows = store.db.execute(
-                "SELECT id,version,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644) "
+                "SELECT id,version,substr(CAST(json_extract(data,'$.title') AS BLOB),1,644), "
+                "json_extract(data,'$.context_ids') "
                 f"FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
                 (workspace, *ids),
             )
             details.update(
-                (id, (version, title.decode(errors="ignore"))) for id, version, title in rows
+                (id, (version, title.decode(errors="ignore"), json.loads(contexts or "[]")))
+                for id, version, title, contexts in rows
             )
         except sqlite3.OperationalError as exc:
             if "no such function: json_extract" not in str(exc):
@@ -292,13 +300,13 @@ def _ready_summaries(store, workspace, top, now):
                 f"SELECT id,version,data FROM daymark_entities WHERE workspace=? AND id IN ({marks})",
                 (workspace, *ids),
             )
-            details.update(
-                (id, (version, json.loads(data)["title"][:161])) for id, version, data in raw
-            )
+            for id, version, data in raw:
+                current = json.loads(data)
+                details[id] = (version, current["title"][:161], current.get("context_ids", []))
     result = []
     for item in top:
-        version, title = details[item["id"]]
-        result.append(ready_record({**item, "version": version, "title": title}, now))
+        version, title, contexts = details[item["id"]]
+        result.append(ready_record({**item, "version": version, "title": title, "context_ids": contexts}, now))
     return result
 
 
@@ -554,6 +562,32 @@ def _activity_without_json(store, workspace, after, limit):
     return items
 
 
+def _context_links(store, workspace, id, field, *json_fields):
+    """Read only the fields used in a related record's context summary."""
+    base = (
+        " FROM daymark_refs r JOIN daymark_entities e ON "
+        "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
+        "r.target_id=? AND r.field=? ORDER BY e.id"
+    )
+    base_fields = ("id", "kind", "status", "archived")
+    columns = ",".join("e." + name for name in base_fields)
+    if json_fields:
+        columns += "," + ",".join(f"json_extract(e.data,'$.{name}')" for name in json_fields)
+    args = (workspace, id, field)
+    fields = (*base_fields, *json_fields)
+    try:
+        rows = store.db.execute("SELECT " + columns + base, args)
+    except sqlite3.OperationalError as exc:
+        if "no such function: json_extract" not in str(exc):
+            raise
+        for (raw,) in store.db.execute("SELECT e.data" + base, args):
+            item = json.loads(raw)
+            yield {name: item[name] for name in fields}
+        return
+    for row in rows:
+        yield dict(zip(fields, row))
+
+
 def context(store, workspace, id, *, history=10, now=None, owner=None):
     """One entity with what surrounds it: blockers, dependents, children, reminders, history."""
     now = normalize_now(now)
@@ -563,15 +597,6 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
     with store._transaction(write=False):
         item = store.get(workspace, id)
 
-        def linked(field):
-            rows = store.db.execute(
-                "SELECT e.data FROM daymark_refs r JOIN daymark_entities e ON "
-                "e.workspace=r.workspace AND e.id=r.source_id WHERE r.workspace=? AND "
-                "r.target_id=? AND r.field=? ORDER BY e.id",
-                (workspace, id, field),
-            ).fetchall()
-            return [json.loads(row[0]) for row in rows]
-
         statuses = _statuses(store, workspace, item["depends_on"])
         events = store.db.execute(
             "SELECT e.action,e.created_at,e.operation_id,e.actor FROM daymark_events e WHERE "
@@ -579,7 +604,7 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
             (workspace, id, history),
         ).fetchall()
         blocked = [ref for ref in item["depends_on"] if statuses.get(ref) not in DONE]
-        children = linked("parent_id")
+        children = list(_context_links(store, workspace, id, "parent_id", "title"))
         readiness = {}
         if item["kind"] == "task":
             active = [x["id"] for x in children if x["kind"] == "task"
@@ -588,16 +613,17 @@ def context(store, workspace, id, *, history=10, now=None, owner=None):
             readiness = {"readiness": {"ready": not reasons, "reasons": reasons, "active_children": active}}
         return {
             "entity": item,
+            "review_token": store._review_token(workspace, id),
             **readiness,
             "blocked_by": blocked,
-            "dependents": [x["id"] for x in linked("depends_on") if x["status"] in LIVE],
+            "dependents": [x["id"] for x in _context_links(store, workspace, id, "depends_on") if x["status"] in LIVE],
             "children": [
                 {"id": x["id"], "title": x["title"], "status": x["status"]}
                 for x in children
             ],
             "reminders": [
                 {"id": x["id"], "scheduled_at": x["scheduled_at"], "state": x["reminder_state"]}
-                for x in linked("task_id")
+                for x in _context_links(store, workspace, id, "task_id", "scheduled_at", "reminder_state")
             ],
             "history": [
                 {"action": row[0], "at": row[1], "operation_id": row[2], "actor": row[3]}
@@ -655,7 +681,7 @@ def _summary(items, decls) -> dict:
     """Counts, progress, effort, span and number-field sums for a set of items."""
     counted = [x for x in items if x["status"] != "cancelled"]
     done = sum(1 for x in counted if x["status"] == "completed")
-    dates = [plans.plan_dates(x) for x in items]
+    dates = [x.get("plan") or plans.plan_dates(x) for x in items]
     starts = [d["start"] for d in dates if d["start"]]
     ends = [d["end"] for d in dates if d["end"]]
     by_status = {}
@@ -750,7 +776,6 @@ def _build(project, tasks, by_id, people, labels, goals, now):
     in_project = {t["id"]: t for t in tasks}
     tasks = sorted((t for t in tasks if not t["archived"]), key=plans.order_key)
     members = {t["id"]: t for t in tasks}
-    lookup = {**by_id, **in_project}
     person_ids = {p["id"] for p in people}
     cards, proposed, off_board = [], [], 0
     for task in tasks:
@@ -771,28 +796,34 @@ def _build(project, tasks, by_id, people, labels, goals, now):
                     "done": task["status"] == "completed",
                     "overdue": bool(live and task["deadline"] and _is_past(task["deadline"], now)),
                     "blocked_by": [
-                        r for r in task["depends_on"] if _status(lookup.get(r)) not in DONE
+                        r for r in task["depends_on"] if _status(by_id.get(r)) not in DONE
                     ],
                 },
             }
         )
-    edges = [
-        {"from": t["id"], "to": ref} for t in tasks for ref in t["depends_on"] if ref in members
-    ]
+    edges, external_dependents = [], {}
+    for task in tasks:
+        for ref in task["depends_on"]:
+            if ref in members:
+                edges.append({"from": task["id"], "to": ref})
+            elif ref not in in_project:
+                dependents = external_dependents.setdefault(ref, [])
+                if not dependents or dependents[-1] != task["id"]:
+                    dependents.append(task["id"])
     external = [
         {
             "id": ref,
-            "title": (lookup.get(ref) or {}).get("title"),
-            "project_id": (lookup.get(ref) or {}).get("project_id"),
-            "status": _status(lookup.get(ref)),
-            "dependents": [t["id"] for t in tasks if ref in t["depends_on"]],
+            "title": (by_id.get(ref) or {}).get("title"),
+            "project_id": (by_id.get(ref) or {}).get("project_id"),
+            "status": _status(by_id.get(ref)),
+            "dependents": external_dependents[ref],
         }
-        for ref in sorted({r for t in tasks for r in t["depends_on"] if r not in in_project})
+        for ref in sorted(external_dependents)
     ]
     conflicts = []
     for card in (c for c in cards if c["status"] in LIVE_WORK):  # Finished work has none.
         for ref in card["depends_on"]:
-            blocker = lookup.get(ref)
+            blocker = by_id.get(ref)
             if blocker is None or _status(blocker) == "cancelled":
                 continue
             ends = plans.plan_dates(blocker)["end"]
@@ -808,13 +839,17 @@ def _build(project, tasks, by_id, people, labels, goals, now):
     warnings = [
         w
         for t in tasks
-        for w in _warnings(t, types, decls, members, in_project, lookup, person_ids)
+        for w in _warnings(t, types, decls, members, in_project, by_id, person_ids)
     ]
     milestones = []
     # Every unarchived milestone is listed with its status, including a proposed or
     # cancelled one that is not on the board, so its members are never orphaned.
+    milestone_members = {}
+    for card in cards:
+        if card["milestone_id"]:
+            milestone_members.setdefault(card["milestone_id"], []).append(card)
     for marker in (t for t in tasks if t["milestone"]):
-        belongs = [c for c in cards if c["milestone_id"] == marker["id"]]
+        belongs = milestone_members.get(marker["id"], [])
         dated = plans.plan_dates(marker)
         when = dated["end"] or dated["start"]
         late = [
@@ -967,14 +1002,47 @@ def plan(store, workspace, project_id, *, now=None):
         if project["goal_id"]:
             wanted.add(project["goal_id"])
         by_id = _fetch(store, workspace, wanted)
+        by_id.update((task["id"], task) for task in tasks)
         people, labels, goals = _named(store, workspace)
         result = _build(project, tasks, by_id, people, labels, goals, now)
         result["cursor"] = store.head(workspace)
     return result
 
 
-def _everything(store, workspace):
-    rows = store._rows(workspace, include_archived=True)
+# Portfolio summaries need project declarations and a task's planning fields.
+# Notes, descriptions and recurrence histories can dwarf the summaries they produce.
+_PORTFOLIO_FIELDS = (
+    "title", "project_id", "created_at", "rank", "goal_id", "assignee_id", "parent_id",
+    "milestone_id", "milestone", "type", "stage", "values", "depends_on", "estimate_minutes",
+    "earliest_start", "planned", "latest_target", "deadline",
+)
+
+
+def _portfolio_rows(store, workspace):
+    paths = ",".join(f"'$.{key}'" for key in _PORTFOLIO_FIELDS)
+    try:
+        records = store.db.execute(
+            "SELECT id,kind,status,archived,CASE WHEN kind='project' THEN data "
+            f"ELSE json_extract(data,{paths}) END FROM daymark_entities WHERE workspace=? ORDER BY id",
+            (workspace,),
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such function: json_extract" not in str(exc):
+            raise
+        return store._rows(workspace, include_archived=True)
+    rows = []
+    for id, kind, status, archived, value in records:
+        fields = json.loads(value)
+        if kind == "project":
+            rows.append(fields)
+        else:
+            rows.append({"id": id, "kind": kind, "status": status, "archived": bool(archived),
+                         **dict(zip(_PORTFOLIO_FIELDS, fields))})
+    return rows
+
+
+def _everything(store, workspace, *, portfolio=False):
+    rows = _portfolio_rows(store, workspace) if portfolio else store._rows(workspace, include_archived=True)
     by_id = {x["id"]: x for x in rows}
     tasks = {}
     for item in rows:
@@ -989,7 +1057,7 @@ def projects(store, workspace, *, now=None):
     now = normalize_now(now)
     with store._transaction(write=False):
         _read(store)
-        rows, by_id, tasks = _everything(store, workspace)
+        rows, by_id, tasks = _everything(store, workspace, portfolio=True)
         people, labels, goals = _named(store, workspace, rows)
         out = []
         for project in (x for x in rows if x["kind"] == "project" and not x["archived"]):

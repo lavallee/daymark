@@ -14,6 +14,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -27,6 +28,7 @@ from .models import (
     next_occurrence,
     normalize_now,
     plain_number,
+    recurrence_date_field,
     retry_delay,
 )
 
@@ -70,19 +72,27 @@ REFS = {
 
 
 class Store:
-    def __init__(self, path, *, upgrade=True):
+    def __init__(self, path, *, upgrade=True, read_only=False):
         """Open a database path (Store owns its commits) or a caller's connection.
 
         A database written by an older Daymark is upgraded in place on open, inside
         one transaction; an upgraded file cannot be opened by the older release. With
         ``upgrade=False`` an older or missing schema is refused with ``conflict``
         instead, and nothing is written. A schema newer than this code is always
-        refused: Daymark never downgrades a file.
+        refused: Daymark never downgrades a file. With `read_only=True`, a path
+        opens via SQLite mode=ro and local reads see committed updates.
         """
         self._owned = not isinstance(path, sqlite3.Connection)
+        if read_only:
+            if not self._owned:
+                raise DomainError("invalid", "Open a caller-owned connection with SQLite mode=ro and upgrade=False")
+            if not Path(path).is_file():
+                raise DomainError("no_database", "A read-only session needs an existing database")
+            path = Path(path).resolve().as_uri() + "?mode=ro"
+            upgrade = False
         self._upgrade = upgrade
         self.db = (
-            sqlite3.connect(path, check_same_thread=False, timeout=30) if self._owned else path
+            sqlite3.connect(path, check_same_thread=False, timeout=30, uri=read_only) if self._owned else path
         )
         self._lock = threading.RLock()
         self._actor = None  # Who is acting in the current execute; recorded on its events.
@@ -935,6 +945,17 @@ class Store:
         digest, replay = self._receipt(workspace, operation_id, action, payload, expected_version)
         if replay is not None:
             return replay
+        if "review_token" in payload:
+            if action not in {"update", "accept", "dismiss"}:
+                invalid("Only an edit or a proposal decision takes a review token")
+            payload = dict(payload)
+            token = payload.pop("review_token")
+            if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+                invalid("Use the review token returned by show or brief")
+            if not isinstance(payload.get("id"), str):
+                invalid("Entity ID required")
+            if self._review_token(workspace, payload["id"]) != token:
+                raise DomainError("conflict", "The reviewed entity has changed or was replaced")
         now = normalize_now().isoformat()
         taking = action == "take"
         if taking:
@@ -1000,6 +1021,11 @@ class Store:
                 raise DomainError("conflict", "Version mismatch")
             raw = {**before, "version": before["version"] + 1, "updated_at": now}
             if action == "update":
+                if (payload.get("waiting_on") and "status" not in payload
+                        and before["kind"] == "task" and before["status"] == "open" and not before["archived"]):
+                    # Receiving a waiting reason parks live work. Keep the
+                    # caller's original fields in the operation digest above.
+                    payload = {**payload, "status": "waiting"}
                 protected = {
                     "id",
                     "workspace",
@@ -1644,7 +1670,7 @@ class Store:
                 else None
             ),
         }
-        field = "planned" if data["planned"] else "deadline" if data["deadline"] else "planned"
+        field = recurrence_date_field(data)
         raw[field] = following.model_dump(mode="json")
         child = self._validated(raw)
         self._put(child)
@@ -2028,11 +2054,13 @@ class Store:
 
         return compile_node(ast, 0)
 
-    def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
+    def search(self, workspace, text=None, *, kind="task", status=None, scope=None, after=None, limit=50,
+               claimed_by=None, now=None):
         """Search titles and descriptions. Continue from the last ID with the same filters."""
         from .search import page
 
-        return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit)
+        return page(self, workspace, text, kind=kind, status=status, scope=scope, after=after, limit=limit,
+                    claimed_by=claimed_by, now=now)
 
     def query(self, workspace, ast):
         test = self._compile_filter(ast)
@@ -2119,6 +2147,11 @@ class Store:
 
         return self._read_entity(brief.read, workspace, id, source, now=now, owner=owner, before_note=before_note)
 
+    def changes_since(self, workspace, id=None, *, version, source=None):
+        from . import comparison
+
+        return self._read_entity(comparison.read, workspace, id, source, version)
+
     def read_note(self, workspace, id, note_id, *, source=None):
         from . import brief
 
@@ -2134,6 +2167,31 @@ class Store:
         from . import views
 
         return views.summary(self, workspace, now=now, scope=scope, context=context, owner=owner)
+
+    def _review_token(self, workspace, id):
+        """Identify this entity's latest recorded state inside the caller's transaction."""
+        row = self.db.execute(
+            "SELECT c.seq,e.operation_id,e.created_at,i.version,e.after_data=i.data,e.seq "
+            "FROM daymark_events e JOIN daymark_event_cursors c ON c.event_seq=e.seq "
+            "JOIN daymark_entities i ON i.workspace=e.workspace AND i.id=e.entity_id "
+            "WHERE e.seq=(SELECT recent.seq FROM daymark_events recent "
+            "JOIN daymark_event_cursors cursor ON cursor.event_seq=recent.seq "
+            "WHERE recent.workspace=? AND recent.entity_id=? ORDER BY cursor.seq DESC LIMIT 1)",
+            (workspace, id),
+        ).fetchone()
+        if row is None:
+            return None
+        if not row[4]:
+            # A schema upgrade may have added defaults to today's entity while
+            # preserving the event as written. A sparse import may have no
+            # evidence at its current version. Only the first case gets a token.
+            raw = self.db.execute(
+                "SELECT after_data FROM daymark_events WHERE seq=?", (row[5],)
+            ).fetchone()[0]
+            if raw is None or self._validated(json.loads(raw)) != self.get(workspace, id):
+                return None
+        evidence = ["daymark-review-v1", workspace, id, *row[:4]]
+        return hashlib.sha256(canonical(evidence).encode()).hexdigest()[:32]
 
     def receipt_context(self, workspace, operation_id, *, action, entity_id=None, actor=None):
         """Recover the original read for a plain-verb retry. Reject unrelated receipts."""

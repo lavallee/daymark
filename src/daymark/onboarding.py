@@ -9,30 +9,51 @@ from pathlib import Path
 from .models import DomainError
 from .render import ONBOARD
 
-_MARKER = re.compile(rb"^<!-- daymark:(begin|end) -->[ \t]*\r?$", re.MULTILINE)
+_MARKER = re.compile(rb"<!-- daymark:(begin|end) -->[ \t]*")
+_FENCE = re.compile(rb" {0,3}(`{3,}|~{3,})(.*)")
 
 
-def updated_instructions(original: bytes) -> bytes:
-    """Preserve bytes outside the marked section, including the file's line endings."""
-    markers = list(_MARKER.finditer(original))
-    newline = b"\r\n" if b"\r\n" in original else b"\n"
-    section = ONBOARD.encode().replace(b"\n", newline)
-    if not markers:
-        if not original:
-            return section
-        separator = newline if original.endswith(b"\n") else newline * 2
-        return original + separator + section
-    if [m[1] for m in markers] != [b"begin", b"end"]:
+def _section(original: bytes):
+    """Find live markers while leaving Markdown examples alone."""
+    markers = []
+    fence = b""
+    offset = 0
+    for line in original.splitlines(keepends=True):
+        content = line.rstrip(b"\r\n")
+        mark = _FENCE.fullmatch(content)
+        if mark:
+            run, info = mark.groups()
+            if fence:
+                if run.startswith(fence) and not info.strip():
+                    fence = b""
+            elif run[:1] == b"~" or b"`" not in info:
+                fence = run
+        elif not fence and (marker := _MARKER.fullmatch(content)):
+            markers.append((marker[1], offset, offset + len(content)))
+        offset += len(line)
+    if markers and [name for name, _, _ in markers] != [b"begin", b"end"]:
         raise DomainError(
             "invalid",
             "Expected one complete Daymark section",
             ["Inspect the daymark:begin and daymark:end marker lines before retrying."],
         )
-    # Leave the final line ending exactly as found.
-    stop = markers[1].end()
-    if original[stop - 1 : stop] == b"\r":
-        stop -= 1
-    return original[: markers[0].start()] + section.rstrip(b"\r\n") + original[stop:]
+    if not markers and fence:
+        raise DomainError("invalid", "Close the Markdown code fence before appending instructions")
+    return (markers[0][1], markers[1][2]) if markers else None
+
+
+def updated_instructions(original: bytes) -> bytes:
+    """Preserve bytes outside the marked section, including the file's line endings."""
+    span = _section(original)
+    newline = b"\r\n" if b"\r\n" in original else b"\n"
+    section = ONBOARD.encode().replace(b"\n", newline)
+    if span is None:
+        if not original:
+            return section
+        separator = newline if original.endswith(b"\n") else newline * 2
+        return original + separator + section
+    start, stop = span
+    return original[:start] + section.rstrip(b"\r\n") + original[stop:]
 
 
 def maintain(path: Path, *, check: bool) -> int:
@@ -45,7 +66,7 @@ def maintain(path: Path, *, check: bool) -> int:
         return 0
     if check:
         print(
-            f"Daymark instructions are {'outdated' if existed and _MARKER.search(original) else 'missing'} in {path}"
+            f"Daymark instructions are {'outdated' if _section(original) is not None else 'missing'} in {path}"
         )
         return 1
 

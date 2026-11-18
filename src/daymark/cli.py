@@ -117,7 +117,7 @@ def _field_options(item: argparse.ArgumentParser, *, editing: bool) -> None:
     )
     item.add_argument("--label", action="append", dest="labels", metavar="ID")
     item.add_argument("--context", action="append", dest="contexts", metavar="ID")
-    item.add_argument("--waiting-on", metavar="WHO")
+    item.add_argument("--waiting-on", metavar="WHO", help="A reply or prerequisite that parks open work")
     item.add_argument("--move", choices=["person", "answer", "agent"], help="Whose move it is")
     item.add_argument("--scope", metavar="NAME", help='Part of life it belongs to ("" clears)')
     item.add_argument(
@@ -176,6 +176,7 @@ def _simple_commands(sub) -> None:
     advise = add("advise", "What to offer and what to mention, by the workspace's profile")
     advise.add_argument("--profile", metavar="NAME", help="Try a profile without adopting it")
     advise.add_argument("--scope", metavar="NAME", help="Only this scope")
+    advise.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     advise.add_argument("--unscoped", action="store_true", help="Only tasks with no scope")
     profile = add("profile", "Show or choose the way of working for this workspace", writes=True)
     profile.add_argument("name", nargs="?", help="Adopt this profile (see `daymark strategies`)")
@@ -193,7 +194,8 @@ def _simple_commands(sub) -> None:
             help="Include a strategy or adjust one parameter",
         )
         command.add_argument("--drop", action="append", default=[], metavar="STRATEGY")
-    add("strategies", "List strategies and profiles, with how well each idea is supported")
+    methods = add("strategies", "List strategies and profiles, or inspect one strategy")
+    methods.add_argument("strategy", nargs="?", metavar="NAME", help="Show purpose, parameters and limits")
     ready = add("ready", "Tasks that can be done now, most pressing first")
     ready.add_argument("--context", metavar="ID", help="Only tasks tagged with this context")
     ready.add_argument("--explain", action="store_true", help="Show why live work is held back within these filters")
@@ -217,6 +219,7 @@ def _simple_commands(sub) -> None:
     detail = show.add_mutually_exclusive_group()
     detail.add_argument("--brief", action="store_true", help="Bounded handoff with recent notes")
     detail.add_argument("--before-note", metavar="NOTE_ID", help="Brief with the preceding note page")
+    detail.add_argument("--since-version", type=int, metavar="N", help="Compare the current record with a reviewed version")
     detail.add_argument("--note", metavar="NOTE_ID", help="Read one complete note from its ID")
     for name, help in (("add", "Capture a task"), ("propose", "Suggest a task for a person")):
         item = add(name, help, writes=True)
@@ -224,6 +227,7 @@ def _simple_commands(sub) -> None:
         _field_options(item, editing=False)
     edit = add("edit", 'Change fields; pass "" to clear a date or link', writes=True)
     edit.add_argument("id")
+    edit.add_argument("--if-review", metavar="TOKEN", help="Match the exact entity revision returned by show")
     edit.add_argument("--if-version", type=int, help="Refuse if the task changed since this version")
     _field_options(edit, editing=True)
     for name, help in (
@@ -244,6 +248,7 @@ def _simple_commands(sub) -> None:
         item.add_argument("id")
         if name in {"accept", "dismiss"}:
             item.add_argument("--if-version", type=int, metavar="N", help="Decide only the reviewed version")
+            item.add_argument("--if-review", metavar="TOKEN", help="Match the exact reviewed entity revision")
         if name in {"done", "release"}:
             item.add_argument("--note", help="Closing note" if name == "done" else "Handoff note")
     claim = add("claim", "Take a task so others leave it alone", writes=True)
@@ -277,6 +282,7 @@ def _simple_commands(sub) -> None:
     find.add_argument("text", nargs="?")
     find.add_argument("--kind", default="task")
     find.add_argument("--status")
+    find.add_argument("--claimed", action="store_true", help="Show my live task claims, including held work")
     find.add_argument("--page", action="store_true", help="Show compact search hits and a continuation ID")
     find.add_argument("--after", metavar="ID", help="Continue the same search after this ID (implies --page)")
     find.add_argument("--limit", "-n", type=int, default=50, metavar="N")
@@ -384,7 +390,8 @@ def _simple_commands(sub) -> None:
     explore = add("explore", "A goal's conditions: what is met, what is next, where nothing moves")
     explore.add_argument("goal", nargs="?", help="Goal ID (default: every goal)")
     sub.add_parser("workspaces", help="List the workspaces in this database")
-    sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
+    mcp = sub.add_parser("mcp", help="Serve these verbs to an agent harness over MCP (stdio)")
+    mcp.add_argument("--read-only", action="store_true", help="Expose only prime and view; open the local database read-only")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -537,17 +544,19 @@ def _stored_schema(path):
         return None
 
 
-def _open_store(path):
+def _open_store(path, *, read_only=False):
     """Open a Store the way every command does: upgrading an older database in place.
     The upgrade is one-way, so the first one is announced on standard error."""
     from .store import RELEASE, SCHEMA, Store
 
+    if read_only:
+        return Store(path, read_only=True)
     before = _stored_schema(path)
     store = Store(path)
     if before is not None and before != SCHEMA:
         print(
             f"daymark: upgraded {path} from schema {before or 'unmarked'} to {SCHEMA} "
-            f"(Daymark {RELEASE}); older versions can no longer open it",
+            f"(Daymark {RELEASE}); use a pre-upgrade backup to return to an older schema",
             file=sys.stderr,
         )
     return store
@@ -637,7 +646,10 @@ def _simple(args, engine) -> int:
         from . import strategies
         from .strategies.profiles import PROFILES
 
-        if name == "strategies":
+        if name == "strategies" and args.strategy is not None:
+            data = tasks.profile_catalog(strategy=args.strategy)
+            out(data, render.strategy_detail(data))
+        elif name == "strategies":
             listed = strategies.available()
             out(
                 {
@@ -654,7 +666,9 @@ def _simple(args, engine) -> int:
         elif name == "profile":
             _profile(tasks, args, out)
         else:
-            advice = tasks.advise(profile=args.profile, settings=args.set, drops=args.drop, scope=scope)
+            advice = tasks.advise(
+                profile=args.profile, settings=args.set, drops=args.drop, scope=scope, context=args.context
+            )
             lean = advice.to_dict()
             lean["picks"] = [render.compact(x) for x in advice.picks]
             out(lean, render.advice_text(advice, now))
@@ -685,6 +699,9 @@ def _simple(args, engine) -> int:
     elif name == "activity":
         page = tasks.activity(after=args.after, limit=args.limit)
         out(page, render.activity_text(page))
+    elif name == "show" and args.since_version is not None:
+        comparison = tasks.changes_since(args.id, version=args.since_version, source=args.source)
+        out(comparison, render.comparison_text(comparison))
     elif name == "show" and (args.brief or args.before_note is not None):
         brief = tasks.brief(args.id, before_note=args.before_note, source=args.source)
         out(brief, render.brief_text(brief))
@@ -712,7 +729,7 @@ def _simple(args, engine) -> int:
                 fields["managed_by"] = args.managed_by
             item = tasks.edit(
                 args.id, every=args.every, after_completion=args.after_completion,
-                expected_version=args.if_version, op=op, **fields
+                expected_version=args.if_version, review_token=args.if_review, op=op, **fields
             )
         else:
             item = tasks.add(
@@ -731,7 +748,7 @@ def _simple(args, engine) -> int:
     elif name in {"done", "release"}:
         entity(getattr(tasks, name)(args.id, note=args.note, op=op))
     elif name in {"accept", "dismiss"}:
-        entity(getattr(tasks, name)(args.id, expected_version=args.if_version, op=op))
+        entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
     elif name in {"skip", "cancel", "reopen", "archive", "undo",
                   "resume", "forget", "unfocus"}:  # fmt: skip
         entity(getattr(tasks, name)(args.id, op=op))
@@ -772,9 +789,9 @@ def _simple(args, engine) -> int:
             from .models import DomainError
 
             raise DomainError("invalid", "Limit must be between 1 and 1000")
-        if args.page or args.after is not None or scope is not None:
+        if args.claimed or args.page or args.after is not None or scope is not None:
             page = tasks.search(args.text, kind=args.kind, status=args.status,
-                                scope=scope, after=args.after, limit=args.limit)
+                                scope=scope, after=args.after, limit=args.limit, claimed=args.claimed)
             out(page, render.search_text(page))
         else:
             items = tasks.find(args.text, kind=args.kind, status=args.status, limit=args.limit)
@@ -835,7 +852,7 @@ def _simple(args, engine) -> int:
     elif name == "mcp":
         from .mcp import serve
 
-        serve(tasks, context=render.session_context(tasks, database=args.db, url=args.url))
+        serve(tasks, context=render.session_context(tasks, database=args.db, url=args.url), read_only=args.read_only)
     return 0
 
 
@@ -878,7 +895,7 @@ def _profile(tasks, args, out) -> None:
             raise DomainError("invalid", "--from-file requires --save-as NAME")
         result = tasks.profile(args.name, settings=args.set, drops=args.drop, undo=args.undo,
                                expected_version=args.if_version, op=args.op)
-        out(result, render.profile_text(result))
+        out(result, render.profile_text(result, database=args.db))
 
 
 def _project(args, tasks, out, entity, op) -> None:
@@ -922,6 +939,8 @@ def _fail(args, code: str, message: str, details=()) -> int:
     """Report a failure by stable code. Messages name rules, never stored content."""
     if code == "conflict" and args.command in {"add", "propose"} and getattr(args, "source", None):
         details = [*details, "Check the original capture with daymark show --source SYSTEM:KIND:ID --brief."]
+    if code == "conflict" and args.command in {"edit", "accept", "dismiss"} and getattr(args, "if_version", None):
+        details = [*details, f"Compare the current record with daymark show ID --since-version {args.if_version}."]
     if getattr(args, "json", False):
         print(
             json.dumps({"error": {"code": code, "message": message, "details": list(details)}}),
@@ -988,10 +1007,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("Worker requires local Store access")
             from .client import Client
 
-            engine = Client(args.url, os.environ.get(args.token_env, ""))
+            engine = Client(args.url, os.environ.get(args.token_env, ""), read_only=getattr(args, "read_only", False))
         else:
             fresh = args.db != ":memory:" and not Path(args.db).exists()
-            engine = _open_store(args.db)
+            engine = _open_store(args.db, read_only=getattr(args, "read_only", False))
             if fresh:
                 os.chmod(args.db, 0o600)  # Task data is private by default.
         try:

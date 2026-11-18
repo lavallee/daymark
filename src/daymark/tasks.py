@@ -358,7 +358,7 @@ class Tasks:
                 raise
         return "dm-" + uuid.uuid4().hex
 
-    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=()):
+    def _act(self, id, action, fields=None, *, op=None, build=None, expected_version=None, date_keys=(), review_token=None):
         """Apply the caller's intent or verify it against the original kernel receipt."""
         if expected_version is not None and (type(expected_version) is not int or expected_version < 1):
             raise DomainError("invalid", "expected_version must be a positive integer")
@@ -367,6 +367,8 @@ class Tasks:
             retry = self._retry_context(op, action, id)
             current = retry["before"] if retry else self.engine.get(*self._ws, id)
             changes = build(current, retry) if build else (fields or {})
+            if review_token is not None:
+                changes = {**changes, "review_token": review_token}
             if retry:
                 changes = self._retry_dates(changes, retry["result"], date_keys)
             version = expected_version if expected_version is not None else current["version"]
@@ -380,7 +382,7 @@ class Tasks:
                     raise
                 if op and self._retry_context(op, action, id):
                     continue  # A simultaneous request recorded its result after our first read.
-                if expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
+                if review_token is not None or expected_version is not None or self.engine.get(*self._ws, id)["version"] == version:
                     raise  # Stale explicit precondition or a domain refusal such as a live claim.
 
     @staticmethod
@@ -602,7 +604,7 @@ class Tasks:
 
     # -- change
 
-    def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, **fields):
+    def edit(self, id, *, every=None, after_completion=False, op=None, expected_version=None, review_token=None, **fields):
         """Edit fields, optionally refusing if the version observed by the caller is stale."""
         changes = self._fields(self._resolve(dict(fields)))
 
@@ -618,7 +620,7 @@ class Tasks:
                 out["recurrence"] = self._recurrence(every, merged, after_completion, index, fallback)
             return out
 
-        return self._act(id, "update", op=op, build=build, expected_version=expected_version)
+        return self._act(id, "update", op=op, build=build, expected_version=expected_version, review_token=review_token)
 
     def note(self, id, text, *, op=None):
         """Append a progress note: what was done, learned, or left for the next session."""
@@ -665,12 +667,12 @@ class Tasks:
     def undo(self, id, *, op=None):
         return self._act(id, "undo", op=op)
 
-    def accept(self, id, *, op=None, expected_version=None):
+    def accept(self, id, *, op=None, expected_version=None, review_token=None):
         """Accept the reviewed proposal, retaining a recorded wait."""
-        return self._act(id, "accept", op=op, expected_version=expected_version)
+        return self._act(id, "accept", op=op, expected_version=expected_version, review_token=review_token)
 
-    def dismiss(self, id, *, op=None, expected_version=None):
-        return self._act(id, "dismiss", op=op, expected_version=expected_version)
+    def dismiss(self, id, *, op=None, expected_version=None, review_token=None):
+        return self._act(id, "dismiss", op=op, expected_version=expected_version, review_token=review_token)
 
     def claim(self, id, *, minutes=60, op=None):
         """Take a task so parallel workers do not collide. Fails if another holds it."""
@@ -795,6 +797,10 @@ class Tasks:
             **({"source": source} if source is not None else {}),
         )
 
+    def changes_since(self, id=None, *, version, source=None):
+        """Read net changes since the exact version a person reviewed."""
+        return self.engine.changes_since(*self._ws, id, version=version, source=source)
+
     def read_note(self, id, note_id, *, source=None):
         """Read one complete note using the ID from a brief."""
         return self.engine.read_note(*self._ws, id, note_id, **({"source": source} if source is not None else {}))
@@ -834,13 +840,13 @@ class Tasks:
             extra["context"] = context
         return self.engine.agenda(*self._ws, now=self._now, days=days, **extra)
 
-    def advise(self, *, profile=None, settings=(), drops=(), scope=None):
+    def advise(self, *, profile=None, settings=(), drops=(), scope=None, context=None):
         """Run the chosen profile with one-call adjustments, without saving them."""
         from . import strategies
         from .strategies.preferences import select_profile
 
         chosen, source = select_profile(self, profile, settings=settings, drops=drops)
-        advice = strategies.advise(self, chosen, scope=scope)
+        advice = strategies.advise(self, chosen, scope=scope, context=context)
         advice.profile_source = source
         return advice
 
@@ -864,14 +870,21 @@ class Tasks:
                 return entry
         raise DomainError("not_found", "No saved profile with that name", [name])
 
-    def profile_catalog(self):
-        """The active choice, built-ins and saved copies available on this connection."""
+    def profile_catalog(self, *, strategy=None):
+        """Discover profiles and adjustment defaults, or inspect one strategy's parameters."""
+        from .strategies import available, describe
         from .strategies.profiles import PROFILES
+
+        if strategy is not None:
+            return describe(strategy)
+        saved = self.saved_profiles() if hasattr(self.engine, "setting") else None
 
         return {
             "active": self.profile(),
             "builtins": list(PROFILES),
-            "saved": self.saved_profiles() if hasattr(self.engine, "setting") else None,
+            "saved": [{k: entry[k] for k in ("name", "version")} for entry in saved]
+            if saved is not None else None,
+            "adjustments": {s.name: {key: p.default for key, p in s.params.items()} for s in available()},
         }
 
     def save_profile(self, name, *, profile=None, settings=(), drops=(), expected_version=0, op=None):
@@ -1084,10 +1097,16 @@ class Tasks:
     def changes(self, project, after):
         return self.engine.changes(*self._ws, project, after)
 
-    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50):
-        """Lean search hits, with an ID cursor when more matches remain."""
+    def search(self, text=None, *, kind="task", status=None, scope=None, after=None, limit=50, claimed=False):
+        """Lean search hits, optionally limited to the current actor's active work claims."""
+        if type(claimed) is not bool:
+            raise DomainError("invalid", "claimed must be true or false")
+        filters = {}
+        if claimed:
+            filters = {"claimed_by": self.actor} if self._ws else {"claimed": True}
+            filters["now"] = self._now
         return self.engine.search(
-            *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit
+            *self._ws, text, kind=kind, status=status, scope=scope, after=after, limit=limit, **filters
         )
 
     def find(self, text=None, *, kind="task", status=None, limit=50):

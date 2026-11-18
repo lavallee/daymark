@@ -4,7 +4,16 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
-- Use `ready --context ID` and `agenda --context ID` to select tasks tagged with an existing context. The filter combines with scope and honors every dependency.
+- Schema upgrade notices give the rollback path. Older releases differ in whether they refuse an upgraded file.
+
+- `mcp --read-only` offers a two-tool review session, opens local SQLite read-only and restricts an HTTP-backed session to read requests.
+
+- Editing an open task’s waiting reason parks it immediately and removes it from ready and take. Clearing a reason keeps the task waiting until an explicit resume.
+- A repeating task’s brief identifies its round, rule, time zone and the date advanced for a generated occurrence.
+- `show ID --since-version N` compares current terms with the version a person reviewed, including field excerpts and attributed note changes. Exact source references also work. Missing and ambiguous historical snapshots are reported explicitly. `edit`, `accept` and `dismiss` also accept `--if-review TOKEN` from the original show or brief to detect an ID that was deleted and reused.
+
+- HTTP clients can read, edit and replay imported entity and operation IDs containing slashes or URL path punctuation. Query-based forms support exact lookup behind URL-decoding gateways.
+- Use `--context ID` with `ready`, `agenda` or `advise` to select tasks tagged with an existing context. The filter combines with scope and honors every dependency.
 
 - `show --source SYSTEM:KIND:ID` recovers a capture by exact source reference in the active workspace, including archived entities. It also supports brief and individual note reads.
 
@@ -13,7 +22,7 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 - Accepting a proposal with `--waiting-on` now places it in waiting. `accept` and `dismiss` support `--if-version N` for a reviewed proposal. Both full and brief task details show source references.
 
 - `where [--json]` explains local file selection and workspace identity without opening or upgrading a database. For HTTP it reports the service origin.
-- `find --page` returns compact, cursor-based search hits. Filter by kind, status and scope and continue with `--after ID`. Brief startup reads cap task and memory previews.
+- `find --page` returns compact, cursor-based search hits. Filter by kind, status and scope and continue with `--after ID`. `find --claimed` recovers the current worker’s live claims, including held work. Brief startup reads cap task and memory previews.
 
 - `show ID --brief` provides a bounded handoff with attributed note previews, lease and readiness. `--note NOTE_ID` reads the entire note and `--before-note NOTE_ID` pages back through earlier notes.
 
@@ -28,7 +37,9 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
   optional `time-fit` strategy offers tasks individually estimated to fit a
   stated window. Save a reusable configuration with `profile --save-as NAME`,
   inspect or export it with `profile --saved NAME`, and choose it when needed
-  with `advise --profile NAME`. Saved copies have versions for safe updates.
+  with `advise --profile NAME`. Local preference writes accept a retry operation ID.
+  Active profiles and saved copies have versions for safe updates. Active changes
+  return a command that restores the previous choice at the observed revision.
   Plain and gentle advice only fetch the ready queue for ordinary-sized lists.
 
 - `daymark --as WORKER take [--scope NAME] [--context ID]` atomically claims one ready task marked for an agent. Repeating the same operation returns the original task or empty result. The engine, CLI and MCP expose the same selection.

@@ -185,6 +185,7 @@ def test_context_entities_are_assignable_and_filter_ready_before_limiting(tasks)
     new = write(tasks, "add", title="Read the bench dial", contexts=[context])
     ready = read(tasks, "ready", context=context, limit=1, json=True)["structuredContent"]
     assert [x["id"] for x in ready["items"]] == [new["structuredContent"]["id"]]
+    assert ready["items"][0]["context_ids"] == [context]
 
 
 def test_profile_write_returns_workspace_guard_and_exact_recovery(tasks):
@@ -208,3 +209,11 @@ def test_profile_write_returns_workspace_guard_and_exact_recovery(tasks):
     assert write(tasks, "act", **args)["structuredContent"] == data
     assert write(tasks, "act", **{**args, "op": "plain-2"})["isError"]
     assert write(tasks, "act", action="use_profile")["isError"]
+
+
+def test_claimed_search_reports_the_current_workers_lease_in_both_formats(tasks):
+    tasks.claim("a")
+    data = read(tasks, "find", claimed=True, json=True)["structuredContent"]
+    assert [row["id"] for row in data["items"]] == ["a"]
+    assert data["items"][0]["claimed_by"] == "reviewer" and data["items"][0]["claim_until"]
+    assert "claimed by reviewer" in read(tasks, "find", claimed=True)["content"][0]["text"]

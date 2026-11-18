@@ -35,6 +35,53 @@ task title and the lease outcome there. A returning process using the same
 actor name can identify the recorded author but cannot distinguish two
 sessions under that name.
 
+## A read-only status check
+
+A fresh Claude Code session was given only the read-only Daymark connection
+and asked what blocked `seal-bin`. The host listed two tools. It made four
+reads and reported the exact blocker ID `check-label`, its title and the
+`dependencies` reason. The fixture had two events before and after the trial.
+
+A separate Python SDK 1.30.0 process opened the same read-only surface against
+current and 0.5.0 authenticated HTTP services. Search worked against both.
+Calls to hidden write names and a repeated write attempt were refused in each
+case. Each server retained its initial two events.
+
+## A decision changed while the reviewer was away
+
+We seeded a proposal for two labels, changed it to two hundred, and gave a
+fresh Claude Code session the person's approval for version 1 only. It
+attempted a version-guarded acceptance, received a conflict, read version 2
+and left it pending. It identified the quantity change from the prompt but
+could not verify whether other terms had changed. The store recorded zero
+reviewer writes.
+
+We repeated the trial with a second, undisclosed change: the deadline moved
+from May 20 to May 16, 2030. A fresh session with the version comparison
+available made three reads: prime, show, and show with `since_version: 1`.
+It reported both quantities and both dates, asked for a fresh decision and
+left the proposal pending at version 2. The event log again contained only
+the fixture’s create and update.
+
+## Mixed client and service versions
+
+An independent Python MCP SDK 1.30.0 process connected over stdio to each
+client, which in turn connected to an authenticated HTTP server on loopback.
+We ran three client/service combinations: working/working, working/0.5.0,
+and 0.5.0/working. Each could capture new work and read its own active claim.
+The working client projected compact ready rows even when 0.5.0 supplied a
+full record. It declined unsupported context filters before broadening the
+queue, and declined a retry when the older service could only provide the
+result. The 0.5.0 client accepted a changed request under a previously used
+operation ID and returned the first result, even against the newer service.
+Upgrading both sides matters for retry verification.
+
+We also sent a version-1 proposal from the HTTP service through the current
+stdio client, deleted it and created a new proposal under the same ID. The
+original review token plus version 1 produced a conflict, and the replacement
+remained proposed. A newly observed token survived an unrelated capture and
+allowed exactly one acceptance; retrying returned its original result.
+
 ## Result size for a populated queue
 
 A second fixture gives 12 delegated tasks three eight-line notes each. This

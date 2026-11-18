@@ -43,7 +43,7 @@ reversal. [Work and life](work-and-life.md) gives the reasoning.
 | A08 Priority direction | 1 is most important, 4 least, 0 unset | Follows iCalendar. Previously undefined; ordering in `ready` now depends on it. |
 | A09 Date input | Fixed grammar; anything else refused | No natural-language interpretation (C03 stands). The phrase used is stored as `expression` beside the resolved value. |
 | A10 Readable identifiers | Short `dm-xxxx` IDs from the plain verbs; `series.N` for rounds of a repeating task | A round falls back to the hashed identity when `series.N` is or was used by an unrelated entity, or exceeds the ID limit; a slot that was ever materialized is never materialized again. Databases written before this change keep their hashed successors. |
-| A11 Plain verbs and versions (amended) | By default `Tasks` reads the current version and retries stale reads. `edit` accepts a caller-observed version. | Plain verbs verify replay using recorded actor/action/target, the original before-state and the kernel request digest. Changed kernel writes under the same ID conflict. Existing operation receipts and event records carry the proof. |
+| A11 Plain verbs and versions (amended) | By default `Tasks` reads the current version and retries stale reads. `edit` accepts a caller-observed version. | Plain verbs verify replay using recorded actor/action/target, the original before-state and the kernel request digest. Changed kernel writes under the same ID conflict. Existing operation receipts and event records carry the proof. An optional review token identifies the observed entity event and prevents a prior read from authorizing a replacement record at the same version. Native history with no matching current event yields no token. |
 | A12 Per-write validation | Each write validates its own references through derived lookup tables | Replaces whole-workspace validation on every write; snapshot import still validates the whole workspace. A randomized test checks the two agree. The 100,000-entity bound now applies to import only. |
 | A13 Journal mode | Path-owned stores use WAL with default synchronous settings | One durable sync per commit. Caller-owned connections keep their own mode. Creates `-wal` and `-shm` files beside the database. |
 | A14 Stored-shape upgrades | A schema marker triggers an in-place rewrite of stored entities when fields are added | Versions and event history are untouched. Snapshots exported by this version contain fields that 0.1.0 rejects. |
@@ -88,7 +88,7 @@ surface, not a scheduler, and there is no third-party interchange guarantee.
 | P16 Project facts and health | A project's dates, lead (`assignee_id`), status and goal are facts; health is counts | Overdue, blocked, unowned, past a milestone, date conflicts, warnings, span and items beyond the target. No score, no colour rating. |
 | P17 Dependency facts | Finish-to-start, no lag (C08 stands) | The plan lists each item's open blockers and, as facts, items that start before a blocker ends. Nothing is rescheduled. |
 | P18 Iterations | No sprint entity | A time box is a milestone (dated; work counts toward it) or an option field. |
-| P19 Schema upgrades are one-way (amended) | The command line upgrades a file on any command and announces the first upgrade on standard error; the library's reads never upgrade | Back up with the release you are leaving, before installing the new one (`daymark backup` copies without opening a Store). A newer schema is refused, never downgraded. Library reads on a schema the caller has not upgraded refuse with one `conflict` message. `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict`. |
+| P19 Schema upgrades are one-way (amended) | Commands opening a writable Store upgrade the file and announce the first upgrade on standard error; the library's reads never upgrade | Back up with the release you are leaving, before installing the new one (`daymark backup` copies without opening a Store). A newer schema is refused, never downgraded. Library reads on a schema the caller has not upgraded refuse with one `conflict` message. `Store(path, upgrade=False)` refuses an old schema without writing; a read-only connection on an old schema gets `conflict`. |
 
 ## Decisions for the kernel and strategy split
 
@@ -185,3 +185,13 @@ workspace. Filter before ranking and limiting. Prerequisites, child work and
 claims elsewhere in the workspace still determine eligibility. The ordinary
 ready list includes untagged work. A missing context ID produces a diagnostic
 so the caller can discover the available IDs.
+
+
+## Recording a waiting reason on existing work
+
+Setting a nonempty `waiting_on` on an unarchived open task takes it into
+waiting in the same edit. A waiting task can have a reason added, changed or
+removed. Resuming is an explicit action. Editing a reason preserves a
+proposal, a closed task and an archived task in their existing state. The
+engine applies this inference after validating an operation receipt so that
+an identical retry of an earlier release's edit returns the recorded result.

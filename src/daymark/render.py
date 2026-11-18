@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shlex import join
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -63,6 +64,8 @@ def line(item: dict, now=None, reason=True) -> str:
         tags.append("due " + when(item["deadline"]))
     if item["planned"]:
         tags.append("plan " + when(item["planned"]))
+    if item["latest_target"]:
+        tags.append("target " + when(item["latest_target"]))
     if item["earliest_start"]:
         tags.append("from " + when(item["earliest_start"]))
     if item["waiting_on"]:
@@ -115,7 +118,10 @@ def ready_explanation(view):
 
 
 def search_text(page):
-    lines = [f"{item['id']}  {item['title']}  [{item['status']}]" for item in page["items"]]
+    lines = []
+    for item in page["items"]:
+        lease = f" until {item['claim_until']}" if "claim_until" in item else ""
+        lines.append(f"{item['id']}  {item['title']}  [{item['status']}]{lease}")
     if page["next"] is not None:
         lines.append(f"More matches. Repeat this search with --after {page['next']}.")
     return "\n".join(lines) or "No matches."
@@ -175,12 +181,19 @@ def advice_text(advice, now=None) -> str:
         if item["id"] in advice.steps:
             out.append(f"    next: {advice.steps[item['id']]}")
     if not advice.picks:
-        out.append("No picks for this view." if advice.held_back else "Nothing is ready.")
+        if advice.held_back:
+            out.append("No picks for this view.")
+        elif advice.context is not None:
+            out.append(f"No ready tasks tagged with context {advice.context}.")
+        else:
+            out.append("Nothing is ready." if advice.scope is None else "Nothing is ready in this scope.")
     if advice.held_back:
-        command = "daymark ready"
+        command = ["daymark", "ready"]
         if advice.scope is not None:
-            command += f" --scope {advice.scope}" if advice.scope else " --unscoped"
-        out.append(f"({advice.held_back} more ready; see `{command}`.)")
+            command.extend(["--scope", advice.scope] if advice.scope else ["--unscoped"])
+        if advice.context is not None:
+            command.extend(["--context", advice.context])
+        out.append(f"({advice.held_back} more ready; see `{join(command)}`.)")
     for note in advice.notes:
         ids = (
             f"  [{', '.join(note.ids[:8])}{', …' if len(note.ids) > 8 else ''}]" if note.ids else ""
@@ -189,7 +202,7 @@ def advice_text(advice, now=None) -> str:
     return "\n".join(out)
 
 
-def profile_text(profile: dict) -> str:
+def profile_text(profile: dict, *, database=None) -> str:
     out = [f"profile: {profile['name']}"]
     for stage in profile["strategies"]:
         settings = ", ".join(f"{k}={v}" for k, v in stage["with"].items())
@@ -202,16 +215,33 @@ def profile_text(profile: dict) -> str:
     if "workspace" in profile:
         out.append(f"Workspace {profile['workspace']}, active version {profile['version']}")
     if undo := profile.get("undo"):
-        from shlex import join
-
-        command = join(["daymark", f"--workspace={profile['workspace']}", "profile",
+        command = ["daymark"]
+        if database and database != ":memory:":
+            command.append(f"--db={Path(database).absolute()}")
+        command.extend([f"--workspace={profile['workspace']}", "profile",
                         f"--undo={undo['operation_id']}", "--if-version", str(undo["expected_version"])])
-        out.append(f"Restore the previous settings in this database with {command}")
+        if database == ":memory:":
+            out.append("This profile lasts for the current in-memory database session.")
+        else:
+            out.append(f"Restore the previous settings in this database with {join(command)}")
     return "\n".join(out)
 
 
+def strategy_detail(data):
+    lines = [f"{data['name']} [{data['kind']}]  {data['summary']}", f"Practice evidence: {data['evidence']}"]
+    for key, param in data["parameters"].items():
+        bounds = []
+        if "minimum" in param:
+            bounds.append(f"minimum {param['minimum']}")
+        if "maximum" in param:
+            bounds.append(f"maximum {param['maximum']}")
+        extra = f" ({', '.join(bounds)})" if bounds else ""
+        lines.append(f"  {data['name']}.{key}={param['default']}  {param['help']}{extra}")
+    return "\n".join(lines)
+
+
 def strategies_text(listed, profiles: dict) -> str:
-    out = ["Strategies (kind, how well supported):"]
+    out = ["Strategies (kind, evidence for the underlying practice):"]
     for s in listed:
         settings = ", ".join(f"{k}={p.default}" for k, p in s.params.items())
         out.append(f"  {s.name}  [{s.kind}; {s.evidence}]  {s.summary}"
@@ -276,6 +306,35 @@ def note_text(note: dict) -> str:
     return f"note {note['id']}  {note['at']}{who}  {note['text']}{end}"
 
 
+def comparison_text(view: dict) -> str:
+    import json
+
+    out = [f"{view['id']}  version {view['from_version']} → {view['to_version']}"]
+    if not view["available"]:
+        reason = "The recorded snapshots disagree." if view["reason"] == "ambiguous_history" else "The reviewed version is missing from this history."
+        return "\n".join([*out, reason, "Review the current record with the person before deciding."])
+    for change in view["fields"]:
+        if change.get("values_hidden"):
+            out.append(f"  {change['field']} changed (opaque value)")
+            continue
+        sides = []
+        for key in ("before", "after"):
+            side = json.dumps(change[key], ensure_ascii=False, separators=(",", ":"))
+            if info := change.get("previews", {}).get(key):
+                side = f"{side} [excerpt at {info['offset']} of {info['length']} characters]"
+            sides.append(side)
+        out.append(f"  {change['field']}  {sides[0]} → {sides[1]}")
+    if notes := view.get("notes"):
+        out.append(f"  notes: {notes['added']} added, {notes['removed']} removed, {notes['edited']} edited"
+                   + (", order changed" if notes["reordered"] else ""))
+        for kind in ("added", "removed", "edited"):
+            for note in notes.get(kind + "_notes", []):
+                out.append(f"    {kind} {note_text(note)}")
+    if not view["fields"] and not view.get("notes"):
+        out.append("No net field changes between these versions.")
+    return "\n".join(out)
+
+
 def source_text(ref: dict) -> str:
     return f"source {ref['system']}:{ref['kind']}:{ref['id']}"
 
@@ -284,11 +343,19 @@ def brief_text(view: dict) -> str:
     clipped = view.get("truncated", [])
     title = view["title"] + ("…" if "title" in clipped else "")
     out = [f"{view['id']}  {title}  [{view['status']}, version {view['version']}]"]
+    if view.get("review_token"):
+        out.append(f"Review token: {view['review_token']}")
     if "readiness" in view:
         state = view["readiness"]
         out.append("Ready now" if state["ready"] else "Not ready: " + ", ".join(state["reasons"]))
     if "next_move" in view:
         out.append("Next move: " + view["next_move"])
+    if rule := view.get("recurrence"):
+        pace = "from completion" if rule["mode"] == "after_completion" else "on a fixed schedule"
+        date = "deadline" if rule["advances"] == "deadline" else "planned day"
+        series = f" in series {view['series_id']}" if view.get("series_id") else ""
+        out.append(f"Round {rule['occurrence_index'] + 1}{series}. {rule['rule']} {pace} "
+                   f"({rule['timezone']}). Generated rounds advance the {date}.")
     if "claim" in view:
         out.append(f"Claim: {view['claim']['owner']} until {view['claim']['until']}")
     if "waiting_on" in view:
@@ -321,6 +388,8 @@ def brief_text(view: dict) -> str:
 def show_text(ctx: dict, now=None) -> str:
     item = ctx["entity"]
     out = [line(item, now)]
+    if ctx.get("review_token"):
+        out.append(f"Review token: {ctx['review_token']}")
     if claim_holder(item, normalize_now(now)):
         out.append(f"claim expires: {item['claim_until']}")
     if "readiness" in ctx:
@@ -634,6 +703,7 @@ Choose fields from the person's words
   intended day ("I intend to", "I'd like to")    --plan
   hard cutoff ("must be submitted by")          --due
   first possible day ("cannot start until")     --start
+  hoped-for finish ("aim to finish by")         --target
   idea awaiting a decision                      propose
   existing task waiting on a reply              wait ID --on WHO_OR_WHAT
   maximum items to show this time               ready --limit N
@@ -646,16 +716,17 @@ Commands (add --json to any for structured output)
   daymark onboard --check AGENTS.md  check startup instructions without writing
   daymark ready [--scope NAME] [--context ID] [--explain]   actionable work, with optional reasons work is held
   daymark agenda [--days N]         overdue, today, the days ahead, waiting, proposed
-  daymark show ID                   one task, why it is ready or held, notes and history
+  daymark show ID [--since-version N]   current detail or changes since a reviewed version
   daymark activity [--after CURSOR]  recent changes, or changes since a previous session
   daymark add "Title" [--due D] [--plan D] [--start D] [--every R] [-p 1-4]
               [--after ID] [--parent ID] [--project ID] [--waiting-on WHO]
               [--move person|answer|agent] [--minutes N] [--scope NAME] [--note TEXT]
-  daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-version N]
+  daymark propose "Title" [...]     suggest; a person runs accept/dismiss ID [--if-review TOKEN]
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL]            what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
-  daymark advise [--set shortlist.size=3]   try advice for this session; profile saves a choice
+  daymark advise [--context ID] [--set shortlist.size=3]   try advice for this request
+  daymark strategies [NAME]   discover methods and inspect a parameter range
   daymark profile --saved           named choices to reuse with advise --profile NAME
   daymark --as WORKER take [--scope NAME] [--context ID]   claim the next unclaimed ready agent task
   daymark claim ID / release ID [--note TEXT]   take work or hand it back with context
@@ -665,8 +736,10 @@ Commands (add --json to any for structured output)
   daymark wait ID --on WHO [--until D] / resume ID
   daymark defer ID D                hide until a date; the deadline does not move
   daymark edit ID [--if-version N] [--due D] ...   (--due "" clears)
+  daymark edit ID --waiting-on WHO  park open work; resume ID when the wait ends
   daymark block ID --on OTHER / unblock ID --on OTHER
   daymark find TEXT [--kind memory] [--page]   find work or a remembered fact
+  daymark --as WORKER find --claimed   recover this worker’s active claims, including held work
   daymark remember "fact"           durable context shown by `daymark prime`
   daymark undo ID                   restore the previous state
 Projects (as plain or as structured as the work needs)

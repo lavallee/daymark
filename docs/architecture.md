@@ -74,18 +74,22 @@ layer is organised around them:
 4. It declares what it needs beyond stored tasks (`needs`: a calendar, a
    clock, a language model, a question to the person). The host decides
    whether to provide it. The kernel never calls a model or a network.
-5. It states how well its idea is supported: clinical, practitioner, folk or
-   convention. `daymark strategies` shows this, so nobody mistakes a folk
-   remedy for a finding.
+5. It states the basis for the underlying practice (clinical, practitioner,
+   folk or convention). For example, breaking a task into steps is part of a
+   clinical skills-training program. The default number of days before showing
+   a first-step prompt is a Daymark design choice. `daymark strategies NAME`
+   describes a strategy and its adjustable parameters.
 
 **Profiles** bundle strategies so a way of working is adopted in one step
 (`daymark profile gentle`) and then adjusted
 (`daymark profile --set shortlist.size=5`). A profile belongs to a workspace.
 A saved profile that names a strategy no longer installed keeps working
-without it and says so. `plain`, the default, changes nothing. `assistant` behaves as a good assistant
-would unasked. `gentle` offers few choices, one small step each, and no red
-ink. `dense` shows everything and adds the checks that keep a large system
-honest. A profile is a starting point, not a diagnosis.
+without it and says so. `plain` preserves the ready order. `assistant`
+promotes decisions and work advancing a goal, and flags quiet waiting items.
+`gentle` offers up to three choices with first steps when recorded. `dense`
+adds review prompts across the ready list. Advice inspects up to the first
+1,000 ready candidates and reports when the view exceeds that boundary.
+Each profile starts from explicit settings that the person can adjust.
 
 `daymark advise` runs the workspace's profile. `daymark ready` stays the plain
 kernel fact, so the two can always be compared.

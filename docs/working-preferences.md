@@ -9,6 +9,7 @@ each situation.
 | --- | --- |
 | “I can take the decisions now.” | `daymark advise --profile plain --set decisions-first` brings the first three ready items marked `answer` to the front. |
 | “Just two things from the studio list today.” | `daymark advise --profile plain --scope studio --set shortlist.size=2` shows at most two ready studio tasks with a count of the rest. |
+| “I have my phone and 20 minutes.” | After tagging phone tasks with an existing context ID, `daymark advise --profile plain --context phone --set time-fit.minutes=20` offers tagged tasks with a recorded estimate that fits. |
 | “I have 20 minutes before the meeting. What could I finish?” | `daymark advise --profile plain --set time-fit.minutes=20` shows ready tasks individually estimated at 20 minutes or less. It counts longer tasks and tasks missing an estimate separately. |
 | “I have an hour for the tasks planned today.” | `daymark advise --set overbooked.capacity_minutes=60` checks the day's estimated work against that hour. The note identifies the assumed duration for items without estimates. |
 | “I like the short list. Please use it every time in this workspace.” | `daymark profile --set shortlist.size=2` saves that change on the current profile. |
@@ -25,8 +26,18 @@ Advice is a list of options to discuss. A five-minute approval can qualify
 for a short list while its `next_move` still says `answer`. An agent looking
 for delegated work should use `daymark ready --move agent`.
 
+A context records an explicit relationship between a task and a place, tool or
+situation. Find context IDs with `daymark find --kind context --page`. A task
+can have several. An untagged task might also suit the situation, but Daymark
+has no recorded basis to include it. To review such possibilities with the
+person, read the broader ready list. A context applies to this request and
+persists only on tasks the person chooses to tag.
+
 From MCP, call `daymark_view` with `{"view":"profiles"}` to inspect the active
-configuration and available names. Add `"profile":"gentle"` to inspect the
+configuration, named copies and available adjustments. Use
+`{"view":"profiles","strategy":"time-fit","json":true}` to read the purpose,
+default minutes and supported range. On the CLI use `daymark strategies time-fit`.
+Add `"profile":"gentle"` to inspect the
 strategies and parameters of that built-in profile. To preview two studio
 picks, send this tool call:
 
@@ -72,6 +83,14 @@ When you select a named copy, the advice identifies the saved version it used.
 In JSON, `profile_source` identifies the base, whether it comes from the
 workspace, and whether this call adjusted it. This distinguishes an active
 copy from a newer saved version that happens to share its name.
+
+The stages run in the order shown by `daymark profile`. For “two things I
+can finish before the meeting,” start from `plain`, apply `time-fit` first,
+then `shortlist`. If the shortlist runs first, two long tasks can take both
+places before the time check sees a shorter task. Changing the size of a
+stage already in a profile leaves it in place. Adding a stage puts it last.
+To try a different order, use `--drop shortlist --set time-fit.minutes=20
+--set shortlist.size=2`. Removals run before additions.
 
 To replace a saved profile, inspect its version first. If `--saved` reports
 version 1, the update below asks for three choices. A stale version produces a

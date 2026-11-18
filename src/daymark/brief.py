@@ -6,7 +6,7 @@ import json
 import sqlite3
 
 from . import views
-from .models import DomainError, normalize_now
+from .models import DomainError, normalize_now, recurrence_date_field
 
 _NOTE_LIMIT = 3
 _TEXT_LIMIT = 240
@@ -38,8 +38,9 @@ def _projected_row(store, workspace, id, before_note):
         f"SELECT json_extract(data,{paths}), "
         "substr(CAST(json_extract(data,'$.title') AS BLOB),1,?),"
         "substr(CAST(json_extract(data,'$.description') AS BLOB),1,?), "
-        "json_array_length(data,'$.notes') FROM daymark_entities WHERE workspace=? AND id=?",
-        (_PREVIEW_BYTES, _PREVIEW_BYTES, workspace, id),
+        "json_array_length(data,'$.notes'), substr(CAST(json_extract(data,'$.series_id') AS BLOB),1,?) "
+        "FROM daymark_entities WHERE workspace=? AND id=?",
+        (_PREVIEW_BYTES, _PREVIEW_BYTES, _PREVIEW_BYTES, workspace, id),
     ).fetchone()
     if row is None:
         raise DomainError("not_found", "Entity not found")
@@ -47,6 +48,7 @@ def _projected_row(store, workspace, id, before_note):
     item.update(
         title=(row[1] or b"").decode(errors="ignore"),
         description=(row[2] or b"").decode(errors="ignore"),
+        series_id=(row[4] or b"").decode(errors="ignore"),
     )
     count = row[3] or 0
     stop = count
@@ -114,6 +116,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
             raise DomainError("not_found", "Entity not found")
     with store._transaction(write=False):
         item, note_count, newer, notes = _source(store, workspace, id, before_note)
+        review_token = store._review_token(workspace, id)
         blocked = views.blockers(store, workspace, item)
         sources = store.db.execute(
             "SELECT system,kind,ref_id FROM daymark_sources WHERE workspace=? AND entity_id=? "
@@ -138,6 +141,7 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
                 children.append(child_id)
             child_count += 1
     out = {key: item[key] for key in ("id", "kind", "status", "version")}
+    out["review_token"] = review_token
     clipped = []
     for key in ("title", "description", "waiting_on"):
         value = item.get(key) or ""
@@ -145,6 +149,14 @@ def read(store, workspace, id, *, now=None, owner=None, before_note=None):
             out[key] = value[:_TEXT_LIMIT]
             if len(value) > _TEXT_LIMIT:
                 clipped.append(key)
+    if rule := item.get("recurrence"):
+        out["recurrence"] = {k: rule[k] for k in ("rule", "mode", "timezone", "occurrence_index")}
+        out["recurrence"]["advances"] = recurrence_date_field(item)
+        if series := item.get("series_id"):
+            if len(series) <= _TEXT_LIMIT:
+                out["series_id"] = series
+            else:
+                clipped.append("series_id")
     if clipped:
         out["truncated"] = clipped
     for key in ("next_move", "scope", "deadline", "planned", "earliest_start", "latest_target"):

@@ -1,6 +1,7 @@
 """Ready's bounded read must preserve ordering, snapshots and the full entity."""
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 from daymark import Store, Tasks, views
@@ -163,3 +164,20 @@ def test_summary_counts_agenda_buckets_without_hydrating_bodies(monkeypatch):
             assert tasks.summary(scope=scope) == counts
     finally:
         store.close()
+
+
+def test_future_ready_reasons_name_the_date_used_for_ranking():
+    from daymark import render
+
+    now = datetime(2030, 4, 1, 12, tzinfo=UTC)
+    with closing(Store(":memory:")) as store:
+        tasks = Tasks(store, "work", now=now, timezone="UTC")
+        only_target = tasks.add("Send sample", id="sample", target="+20d")
+        tasks.add("Prepare proof", id="proof", due="+40d", plan="+12d")
+        tasks.add("Print sheets", id="print", due="+30d", target="+18d")
+        tasks.add("Check stock", id="stock")
+        tasks.add("Inspect", id="inspect", due="+25d", target="+25d")
+        got = [(r["id"], r["why"]) for r in tasks.ready_summary()]
+        assert got == [("proof", "planned in 12d"), ("print", "target in 18d"),
+                       ("sample", "target in 20d"), ("inspect", "due in 25d"), ("stock", "no date")]
+        assert "target 2030-04-21" in render.line(only_target, now)

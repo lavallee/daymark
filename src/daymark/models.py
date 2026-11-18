@@ -188,6 +188,11 @@ class Recurrence(Model):
         return self
 
 
+def recurrence_date_field(item):
+    """The date advanced when a repeating task materializes its next occurrence."""
+    return "deadline" if item["deadline"] and not item["planned"] else "planned"
+
+
 def next_occurrence(recurrence: Recurrence, current: Temporal, completed_at: datetime):
     """Next local slot; gaps advance, overlaps use first fold, endings stay finite.
 

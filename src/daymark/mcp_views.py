@@ -38,6 +38,11 @@ _LIST_FIELDS = (
 
 def _summary(entity, now):
     result = render.compact({k: entity[k] for k in _LIST_FIELDS if k in entity})
+    contexts = entity.get("context_ids") or []
+    if contexts:
+        result["context_ids"] = contexts[:3]
+        if len(contexts) > 3:
+            result["more_contexts"] = len(contexts) - 3
     if holder := claim_holder(entity, now):
         result.update(claimed_by=holder, claim_until=entity["claim_until"])
     return result
@@ -91,7 +96,7 @@ def read_view(tasks, args):
         return render.listing(items, now, "Nothing is ready.")
 
     if view == "find":
-        if structured or {"kind", "status", "scope", "after"} & args.keys():
+        if structured or {"kind", "status", "scope", "after", "claimed"} & args.keys():
             page = tasks.search(
                 args.get("text"),
                 kind=args.get("kind", "task"),
@@ -99,10 +104,16 @@ def read_view(tasks, args):
                 scope=args.get("scope"),
                 after=args.get("after"),
                 limit=args.get("limit", 50),
+                **({"claimed": args["claimed"]} if "claimed" in args else {}),
             )
             if structured:
                 return StructuredView(page)
-            lines = [f"{item['id']}  {item['title']}  [{item['status']}]" for item in page["items"]]
+            lines = []
+            for item in page["items"]:
+                line = f"{item['id']}  {item['title']}  [{item['status']}]"
+                if item.get("claimed_by"):
+                    line += f"  claimed by {item['claimed_by']} until {item['claim_until']}"
+                lines.append(line)
             if page["next"] is not None:
                 lines.append("next: " + page["next"])
             return "\n".join(lines) or "No matches."
@@ -114,6 +125,11 @@ def read_view(tasks, args):
         if ("id" in args) == ("source" in args):
             raise DomainError("invalid", "show takes exactly one of id or source")
         id, source = args.get("id"), args.get("source")
+        if "since_version" in args:
+            if args.get("brief") or "note" in args or "before_note" in args:
+                raise DomainError("invalid", "Choose a version comparison or a note/brief")
+            data = tasks.changes_since(id, version=args["since_version"], source=source)
+            return StructuredView(data) if structured else render.comparison_text(data)
         if "note" in args and (args.get("brief") or "before_note" in args):
             raise DomainError("invalid", "Choose a single note or a brief")
         if args.get("brief") or "before_note" in args:
@@ -136,6 +152,11 @@ def read_view(tasks, args):
         from .strategies.profiles import PROFILES
 
         name = args.get("profile")
+        if "strategy" in args:
+            if name is not None:
+                raise DomainError("invalid", "Choose either a profile or a strategy to inspect")
+            data = tasks.profile_catalog(strategy=args["strategy"])
+            return StructuredView(data) if structured else render.strategy_detail(data)
         if name in PROFILES:
             data = validate_profile(PROFILES[name])
             return StructuredView(data) if structured else render.profile_text(data)
@@ -158,6 +179,12 @@ def read_view(tasks, args):
             + ", ".join(catalog["builtins"])
             + "\n"
             + available
+            + "\nAdjustments (defaults shown; use strategy for details): "
+            + ", ".join(
+                f"{name}.{key}={value}" if key else name
+                for name, params in catalog["adjustments"].items()
+                for key, value in (params.items() or [(None, None)])
+            )
         )
 
     if view == "advise":
@@ -165,6 +192,7 @@ def read_view(tasks, args):
             profile=args.get("profile"),
             settings=args.get("set", []),
             drops=args.get("drop", []),
+            context=args.get("context"),
             scope=args.get("scope"),
         )
         if structured:
@@ -174,7 +202,9 @@ def read_view(tasks, args):
         return render.advice_text(advice, now)
 
     if view == "agenda":
-        data = tasks.agenda(args.get("days", 7), scope=args.get("scope"))
+        data = tasks.agenda(
+            args.get("days", 7), scope=args.get("scope"), context=args.get("context")
+        )
         if structured:
             sections = {
                 key: [_summary(x, now) for x in value] if isinstance(value, list) else value

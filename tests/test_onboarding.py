@@ -107,3 +107,23 @@ def test_where_uses_the_same_resolver_without_creating_or_migrating_files(
         "identity_source": "server credential",
     }
     assert user_db.read_bytes() == legacy.read_bytes() == b"untouched"
+
+
+@pytest.mark.parametrize(("fence", "close"), [(b"````markdown", b"````"), (b"~~~md", b"~~~")])
+def test_fenced_instruction_example_is_preserved(tmp_path, capsys, fence, close):
+    target = tmp_path / "AGENTS.md"
+    example = fence + b"\n```\n<!-- daymark:begin -->\nliteral\n<!-- daymark:end -->\n" + close + b"\n"
+    target.write_bytes(example)
+    assert main(["onboard", "--check", str(target)]) == 1
+    assert "missing" in capsys.readouterr().out
+    assert main(["onboard", "--write", str(target)]) == 0
+    assert target.read_bytes() == example + b"\n" + ONBOARD.encode()
+    assert main(["onboard", "--check", str(target)]) == 0
+
+
+def test_append_refuses_to_hide_the_snippet_in_an_unclosed_fence(tmp_path):
+    target = tmp_path / "AGENTS.md"
+    original = b"A sample\n```text\n"
+    target.write_bytes(original)
+    assert main(["onboard", "--write", str(target)]) == 5
+    assert target.read_bytes() == original

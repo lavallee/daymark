@@ -49,6 +49,8 @@ class ImportRequest(BaseModel):
 
 class SearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    claimed: bool = False
+    now: str | None = Field(None, max_length=40)
     text: str | None = Field(None, max_length=2000)
     kind: str = Field("task", min_length=1, max_length=100)
     status: str | None = Field(None, max_length=30)
@@ -209,12 +211,14 @@ def create_router(store: Any) -> APIRouter:
     def projects(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
         return _invoke(store.projects, identity(request).workspace, now=now)
 
+    @router.get("/project-plan", operation_id="daymark_v1_plan_by_id")
     @router.get("/projects/{project_id}/plan", operation_id="daymark_v1_plan")
     def plan(
         project_id: str, request: Request, now: str | None = Query(None, max_length=40)
     ) -> Any:
         return _invoke(store.plan, identity(request).workspace, project_id, now=now)
 
+    @router.get("/project-changes", operation_id="daymark_v1_changes_by_id")
     @router.get("/projects/{project_id}/changes", operation_id="daymark_v1_changes")
     def changes(project_id: str, request: Request, after: int = Query(..., ge=0)) -> Any:
         return _invoke(store.changes, identity(request).workspace, project_id, after)
@@ -223,16 +227,19 @@ def create_router(store: Any) -> APIRouter:
     def goals(request: Request, now: str | None = Query(None, max_length=40)) -> Any:
         return _invoke(store.goals, identity(request).workspace, now=now)
 
+    @router.get("/goal-plan", operation_id="daymark_v1_goal_plan_by_id")
     @router.get("/goals/{goal_id}/plan", operation_id="daymark_v1_goal_plan")
     def goal_plan(
         goal_id: str, request: Request, now: str | None = Query(None, max_length=40)
     ) -> Any:
         return _invoke(store.goal_plan, identity(request).workspace, goal_id, now=now)
 
+    @router.get("/tree", operation_id="daymark_v1_tree_by_id")
     @router.get("/tree/{entity_id}", operation_id="daymark_v1_tree")
     def tree(entity_id: str, request: Request, depth: int = Query(3, ge=1, le=10)) -> Any:
         return _invoke(store.tree, identity(request).workspace, entity_id, depth=depth)
 
+    @router.get("/entity", operation_id="daymark_v1_get_by_id")
     @router.get("/entities/{entity_id}", operation_id="daymark_v1_get")
     def get(entity_id: str, request: Request) -> Any:
         return _invoke(store.get, identity(request).workspace, entity_id)
@@ -243,7 +250,11 @@ def create_router(store: Any) -> APIRouter:
 
     @router.post("/search", operation_id="daymark_v1_search")
     def search(body: SearchRequest, request: Request) -> Any:
-        return _invoke(store.search, identity(request).workspace, **body.model_dump())
+        actor = identity(request)
+        filters = body.model_dump(exclude={"claimed", "now"})
+        if body.claimed:
+            filters.update(claimed_by=actor.principal, now=body.now)
+        return _invoke(store.search, actor.workspace, **filters)
 
     @router.post("/query", operation_id="daymark_v1_query")
     def query(body: QueryRequest, request: Request) -> Any:
@@ -321,21 +332,33 @@ def create_router(store: Any) -> APIRouter:
     def source(
         request: Request, system: str = Query(min_length=1, max_length=100),
         kind: str = Query(min_length=1, max_length=100), ref_id: str = Query(min_length=1, max_length=500),
-        detail: Literal["show", "brief", "note"] = "show", history: int = Query(10, ge=0, le=100),
+        detail: Literal["show", "brief", "note", "changes"] = "show", history: int = Query(10, ge=0, le=100),
         now: str | None = Query(None, max_length=40), owner: str | None = Query(None, max_length=200),
         mine: bool = False, before_note: str | None = Query(None, min_length=1, max_length=128),
         note_id: str | None = Query(None, min_length=1, max_length=128),
+        since_version: int | None = Query(None, ge=1),
     ) -> Any:
         actor = identity(request)
         ref = {"system": system, "kind": kind, "id": ref_id}
         if (detail == "note") != (note_id is not None) or (before_note is not None and detail != "brief"):
             raise HTTPException(422, "Invalid source detail options")
+        if (detail == "changes") != (since_version is not None):
+            raise HTTPException(422, "Invalid comparison version")
+        if detail == "changes":
+            return _invoke(store.changes_since, actor.workspace, version=since_version, source=ref)
         if detail == "note":
             return _invoke(store.read_note, actor.workspace, None, note_id, source=ref)
         principal = actor.principal if mine else owner
         if detail == "brief":
             return _invoke(store.brief, actor.workspace, source=ref, owner=principal, now=now, before_note=before_note)
         return _invoke(store.context, actor.workspace, source=ref, owner=principal, now=now, history=history)
+
+    @router.get("/comparison", operation_id="daymark_v1_comparison")
+    def comparison(
+        request: Request, entity_id: str = Query(min_length=1, max_length=128),
+        since_version: int = Query(ge=1),
+    ) -> Any:
+        return _invoke(store.changes_since, identity(request).workspace, entity_id, version=since_version)
 
     @router.get("/brief", operation_id="daymark_v1_brief")
     def brief(
@@ -354,6 +377,7 @@ def create_router(store: Any) -> APIRouter:
     ) -> Any:
         return _invoke(store.read_note, identity(request).workspace, entity_id, note_id)
 
+    @router.get("/context", operation_id="daymark_v1_context_by_id")
     @router.get("/context/{entity_id}", operation_id="daymark_v1_context")
     def context(
         entity_id: str, request: Request, history: int = Query(10, ge=0, le=100),
@@ -374,6 +398,7 @@ def create_router(store: Any) -> APIRouter:
             action=action, entity_id=entity_id, actor=actor.principal,
         )
 
+    @router.get("/receipt", operation_id="daymark_v1_receipt_by_id")
     @router.get("/receipts/{operation_id}", operation_id="daymark_v1_receipt")
     def receipt(operation_id: str, request: Request) -> Any:
         result = _invoke(store.receipt, identity(request).workspace, operation_id)

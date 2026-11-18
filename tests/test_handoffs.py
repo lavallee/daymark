@@ -99,3 +99,48 @@ def test_cli_and_mcp_transfer_the_same_note(tmp_path, capsys):
     assert main(["--db", db, "show", "draft"]) == 0
     text = capsys.readouterr().out
     assert "writer: Checked spelling" in text and "reviewer: Checked index" in text
+
+
+def test_edit_waiting_reason_parks_work_and_omits_it_from_pickup(workers):
+    outgoing, incoming = workers
+    outgoing.add("Inspect sample", id="sample", move="agent")
+    parked = outgoing.edit("sample", waiting_on="new sample", op="park")
+    assert parked["status"] == "waiting"
+    assert not incoming.ready() and incoming.take() is None
+    assert outgoing.edit("sample", waiting_on="new sample", op="park") == parked
+    with pytest.raises(DomainError, match="different request"):
+        outgoing.edit("sample", waiting_on="another sample", op="park")
+    assert outgoing.edit("sample", waiting_on="")["status"] == "waiting"
+    assert incoming.take() is None
+    outgoing.resume("sample")
+    assert incoming.take()["id"] == "sample"
+
+
+def test_edit_waiting_reason_preserves_proposals_closed_and_archived_states(workers):
+    t, _ = workers
+    for id in ("complete", "cancel", "archive"):
+        t.add("Inspect sample", id=id)
+    t.done("complete")
+    t.cancel("cancel")
+    t.archive("archive")
+    t.propose("Inspect a proposed sample", id="proposal")
+    for id in ("complete", "cancel", "archive", "proposal"):
+        before = t.get(id)
+        after = t.edit(id, waiting_on="reply")
+        assert (after["status"], after["archived"]) == (before["status"], before["archived"])
+    assert t.accept("proposal")["status"] == "waiting"
+
+
+def test_cli_and_mcp_edit_park_open_work(tmp_path, capsys):
+    file = str(tmp_path / "queue.db")
+    assert main(["--db", file, "add", "Inspect sample", "--id", "sample", "--move", "agent"]) == 0
+    assert main(["--db", file, "edit", "sample", "--waiting-on", "reply"]) == 0
+    store = Store(file)
+    try:
+        t = Tasks(store, actor="worker")
+        assert not t.ready() and t.take() is None
+        t.resume("sample")
+        call(t, "daymark_edit", {"id": "sample", "waiting_on": "another reply"})
+        assert t.get("sample")["status"] == "waiting" and t.take() is None
+    finally:
+        store.close()

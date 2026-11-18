@@ -70,3 +70,69 @@ def test_cli_pages_and_http_search_share_ids_but_not_full_descriptions(tmp_path,
             assert http.post("/v1/search", json={"workspace": "other"}).status_code == 422
     finally:
         store.close()
+
+
+def test_claim_search_recovers_waiting_and_blocked_work_and_excludes_expired(tmp_path, capsys):
+    from datetime import datetime, timedelta
+
+    db = tmp_path / "work.db"
+    store = Store(db)
+    try:
+        reader = Tasks(store, actor="reader")
+        other = Tasks(store, actor="second")
+        for id in ("a", "b", "c", "d", "e"):
+            reader.add("Inspect sample", id=id, scope="proofs")
+        for id in ("a", "b", "d"):
+            reader.claim(id, minutes=60)
+        other.claim("c")
+        reader.wait("a", "a sample")
+        reader.block("b", "e")
+        reader.release("d")
+        page = reader.search("sample", claimed=True, scope="proofs", limit=1)
+        first = page["items"][0]
+        assert page["next"] == first["id"] == "a"
+        assert first["claimed_by"] == "reader" and first["status"] == "waiting"
+        assert reader.search(claimed=True, status="waiting")["items"] == [first]
+        second = reader.search(claimed=True, after="a")
+        assert [r["id"] for r in second["items"]] == ["b"]
+        expiry = datetime.fromisoformat(first["claim_until"])
+        for at, expected in ((expiry - timedelta(microseconds=1), ["a"]), (expiry, [])):
+            actor = Tasks(store, actor="reader", now=at)
+            assert [
+                r["id"] for r in actor.search(claimed=True, status="waiting")["items"]
+            ] == expected
+        assert main(["--db", str(db), "--as", "reader", "find", "--claimed", "--json"]) == 0
+        assert [r["id"] for r in json.loads(capsys.readouterr().out)["items"]] == ["a", "b"]
+        reader.done("b")
+        assert [r["id"] for r in reader.search(claimed=True)["items"]] == ["a"]
+    finally:
+        store.close()
+
+
+def test_http_claim_search_binds_principal_and_rejects_an_owner_override():
+    store = Store(":memory:")
+    try:
+        for who in ("alpha", "beta"):
+            actor = Tasks(store, "room", actor=who)
+            actor.add("Check proof", id=who)
+            actor.claim(who)
+        other = Tasks(store, "elsewhere", actor="alpha")
+        other.add("Check a different proof", id="hidden")
+        other.claim("hidden")
+        tokens = {key: {"workspace": "room", "principal": key} for key in ("alpha", "beta")}
+        with TestClient(create_app(store, tokens)) as http:
+            for who in tokens:
+                auth = {"Authorization": "Bearer " + who}
+                req = http.post("/v1/search", json={"claimed": True}, headers=auth)
+                assert req.status_code == 200
+                assert [(hit["id"], hit["claimed_by"]) for hit in req.json()["items"]] == [
+                    (who, who)
+                ]
+                assert (
+                    http.post(
+                        "/v1/search", json={"claimed": True, "claimed_by": "beta"}, headers=auth
+                    ).status_code
+                    == 422
+                )
+    finally:
+        store.close()
