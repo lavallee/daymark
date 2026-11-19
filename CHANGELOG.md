@@ -4,6 +4,31 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
+### Added
+
+- `ask`, `answer`, `watch` and `followup` carry work between people and agents.
+  `ask` puts a question with up to six options on a task, makes it the
+  answerer's move and releases the asker's claim. `answer` records the reply
+  and returns the task to whoever moved before. `watch` blocks until another
+  actor changes a task and exits 8 on a timeout. `followup` leaves an agent
+  task that becomes ready after `10min`, `2h` or `1d`. The same verbs are in
+  MCP and work through the HTTP service. [Ask, wait, follow up](docs/agents.md#ask-wait-for-the-answer-follow-up)
+
+- `explore` reports `to_reassess`: conditions whose advancing work finished
+  after they were last changed, with the finished tasks on each condition.
+  `done` on such a task names the conditions to reassess. Completing work
+  still never changes a condition's state. [Plan backward from the outcome](docs/agents.md#plan-backward-from-the-outcome)
+
+### Upgrade and compatibility
+
+- No schema change. A question is kept in the task's `metadata` under
+  `daymark.question` and its wording in ordinary notes, so a 0.6.0 process
+  reads and writes the same database.
+- CLI exit status 8 is new and means a `watch` timed out.
+- The MCP tool definitions grew by about 220 characters for the new verbs.
+
 ## [0.6.0] - 2026-11-18
 
 ### Upgrade and compatibility

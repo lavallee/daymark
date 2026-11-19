@@ -52,6 +52,7 @@ def _print(value: Any) -> None:
 SIMPLE = {
     "prime", "activity", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
     "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim", "take", "release", "note", "wait",
+    "ask", "answer", "watch", "followup",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
     "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
     "tree", "advise", "profile", "strategies", "condition", "assess", "explore",
@@ -301,6 +302,27 @@ def _simple_commands(sub) -> None:
     note = add("note", "Append a progress note", writes=True)
     note.add_argument("id")
     note.add_argument("text")
+    ask = add("ask", "Hand a question about a task to a person or another actor", writes=True)
+    ask.add_argument("id")
+    ask.add_argument("question")
+    ask.add_argument("--to", required=True, metavar="WHO", help="Who should answer")
+    ask.add_argument("--option", action="append", default=[], metavar="TEXT", help="A choice to offer (repeat, up to 6)")
+    ask.add_argument("--recommend", type=int, metavar="N", help="Number of the option you recommend")
+    answer = add("answer", "Answer the open question on a task", writes=True)
+    answer.add_argument("id")
+    answer.add_argument("text", nargs="?")
+    answer.add_argument("--choice", type=int, metavar="N", help="Number of the chosen option")
+    answer.add_argument("--heard-from", metavar="WHO", help="Relay an answer this person gave somewhere else")
+    followup = add("followup", "Leave a task for an agent to find after an interval", writes=True)
+    followup.add_argument("id")
+    followup.add_argument("text")
+    followup.add_argument("--in", dest="after", required=True, metavar="INTERVAL", help="10min, 2h or 1d")
+    watch = add("watch", "Block until someone else changes a task, or until the timeout")
+    watch.add_argument("ids", nargs="*", metavar="ID", help="Tasks to watch (default: the whole workspace)")
+    watch.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Continue from a saved cursor")
+    watch.add_argument("--by", metavar="ACTOR", help="Only changes by this actor")
+    watch.add_argument("--include-own", action="store_true", help="Also wake for this actor's own changes")
+    watch.add_argument("--timeout", default="30min", metavar="INTERVAL", help="Give up after this long (default 30min; 0 checks once)")
     wait = add("wait", "Park a task on someone or something", writes=True)
     wait.add_argument("id")
     wait.add_argument("--on", required=True, metavar="WHO")
@@ -833,7 +855,11 @@ def _simple(args, engine) -> int:
             )
         entity(item)
     elif name in {"done", "release"}:
-        entity(getattr(tasks, name)(args.id, note=args.note, op=op, expected_version=args.if_version))
+        item = getattr(tasks, name)(args.id, note=args.note, op=op, expected_version=args.if_version)
+        entity(item)
+        if name == "done" and not as_json and item.get("advances"):
+            # Finishing work never changes a condition; say who has to look.
+            print("Reassess what this advanced: daymark assess " + "|".join(item["advances"]) + " STATE --evidence TEXT")
     elif name in {"accept", "dismiss", "forget", "undo", "unarchive", "resume"}:
         entity(getattr(tasks, name)(args.id, expected_version=args.if_version, review_token=args.if_review, op=op))
     elif name in {"skip", "cancel", "reopen", "archive", "unfocus"}:
@@ -862,6 +888,23 @@ def _simple(args, engine) -> int:
         entity(tasks.claim(args.id, minutes=args.minutes, op=op))
     elif name == "note":
         entity(tasks.note(args.id, args.text, op=op))
+    elif name == "ask":
+        entity(tasks.ask(args.id, args.question, to=args.to, options=args.option, recommend=args.recommend, op=op))
+    elif name == "answer":
+        entity(tasks.answer(args.id, args.text, choice=args.choice, heard_from=args.heard_from, op=op))
+    elif name == "followup":
+        entity(tasks.followup(args.id, args.text, after=args.after, op=op))
+    elif name == "watch":
+        from .coordination import interval
+
+        result = tasks.watch(
+            args.ids, after=args.after, by=args.by, include_own=args.include_own,
+            timeout=0 if args.timeout == "0" else interval(args.timeout).total_seconds(),
+            poll=5.0 if args.url else 1.0,
+        )
+        out(result, render.watch_text(result, ids=args.ids))
+        if result["status"] == "timeout":
+            return 8
     elif name == "wait":
         entity(tasks.wait(args.id, args.on, until=args.until, op=op,
                           expected_version=args.if_version, review_token=args.if_review))

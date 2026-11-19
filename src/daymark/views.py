@@ -1572,7 +1572,7 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
     selected_scope = {"scope": scope} if scope is not None else {}
     with store.read_snapshot():
         if not _usable(store):
-            return {"goal": None, "conditions": [], "frontier": [], "gaps": [], "unassessed": [], **selected_scope}
+            return {"goal": None, "conditions": [], "frontier": [], "gaps": [], "unassessed": [], "to_reassess": [], **selected_scope}
         goal = None
         if goal_id is not None:
             goal = store.get(workspace, goal_id)
@@ -1587,6 +1587,7 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
         links = {id for refs in requires.values() for id in refs} | {c["goal_id"] for c in conditions}
         statuses, visible = _explore_refs(store, workspace, links, scope)
         advancing = {c["id"]: [] for c in conditions}
+        finished = {c["id"]: [] for c in conditions}
         outside_advancing = {c["id"]: {} for c in conditions}
         for chunk in _id_pages(store, sorted(advancing)):
             rows = store.db.execute(
@@ -1600,10 +1601,12 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
                 task = json.loads(data)
                 if in_scope(task, scope):
                     advancing[target].append({key: task[key] for key in ("id", "title", "status")})
+                    if task["status"] == "completed" and task["completed_at"]:
+                        finished[target].append((normalize_now(task["completed_at"]), task["id"]))
                 else:
                     counts = outside_advancing[target]
                     counts[task["status"]] = counts.get(task["status"], 0) + 1
-    out, frontier, gaps, unassessed = [], [], [], []
+    out, frontier, gaps, unassessed, to_reassess = [], [], [], [], []
     for item in sorted(conditions, key=lambda c: (c["created_at"], c["id"])):
         live = item["status"] == "open" and statuses.get(item["goal_id"]) not in DONE
         waiting_on = [r for r in requires[item["id"]] if statuses.get(r) not in DONE]
@@ -1626,6 +1629,12 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
                 gaps.append(item["id"])
         if live and item["condition"] == "unknown":
             unassessed.append(item["id"])
+        # Finishing work never changes a condition: someone has to look. This
+        # names the work finished since the condition was last touched.
+        touched = normalize_now(item["updated_at"])
+        since = [id for at, id in sorted(finished[item["id"]]) if at > touched] if live else []
+        if since:
+            to_reassess.append(item["id"])
         out.append(
             {
                 "id": item["id"],
@@ -1637,6 +1646,7 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
                 **({"outside_scope": outside} if outside else {}),
                 "frontier": on_frontier,
                 "advancing": advancing[item["id"]],
+                **({"finished_since_assessed": since} if since else {}),
                 "evidence": [n["text"] for n in item["notes"][-3:]],
             }
         )
@@ -1648,4 +1658,5 @@ def explore(store, workspace, goal_id=None, *, now=None, scope=None):
         "frontier": frontier,
         "gaps": gaps,
         "unassessed": unassessed,
+        "to_reassess": to_reassess,
     }

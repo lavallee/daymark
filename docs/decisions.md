@@ -352,3 +352,24 @@ tracks its revision even when an older client writes it. Existing local
 configuration receipts provide replay without a schema marker change. The
 native backup covers this state. Logical workspace imports keep destination
 authority and local policy receipts.
+
+
+## Questions, watching and follow-ups
+
+A review of one deployment's records showed where shared work fails. Most
+questions put to a person through an agent ledger were answered in
+conversation and closed by the asker, not answered in the ledger. Most open
+items belonged to a session that no longer existed. Some answers given after
+a long wait reached no agent. A hosted agent message board
+([Vercel Board](https://vercel.com/docs/board/concepts/tasks), 2026-11)
+supplied the mechanisms to compare against.
+
+| Choice | Decision | Why |
+|---|---|---|
+| Where a question lives | In `metadata["daymark.question"]`, with its wording and the answer as notes | Four clients store a question with options and an answer, which meets the admission rule (S08). It stays plugin data for one release so no embedding application needs an upgrade; promote it to a typed field with the per-kind record split (K1). |
+| Asking gives the task up | `ask` releases the claim and sets `next_move` to answer; `answer` restores the earlier `next_move` | The answer must not depend on the asking session surviving. Any worker can take the task and read the thread. |
+| Who may answer | Anyone but the asker; the asker may relay a named person's answer, recorded as relayed | Most answers arrive in conversation, so a rule that forbade relaying would be bypassed. An actor name is still a label, not proof. |
+| Waiting | `watch` reads the event log after a cursor and returns the last event examined | A cursor, not a subscription: nothing has to stay running, and a change made before the watcher started is not lost. Own writes do not wake the watcher. A timeout is a distinct result with exit 8. |
+| Follow-ups | An ordinary agent task with an earliest start, created by `followup` | A reminder needs a person and a delivery channel. Ready work needs neither and survives the session. Intervals use `min`, `h`, `d`; a bare `m` is refused because `+Nm` already means months. |
+| Claims stay advisory | No fencing of a lapsed holder's writes yet | A person must be able to finish a task an agent holds. `--if-version` already fences a worker that keeps the version from `take`. Revisit if two workers are seen settling the same task. |
+| Not adopted | Channels, free-form messages between agents, two-way sync, per-channel grants | Messages hang off a task. Other systems are linked with a source reference, not mirrored. |

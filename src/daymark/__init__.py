@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .store import Store as Store
     from .tasks import Tasks as Tasks
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 # Metadata and CLI discovery can run without initializing the validation models.
 _EXPORTS = {

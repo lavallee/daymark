@@ -374,7 +374,7 @@ def test_mcp_and_http_read_goals_and_structured_plans(tmp_path):
         result = handle(tasks, message)["result"]
         return result["isError"], result["content"][0]["text"]
 
-    assert len(json.dumps(TOOLS)) < 6200
+    assert len(json.dumps(TOOLS)) < 6400
     assert "MILESTONE beta" in tool("daymark_view", view="plan", id="rel", by="milestone")[1]
     assert "Launch publicly" in tool("daymark_view", view="goals")[1]
     assert "at risk" not in tool("daymark_view", view="goal", id="launch")[1]
