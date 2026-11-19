@@ -3,7 +3,7 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
-Check `daymark --version`. This guide accompanies `0.6.0`.
+Check `daymark --version`. This guide accompanies `0.7.0`.
 For the previous tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 For a first integration, start with the session and reading sections below.

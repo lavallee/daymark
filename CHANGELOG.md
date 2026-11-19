@@ -4,6 +4,8 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-18
+
 ### Added
 
 - `ask`, `answer`, `watch` and `followup` carry work between people and agents.
