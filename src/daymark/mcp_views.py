@@ -227,6 +227,15 @@ def read_view(tasks, args, *, read_only=False):
         data = tasks.activity(after=args.get("after"), limit=args.get("limit", 20))
         return StructuredView(data) if structured else render.activity_text(data, mcp=True, limit=args.get("limit", 20))
 
+    if view == "watch":
+        # A tool call must return before the harness gives up on it, so one
+        # call waits under a minute and hands back the cursor to continue from.
+        data = tasks.watch(
+            [args["id"]] if args.get("id") else (), after=args.get("after"), by=args.get("by"),
+            timeout=30,
+        )
+        return StructuredView(data) if structured else render.watch_text(data, mcp=True)
+
     if view == "explore":
         data = tasks.explore(args.get("id"), scope=args.get("scope"))
         return StructuredView(data) if structured else render.explore_text(data)

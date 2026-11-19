@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import time
 import uuid
 from contextlib import contextmanager, nullcontext
 from copy import copy
@@ -25,7 +26,7 @@ from dateutil.relativedelta import relativedelta
 from dateutil.tz import datetime_ambiguous, datetime_exists, resolve_imaginary
 from pydantic import ValidationError
 
-from . import plans
+from . import coordination, plans
 from .client import Client
 from .models import (
     DomainError,
@@ -820,6 +821,179 @@ class Tasks:
     def release(self, id, *, note=None, op=None, expected_version=None):
         """Give back a claim, optionally recording a handoff note in the same transaction."""
         return self._with_note(id, "release", {"owner": self.actor}, note, op, expected_version)
+
+    # -- shared work: ask and answer, follow up, watch
+
+    def _me(self):
+        """The name this session's writes are recorded under, or None when an
+        older service cannot say which principal its credential belongs to."""
+        if self._ws:
+            return self.actor
+        if not hasattr(self, "_service_actor"):
+            found = self.engine.identity()
+            self._service_actor = found["actor"] if found else None
+        return self._service_actor
+
+    def _sequence(self, id, request_id, request, build, *, replay):
+        """Several ordered changes to one record, all or nothing.
+
+        ``build`` receives the current record and returns (action, fields)
+        steps. The batch is recorded under ``request_id`` with the caller's own
+        ``request``, so a retry returns the first result even though the steps
+        were derived from a record that has since changed.
+        """
+        for attempt in range(4):
+            # Every sequence opens with a note. Its receipt holds the record as
+            # the first attempt read it, so a retry rebuilds the same steps.
+            retry = self._retry_context(self._part_id(request_id, "0:note"), "note", id) if replay else None
+            current = retry["before"] if retry else self.engine.get(*self._ws, id)
+            steps = build(current)
+            operations = [
+                {
+                    "operation_id": self._part_id(request_id, f"{index}:{action}"),
+                    "action": action,
+                    "payload": {"id": id, **fields},
+                    "expected_version": current["version"] + index,
+                }
+                for index, (action, fields) in enumerate(steps)
+            ]
+            result = self.engine.batch(
+                *self._ws, operations, atomic=True, request_id=request_id, request=request,
+                **self._who,
+            )
+            if result["committed"]:
+                return result["results"][-1]["result"]
+            error = next(r["error"] for r in result["results"] if r["error"]["code"] != "aborted")
+            changed = self.engine.get(*self._ws, id)["version"] != current["version"]
+            if retry or error["code"] != "conflict" or attempt == 3 or not changed:
+                raise DomainError(error["code"], error["message"], error["details"])
+
+    def ask(self, id, question, *, to, options=(), recommend=None, op=None):
+        """Put a question to a person or another actor and hand the task to them.
+
+        The question joins the notes, the task becomes theirs to answer
+        (``next_move`` answer) and the asker's claim is given back, so the task
+        shows in the decision queue instead of hiding behind a lease.
+        """
+        text, to, options = coordination.clean_question(question, to, options, recommend)
+        request = {"ask": text, "to": to, "options": options, "recommend": recommend, "id": id}
+        base, me = self._op_id(op), self._me()
+
+        def build(current):
+            if current["kind"] != "task" or current["archived"] or current["status"] != "open":
+                raise DomainError("conflict", "Ask about an open task. Reopen or unarchive it first.")
+            if coordination.open_question(current):
+                raise DomainError(
+                    "conflict", "This task already has an unanswered question",
+                    ["Read it with show ID. One question at a time keeps the answer unambiguous."],
+                )
+            holder = current["claimed_by"]
+            live = holder is not None and normalize_now(current["claim_until"]) > self.now()
+            if live and me is not None and holder != me:
+                raise DomainError("conflict", "Task is claimed by another owner")
+            record = {
+                "id": uuid.uuid5(uuid.NAMESPACE_URL, "daymark:question:" + base).hex[:12],
+                "text": text, "to": to, "by": me or self.actor, "options": options,
+                "recommend": recommend, "resume": {"next_move": current["next_move"]},
+            }
+            steps = [("note", {"text": coordination.question_note(record), "author": self.actor})]
+            if live:
+                steps.append(("release", {"owner": self.actor}))
+            steps.append(("update", {
+                "next_move": "answer",
+                "metadata": {**current["metadata"], coordination.QUESTION: record},
+            }))
+            return steps
+
+        return self._sequence(id, base, request, build, replay=op is not None)
+
+    def answer(self, id, text=None, *, choice=None, heard_from=None, op=None):
+        """Answer the open question on a task and return it to whoever moves next.
+
+        The actor who asked may only relay an answer it was given elsewhere,
+        naming who gave it (``heard_from``). The record then says it was relayed.
+        """
+        if heard_from is not None and (not isinstance(heard_from, str) or not 1 <= len(heard_from.strip()) <= 200):
+            raise DomainError("invalid", "Name who gave the answer, in 1 to 200 characters")
+        request = {"answer": text, "choice": choice, "id": id, "heard_from": heard_from}
+        base, me = self._op_id(op), self._me()
+
+        def build(current):
+            question = coordination.open_question(current)
+            if not question:
+                raise DomainError("conflict", "This task has no unanswered question")
+            if me is not None and question.get("by") == me and not heard_from:
+                raise DomainError(
+                    "forbidden", "The actor who asked cannot answer its own question",
+                    [
+                        "Leave it for whoever it was addressed to.",
+                        "If they answered somewhere else, relay it and name them: answer ID --heard-from WHO.",
+                    ],
+                )
+            said, picked = coordination.resolve_answer(question, text, choice)
+            source = heard_from.strip() if heard_from else me or self.actor
+            given = {"text": said, "choice": picked, "by": source}
+            if heard_from:
+                given["relayed_by"] = me or self.actor
+            note = coordination.answer_note(source, said, question, picked)
+            if heard_from:
+                note += f" (relayed by {me or self.actor})"
+            return [
+                ("note", {"text": note, "author": self.actor}),
+                ("update", {
+                    "next_move": (question.get("resume") or {}).get("next_move"),
+                    "metadata": {**current["metadata"], coordination.QUESTION: {**question, "answer": given}},
+                }),
+            ]
+
+        return self._sequence(id, base, request, build, replay=op is not None)
+
+    def followup(self, id, text, *, after, op=None):
+        """Leave a task for an agent to pick up after an interval, about ``id``.
+
+        It is an ordinary task that becomes ready when the interval has passed,
+        so a later session finds it in ``ready`` whether or not this one is
+        still running.
+        """
+        delay = coordination.interval(after)
+        subject = self.engine.get(*self._ws, id)
+        retry = self._retry_context(op, "create")
+        start = (retry["result"]["earliest_start"] or {}).get("at") if retry else None
+        if not start:
+            start = (self.now() + delay).astimezone(UTC).isoformat(timespec="seconds")
+        return self.add(
+            text, start=start, move="agent", op=op,
+            description=f"Follow-up on {subject['id']}: {subject['title']}",
+            metadata={coordination.FOLLOWUP: {"of": subject["id"], "by": self._me() or self.actor, "after": after.strip().lower()}},
+        )
+
+    def watch(self, ids=(), *, after=None, by=None, include_own=False, timeout=1800.0,
+              poll=1.0, sleep=time.sleep, clock=time.monotonic):
+        """Block until the next matching change after a cursor, or until the timeout.
+
+        Starts at the newest event unless ``after`` is given. The returned
+        cursor is the last event examined, matched or not, so passing it back
+        never rescans and never skips. A timeout is not an answer.
+        """
+        if type(timeout) not in (int, float) or not 0 <= timeout <= 86400:
+            raise DomainError("invalid", "Watch for at most 24 hours (86400 seconds)")
+        if type(poll) not in (int, float) or not 0.05 <= poll <= 300:
+            raise DomainError("invalid", "Poll interval must be between 0.05 and 300 seconds")
+        ids, me = set(ids), self._me() or self.actor
+        cursor = self.activity(limit=1)["head"] if after is None else after
+        deadline = clock() + timeout
+        while True:
+            page = self.activity(after=cursor, limit=100)
+            for event in page["events"]:
+                if coordination.matches(event, ids=ids, actor=me, by=by, include_own=include_own):
+                    return {"status": "event", "event": event, "cursor": event["seq"], "head": page["head"]}
+            cursor = page["cursor"]
+            if cursor < page["head"]:
+                continue
+            remaining = deadline - clock()
+            if remaining <= 0:
+                return {"status": "timeout", "cursor": cursor, "head": page["head"]}
+            sleep(min(poll, remaining))
 
     @staticmethod
     def _check_wait_state(current, retry):

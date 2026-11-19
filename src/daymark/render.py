@@ -8,6 +8,7 @@ from shlex import join
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from .coordination import open_question
 from .models import DomainError, Entity, Temporal, day_offset, normalize_now
 from .outbox import DETAIL_FIELDS
 from .views import LIST_FIELDS, claim_holder, why
@@ -123,6 +124,8 @@ def line(item: dict, now=None, reason=True, *, timezone="UTC", multiline=False) 
             tags.append(pressing)
     if item["status"] not in {"open"}:
         tags.append(item["status"])
+    if asked := open_question(item):
+        tags.append(f"question for {asked['to']}")
     if item["deadline"]:
         tags.append("due " + when(item["deadline"]))
     if item["planned"]:
@@ -227,6 +230,8 @@ def explore_text(view: dict) -> str:
             )
         if item["waiting_on"]:
             tags.append("needs " + ",".join(item["waiting_on"]))
+        if done := item.get("finished_since_assessed"):
+            tags.append("reassess: " + ",".join(done) + " finished since")
         outside = item.get("outside_scope", {})
         if outside.get("waiting_on"):
             tags.append(f"waiting on {outside['waiting_on']} outside this scope")
@@ -249,6 +254,11 @@ def explore_text(view: dict) -> str:
     if view["unassessed"]:
         out.append(
             f"{len(view['unassessed'])} not yet assessed: {', '.join(view['unassessed'][:8])}"
+        )
+    if again := view.get("to_reassess"):  # An older service does not report this.
+        out.append(
+            f"{len(again)} to reassess after finished work: {', '.join(again[:8])}. "
+            "Use assess ID STATE --evidence TEXT."
         )
     return "\n".join(out)
 
@@ -510,6 +520,20 @@ def activity_text(view: dict, *, session=None, mcp=False, limit=20) -> str:
     return "\n".join(out)
 
 
+def watch_text(result: dict, *, ids=(), mcp=False) -> str:
+    """The change that ended a watch, or a timeout, with how to keep watching."""
+    if result["status"] == "event":
+        page = {"events": [result["event"]], "cursor": result["cursor"], "head": result["cursor"]}
+        out = activity_text(page, mcp=mcp).split("\n")[:1]
+    else:
+        out = ["timeout: nothing matched. This is not an answer."]
+    if mcp:
+        out.append(f"Keep watching: daymark_view view=watch after={result['cursor']}")
+    else:
+        out.append("Keep watching: " + " ".join(["daymark watch", *ids, "--after", str(result["cursor"])]))
+    return "\n".join(out)
+
+
 def note_text(note: dict) -> str:
     who = f" by {note['author']}" if note.get("author") else ""
     end = "…" if note.get("truncated") else ""
@@ -699,6 +723,8 @@ def show_text(ctx: dict, now=None) -> str:
         out.append(f"Review token: {ctx['review_token']}")
     if claim_holder(item, normalize_now(now)):
         out.append(f"claim expires: {item['claim_until']}")
+    if asked := open_question(item):
+        out.append(f"open question for {asked['to']} from {asked['by']}: answer with daymark answer {item['id']}")
     if "readiness" in ctx:
         state = ctx["readiness"]
         reasons = {
@@ -1084,6 +1110,8 @@ Commands (add --json to any for structured output)
   daymark focus ID / unfocus ID     the person's own short list; it leads `ready`
   daymark explore [GOAL] [--scope NAME]   what must be true for a goal, what is next, what is stuck
   daymark condition "..." --goal G  record such a condition; `assess ID STATE --evidence T`
+      Plan backward: conditions are states of the world; give each next one a task with
+      --advances ID; after that work finishes, reassess what explore lists to reassess.
   daymark advise [--context ID] [--set shortlist.size=3]   show picks and the count held back
       On a truncated review, ready_coverage reports how many ready tasks were reviewed and available.
   daymark strategies [NAME]   discover methods and inspect a parameter range
@@ -1093,6 +1121,14 @@ Commands (add --json to any for structured output)
   daymark --as WORKER take [--project ID] [--scope NAME] [--context ID]   claim a delegated ready task
   daymark claim ID / release ID [--note TEXT] [--if-version N]   take work or hand it back
   daymark note ID "text"            progress or context for the next session
+  daymark ask ID "question" --to WHO [--option TEXT ...] [--recommend N]
+                                    hand a decision to someone; it joins their `ready --move answer`
+  daymark answer ID ["text"] [--choice N] [--heard-from WHO]
+                                    answer it; the task returns to whoever moves next.
+                                    The asker may only relay an answer, naming who gave it.
+  daymark watch [ID ...] [--after CURSOR] [--timeout 30min]
+                                    block until someone else changes it; exit 8 on timeout
+  daymark followup ID "text" --in 10min|2h|1d   a task an agent finds in `ready` after that long
   If a remote write is uncertain, repeat the same command and flags with the returned --op.
   daymark done ID [--note TEXT] [--if-version N]   complete (a repeating task spawns its next)
   daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)

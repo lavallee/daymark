@@ -48,6 +48,7 @@ _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim",
     "release", "take", "note", "wait", "resume", "defer", "block", "unblock", "forget",
     "focus", "unfocus", "move", "assess", "use_profile", "restore_profile", "remind",
+    "ask", "answer", "followup",
 ]  # fmt: skip
 
 TOOLS = [
@@ -61,7 +62,7 @@ TOOLS = [
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
         "description": 'json=data. scope ""=unscoped. show id/source/forecast. ready project/explain. agenda local_day. '
-        "find source+scope. advise set/drop. profiles strategy.",
+        "find source+scope. advise set/drop. profiles strategy. watch id/after/by: next change.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -74,6 +75,7 @@ TOOLS = [
                         "explore",
                         "agenda",
                         "activity",
+                        "watch",
                         "show",
                         "find",
                         "projects",
@@ -158,7 +160,7 @@ TOOLS = [
         "name": "daymark_act",
         "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
         "take:no id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
-        "remind:when,recipient ID; local recording. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
+        "remind:when,recipient ID; local recording. ask:text,recipient,options,choice=recommended. answer:text/choice. followup:text,when=10min/2h/1d. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -173,6 +175,7 @@ TOOLS = [
                 "until": {"type": "string"},
                 "when": {"type": "string"},
                 "recipient": {"type": "string"},
+                "choice": {"type": "integer"},
                 "context": {"type": "string"},
                 "project": {"type": "string"},
                 "scope": {"type": "string"},
@@ -237,6 +240,7 @@ _VIEW_ARGS = {
     "explore": {"id", "scope"},
     "agenda": {"days", "scope", "context", "deadlines", "local_day"},
     "activity": {"after", "limit"},
+    "watch": {"id", "after", "by"},
     "show": {"id", "source", "brief", "note", "before_note", "since_version", "forecast"},
     "find": {"source", "text", "limit", "after", "kind", "status", "scope", "claimed", "archived"},
     "plan": {"id", "by"},
@@ -259,6 +263,9 @@ _ACT_ARGS = {
     "resume": {"expected_version", "review_token"},
     "defer": {"until"},
     "remind": {"when", "recipient"},
+    "ask": {"text", "recipient", "set", "choice"},
+    "answer": {"text", "choice", "recipient"},
+    "followup": {"text", "when"},
     "block": {"on"},
     "unblock": {"on"},
     "assess": {"state", "text"},
@@ -302,7 +309,7 @@ def _validate_arguments(name, args):
         verb = args["view"]
         required = ("id",) if verb in {"plan", "goal"} else ()
         allowed = _VIEW_ARGS.get(verb, set()) | {"view", "json"}
-        if verb == "activity" and "after" in args:
+        if verb in {"activity", "watch"} and "after" in args:
             cursor_number(args["after"])
         if verb == "find" and "after" in args:
             _validate_value("after", args["after"], {"type": "string"})
@@ -310,6 +317,7 @@ def _validate_arguments(name, args):
         verb = args["action"]
         required = {
             "note": ("text",), "wait": ("on",), "remind": ("when", "recipient"),
+            "ask": ("text", "recipient"), "followup": ("text", "when"),
             "restore_profile": ("expected_version",),
             "defer": ("until",), "block": ("on",), "unblock": ("on",), "assess": ("state",),
         }.get(verb, ())
@@ -423,6 +431,13 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
                               expected_version=args.get("expected_version"), review_token=args.get("review_token"))
         elif action == "remind":
             item = tasks.remind(id, args["when"], recipient=args["recipient"], op=op)
+        elif action == "ask":
+            item = tasks.ask(id, args["text"], to=args["recipient"], options=args.get("set", ()),
+                             recommend=args.get("choice"), op=op)
+        elif action == "answer":
+            item = tasks.answer(id, args.get("text"), choice=args.get("choice"), heard_from=args.get("recipient"), op=op)
+        elif action == "followup":
+            item = tasks.followup(id, args["text"], after=args["when"], op=op)
         elif action == "defer":
             item = tasks.defer(id, args["until"], op=op)
         elif action in {"block", "unblock"}:

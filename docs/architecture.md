@@ -163,9 +163,22 @@ and names the gaps.
 
 This models the dependency explorer in the commitments system Daymark now
 underpins: an outcome, necessary conditions with states, and moves that
-advance them. Not carried over yet: a named bottleneck with its reason, kinds
-of move (investigate, reframe, stop), revisions of the whole graph with
-lineage, and a person's free-form annotations on a canvas.
+advance them. The division is: Daymark holds the primitive, the storage and
+the guidance for planning backward from an outcome; the application decides
+which condition is the bottleneck, how moves rank and what deserves the
+person's attention.
+
+The kernel also states when a condition needs another look: work that
+advances it finished after it was last changed (`to_reassess`). Finishing
+work never changes a condition's state, so a partial result cannot close an
+outcome.
+
+Not carried over yet, in order of need: a stored bottleneck on the goal
+(which condition, and why; the invariant is that it names a live condition
+of that goal), citable evidence references on an assessment, and reading the
+graph as it stood at an earlier cursor. Kinds of move (investigate, reframe,
+stop) are guidance over existing records, not stored. Ranking, attention and
+canvas annotations stay with the application.
 
 ## Kernel debt
 
