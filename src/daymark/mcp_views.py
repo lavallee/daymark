@@ -236,6 +236,14 @@ def read_view(tasks, args, *, read_only=False):
         )
         return StructuredView(data) if structured else render.watch_text(data, mcp=True)
 
+    if view == "inbox":
+        data = tasks.inbox(args.get("by"), after=args.get("after"))
+        return StructuredView(data) if structured else render.inbox_text(data, mcp=True)
+
+    if view == "digest":
+        data = tasks.digest(args.get("by"))
+        return StructuredView(data) if structured else render.digest_text(data, mcp=True)
+
     if view == "explore":
         data = tasks.explore(args.get("id"), scope=args.get("scope"))
         return StructuredView(data) if structured else render.explore_text(data)

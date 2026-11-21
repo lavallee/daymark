@@ -48,7 +48,7 @@ _ACTIONS = [
     "done", "skip", "cancel", "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim",
     "release", "take", "note", "wait", "resume", "defer", "block", "unblock", "forget",
     "focus", "unfocus", "move", "assess", "use_profile", "restore_profile", "remind",
-    "ask", "answer", "followup",
+    "ask", "answer", "followup", "seen",
 ]  # fmt: skip
 
 TOOLS = [
@@ -62,7 +62,7 @@ TOOLS = [
         "name": "daymark_view",
         "annotations": {"readOnlyHint": True},
         "description": 'json=data. scope ""=unscoped. show id/source/forecast. ready project/explain. agenda local_day. '
-        "find source+scope. advise set/drop. profiles strategy. watch id/after/by: next change.",
+        "find source+scope. advise set/drop. profiles strategy. watch id/after/by: next change. inbox/digest by=actor.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -76,6 +76,8 @@ TOOLS = [
                         "agenda",
                         "activity",
                         "watch",
+                        "inbox",
+                        "digest",
                         "show",
                         "find",
                         "projects",
@@ -241,6 +243,8 @@ _VIEW_ARGS = {
     "agenda": {"days", "scope", "context", "deadlines", "local_day"},
     "activity": {"after", "limit"},
     "watch": {"id", "after", "by"},
+    "inbox": {"by", "after"},
+    "digest": {"by"},
     "show": {"id", "source", "brief", "note", "before_note", "since_version", "forecast"},
     "find": {"source", "text", "limit", "after", "kind", "status", "scope", "claimed", "archived"},
     "plan": {"id", "by"},
@@ -265,7 +269,8 @@ _ACT_ARGS = {
     "remind": {"when", "recipient"},
     "ask": {"text", "recipient", "set", "choice"},
     "answer": {"text", "choice", "recipient"},
-    "followup": {"text", "when"},
+    "followup": {"text", "when", "recipient"},
+    "seen": {"recipient", "expected_version"},
     "block": {"on"},
     "unblock": {"on"},
     "assess": {"state", "text"},
@@ -309,7 +314,7 @@ def _validate_arguments(name, args):
         verb = args["view"]
         required = ("id",) if verb in {"plan", "goal"} else ()
         allowed = _VIEW_ARGS.get(verb, set()) | {"view", "json"}
-        if verb in {"activity", "watch"} and "after" in args:
+        if verb in {"activity", "watch", "inbox"} and "after" in args:
             cursor_number(args["after"])
         if verb == "find" and "after" in args:
             _validate_value("after", args["after"], {"type": "string"})
@@ -329,7 +334,7 @@ def _validate_arguments(name, args):
         if verb == "use_profile":
             if not any(args.get(key) for key in ("id", "set", "drop")):
                 raise DomainError("invalid", "use_profile requires a name in id, set or drop")
-        elif verb != "take":
+        elif verb not in {"take", "seen"}:
             if "id" not in args:
                 raise DomainError("invalid", "missing argument id")
             allowed.add("id")
@@ -403,6 +408,9 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
             text = render.profile_text(data, database=(context or {}).get("database"))
             text += "\nRestore this preference in MCP with daymark_act " + json.dumps(restore)
             return StructuredView(result, text=text)
+        if args["action"] == "seen":
+            mark = tasks.mark_seen(args.get("recipient"), through=args.get("expected_version"))
+            return f"{mark['reader']} has seen through {mark['seq']} of {mark['head']}"
         if args["action"] == "take":
             return (
                 tasks.take(
@@ -437,7 +445,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
         elif action == "answer":
             item = tasks.answer(id, args.get("text"), choice=args.get("choice"), heard_from=args.get("recipient"), op=op)
         elif action == "followup":
-            item = tasks.followup(id, args["text"], after=args["when"], op=op)
+            item = tasks.followup(id, args["text"], after=args["when"], for_=args.get("recipient"), op=op)
         elif action == "defer":
             item = tasks.defer(id, args["until"], op=op)
         elif action in {"block", "unblock"}:

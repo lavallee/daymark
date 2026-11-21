@@ -5,10 +5,10 @@ morning they want to see the decisions holding up the team. Before a meeting
 they want two things they can start. The agent can change its answer for
 each situation.
 
-The examples use Daymark 0.7.0. Check `daymark advise --help`
+The examples use Daymark 0.8.0. Check `daymark advise --help`
 for `--set` before trying them. On v0.5.0,
 `daymark advise --profile gentle` previews the built-in short list.
-[Set up Daymark 0.7.0](mcp.md#connect-two-agents-in-five-minutes)
+[Set up Daymark 0.8.0](mcp.md#connect-two-agents-in-five-minutes)
 
 | What the person says | What to try |
 | --- | --- |

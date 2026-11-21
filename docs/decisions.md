@@ -373,3 +373,20 @@ supplied the mechanisms to compare against.
 | Follow-ups | An ordinary agent task with an earliest start, created by `followup` | A reminder needs a person and a delivery channel. Ready work needs neither and survives the session. Intervals use `min`, `h`, `d`; a bare `m` is refused because `+Nm` already means months. |
 | Claims stay advisory | No fencing of a lapsed holder's writes yet | A person must be able to finish a task an agent holds. `--if-version` already fences a worker that keeps the version from `take`. Revisit if two workers are seen settling the same task. |
 | Not adopted | Channels, free-form messages between agents, two-way sync, per-channel grants | Messages hang off a task. Other systems are linked with a source reference, not mirrored. |
+
+
+## Who is woken, and what waits
+
+Two agent message boards were reviewed in 2026-11: [TalkTo](https://github.com/plannotator/talkto)
+(Apache-2.0, integrations MIT) and [chirp](https://github.com/CryogenicPlanet/chirp)
+(MIT). Both found that the cost of shared work is attention, not storage:
+every message can start a turn. No code was copied.
+
+| Choice | Decision | Why |
+|---|---|---|
+| What wakes an actor | Only what is addressed to them by exact name: a question to them, an answer to their question, their ready follow-up, an `@name` mention | Both boards wake on direct messages and exact mentions and hold everything else. Fuzzy names wake the wrong agent. |
+| How a scheduler decides | `inbox --count`: counts and a cursor, no task text | A wake carries ids and counts, then the agent pulls with its own cursor (TalkTo's wake notices carry no message text). Keeps instructions out of the trigger. |
+| Answers waiting | Stateless: the answer is the newest note on the task | Needs no cursor, so a new session of the asker still finds it. |
+| A person's view | A per-reader seen mark, monotonic, no event; the digest reads without marking | chirp keeps unread for people and cursors for agents apart, and background reads never mark. A digest that marked would hide what the person did not read. |
+| Summary caps | Up to eight tasks, three names each, 100 characters of the latest words | TalkTo's held-message summary uses the same shape. A digest must stay readable on a phone. |
+| Not adopted | A self-editing board; webhooks that retry forever unsigned; a post count called a standup; agent-to-agent direct chats | Daymark keeps kernel rules out of reach of agents, and messages hang off a task. |

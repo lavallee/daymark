@@ -550,8 +550,8 @@ def test_mcp_tools_cover_the_flow():
     )
     assert handle(tasks, {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     assert [t["name"] for t in rpc("tools/list")["result"]["tools"]] == [t["name"] for t in TOOLS]
-    # Tool definitions stay cheap to carry. Raised from 6200 for ask, answer, followup and watch.
-    assert len(json.dumps(TOOLS)) < 6400
+    # Tool definitions stay cheap to carry. Raised from 6200 for ask, answer, followup, watch, inbox, digest and seen.
+    assert len(json.dumps(TOOLS)) < 6500
     failed, text = tool("daymark_add", title="Pay the rent", due="tomorrow")
     assert not failed and "Pay the rent" in text
     id = text.split()[0]

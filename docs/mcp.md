@@ -18,9 +18,9 @@ retain their timezone. The current service takes `day_zone` on
 
 ## Connect two agents in five minutes
 
-This walkthrough uses Daymark 0.7.0. Install it from the tag or start in
+This walkthrough uses Daymark 0.8.0. Install it from the tag or start in
 the checkout or unpacked source archive containing this guide. The steps
-below expect `daymark --version` to report `0.7.0`.
+below expect `daymark --version` to report `0.8.0`.
 
 ```sh
 uv sync

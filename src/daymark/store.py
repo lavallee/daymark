@@ -709,6 +709,64 @@ class Store:
             (workspace, operation_id, digest, canonical(result)),
         )
 
+    # -- attention: who is asked, and what a reader has seen
+
+    def addressed(self, workspace, name):
+        """Open tasks whose question or follow-up names ``name`` exactly.
+
+        A question names who should answer (``to``) and who asked (``by``); a
+        follow-up names who it is for (``for``) and who left it (``by``). Names
+        match exactly: no case folding, no prefixes.
+        """
+        if not isinstance(name, str) or not 1 <= len(name) <= 200:
+            invalid("Name the actor in 1 to 200 characters")
+        with self._lock:
+            if not self._has_schema():
+                return []
+            self._refuse_stale()
+            paths = ['$.metadata."daymark.question".to', '$.metadata."daymark.question".by',
+                     '$.metadata."daymark.followup".for', '$.metadata."daymark.followup".by']
+            try:
+                rows = self.db.execute(
+                    "SELECT data FROM daymark_entities WHERE workspace=? AND kind='task' AND archived=0 "
+                    "AND status IN ('open','waiting') AND ("
+                    + " OR ".join("json_extract(data,?)=?" for _ in paths) + ") ORDER BY id",
+                    (workspace, *[x for path in paths for x in (path, name)]),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:
+                if "no such function" not in str(exc):
+                    raise
+                return [x for x in self._rows(workspace, kind="task") if x["status"] in {"open", "waiting"}
+                        and _names(x, name)]
+            return [json.loads(row[0]) for row in rows]
+
+    def seen_mark(self, workspace, reader):
+        """The last event cursor ``reader`` has marked as seen in this workspace; 0 if none."""
+        key = _seen_key(workspace, reader)
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                return 0
+            row = self.db.execute("SELECT value FROM daymark_scheduler WHERE key=?", (key,)).fetchone()
+            return json.loads(row[0])["seq"] if row else 0
+
+    def mark_seen(self, workspace, reader, seq):
+        """Move a reader's mark forward to ``seq``. It never moves back and records no event."""
+        key = _seen_key(workspace, reader)
+        if type(seq) is not int or seq < 0:
+            invalid("A seen mark is a nonnegative event cursor")
+        with self._lock:
+            if not self._has_schema("daymark_scheduler"):
+                raise DomainError("no_database", "Create a database before marking anything seen")
+            with self._transaction():
+                head = self.head(workspace)
+                if seq > head:
+                    raise DomainError("conflict", "That cursor is ahead of this workspace. Read the digest again.")
+                row = self.db.execute("SELECT value FROM daymark_scheduler WHERE key=?", (key,)).fetchone()
+                current = json.loads(row[0])["seq"] if row else 0
+                if seq > current:
+                    self._write_scheduler_value(key, canonical({"seq": seq}))
+                return {"reader": reader, "seq": max(seq, current), "head": head}
+
     def policy(self, workspace):
         """Workspace policy. ``deciders`` lists who may accept or dismiss proposals;
         empty means anyone who can write."""
@@ -2615,3 +2673,17 @@ class Store:
                 "last_tick": scheduler.get("tick"),
                 "last_heartbeat": scheduler.get("heartbeat"),
             }
+
+
+def _seen_key(workspace, reader):
+    if not isinstance(workspace, str) or not 1 <= len(workspace) <= 128:
+        invalid("Workspace required")
+    if not isinstance(reader, str) or not 1 <= len(reader) <= 200:
+        invalid("Name the reader in 1 to 200 characters")
+    return "seen:" + canonical([workspace, reader])
+
+
+def _names(entity, name):
+    meta = entity.get("metadata") or {}
+    question, followup = meta.get("daymark.question") or {}, meta.get("daymark.followup") or {}
+    return name in (question.get("to"), question.get("by"), followup.get("for"), followup.get("by"))

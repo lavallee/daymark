@@ -95,3 +95,55 @@ def matches(event, *, ids, actor, by, include_own) -> bool:
     if by is not None and event["actor"] != by:
         return False
     return include_own or by is not None or event["actor"] != actor
+
+
+# -- attention: what wakes an actor, and what waits for a digest
+
+_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+SCAN_LIMIT = 2000  # Events examined per inbox or digest read; the cursor says where it stopped.
+SUMMARY_SENDERS, SUMMARY_TASKS, PREVIEW = 3, 8, 100
+
+
+def mentions(text, name):
+    """Whether ``text`` mentions ``@name`` exactly, outside code. ``@sam`` is not ``@sam/build``."""
+    if not isinstance(text, str) or not name:
+        return False
+    plain = _CODE.sub(" ", text)
+    return re.search(r"(?<![\w@/])@" + re.escape(name) + r"(?![\w/-])", plain) is not None
+
+
+def preview(text):
+    line = " ".join((text or "").split())
+    return line if len(line) <= PREVIEW else line[: PREVIEW - 1] + "…"
+
+
+def answered_waiting(entity, name):
+    """An answer to ``name``'s question that nobody has acted on since: the answer is the latest note."""
+    question = (entity.get("metadata") or {}).get(QUESTION) or {}
+    if question.get("by") != name or "answer" not in question or not entity.get("notes"):
+        return False
+    return entity["notes"][-1]["text"].startswith("Answer from ")
+
+
+def summarise(events, reader):
+    """Changes by others, one line per task: who, how many, and the latest words. Capped like a notice."""
+    groups = {}
+    for event in events:
+        if event.get("actor") == reader:
+            continue
+        group = groups.setdefault(event["id"], {"id": event["id"], "title": event["title"], "count": 0,
+                                                "by": [], "latest": None, "last": event["seq"]})
+        group["count"] += 1
+        group["last"] = event["seq"]
+        if event.get("actor") and event["actor"] not in group["by"]:
+            group["by"].append(event["actor"])
+        if event.get("note"):
+            group["latest"] = preview(event["note"]["text"])
+        elif not group["latest"]:
+            group["latest"] = event["action"] + (" " + ", ".join(event["changed"]) if event.get("changed") else "")
+    ordered = sorted(groups.values(), key=lambda g: -g["last"])
+    for group in ordered:
+        extra = len(group["by"]) - SUMMARY_SENDERS
+        group["by"] = group["by"][:SUMMARY_SENDERS] + ([f"{extra} more"] if extra > 0 else [])
+        del group["last"]
+    return ordered[:SUMMARY_TASKS], max(0, len(ordered) - SUMMARY_TASKS)

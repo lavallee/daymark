@@ -52,7 +52,7 @@ def _print(value: Any) -> None:
 SIMPLE = {
     "prime", "activity", "ready", "agenda", "show", "add", "propose", "edit", "done", "skip", "cancel",
     "reopen", "archive", "unarchive", "undo", "accept", "dismiss", "claim", "take", "release", "note", "wait",
-    "ask", "answer", "watch", "followup",
+    "ask", "answer", "watch", "followup", "inbox", "digest", "seen",
     "resume", "defer", "block", "unblock", "remind", "find", "remember", "forget", "mcp",
     "focus", "unfocus", "project", "projects", "plan", "move", "changes", "goal", "goals",
     "tree", "advise", "profile", "strategies", "condition", "assess", "explore",
@@ -317,6 +317,16 @@ def _simple_commands(sub) -> None:
     followup.add_argument("id")
     followup.add_argument("text")
     followup.add_argument("--in", dest="after", required=True, metavar="INTERVAL", help="10min, 2h or 1d")
+    followup.add_argument("--for", dest="for_", metavar="WHO", help="Who it is for (default: you)")
+    inbox = add("inbox", "What is addressed to one actor and needs them now")
+    inbox.add_argument("--for", dest="for_", metavar="WHO", help="Exact actor name (default: --as)")
+    inbox.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Also read mentions after this cursor")
+    inbox.add_argument("--count", action="store_true", help="Print counts and the cursor only, for a hook or a scheduler")
+    digest = add("digest", "What needs a person and what changed since they last looked")
+    digest.add_argument("--for", dest="for_", metavar="PERSON", help="The person (default: --as)")
+    seen = add("seen", "Mark a person's digest read up to a cursor", writes=True)
+    seen.add_argument("--for", dest="for_", metavar="PERSON", help="The person (default: --as)")
+    seen.add_argument("--through", type=_activity_cursor, metavar="CURSOR", help="Default: the newest change")
     watch = add("watch", "Block until someone else changes a task, or until the timeout")
     watch.add_argument("ids", nargs="*", metavar="ID", help="Tasks to watch (default: the whole workspace)")
     watch.add_argument("--after", type=_activity_cursor, metavar="CURSOR", help="Continue from a saved cursor")
@@ -893,7 +903,20 @@ def _simple(args, engine) -> int:
     elif name == "answer":
         entity(tasks.answer(args.id, args.text, choice=args.choice, heard_from=args.heard_from, op=op))
     elif name == "followup":
-        entity(tasks.followup(args.id, args.text, after=args.after, op=op))
+        entity(tasks.followup(args.id, args.text, after=args.after, for_=args.for_, op=op))
+    elif name == "inbox":
+        view = tasks.inbox(args.for_, after=args.after)
+        if args.count:
+            counts = {k: len(view[k]) for k in ("to_answer", "answered", "followups", "mentions")}
+            _print({"for": view["for"], **counts, "waking": view["waking"], "cursor": view["cursor"], "more": view["more"]})
+        else:
+            out(view, render.inbox_text(view))
+    elif name == "digest":
+        view = tasks.digest(args.for_)
+        out(view, render.digest_text(view))
+    elif name == "seen":
+        mark = tasks.mark_seen(args.for_, through=args.through)
+        out(mark, f"{mark['reader']} has seen through {mark['seq']} of {mark['head']}")
     elif name == "watch":
         from .coordination import interval
 

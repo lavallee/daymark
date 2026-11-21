@@ -3,7 +3,7 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
-Check `daymark --version`. This guide accompanies `0.7.0`.
+Check `daymark --version`. This guide accompanies `0.8.0`.
 For the previous tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 For a first integration, start with the session and reading sections below.
@@ -937,7 +937,7 @@ daymark --as reviewer take                  # any worker can carry on
   cursor before you ask and pass it: `watch ID --after CURSOR`. On a
   timeout it exits 8 and prints `timeout`; that is not an answer. Your own
   changes do not wake you unless you pass `--include-own`.
-- **`followup ID "text" --in 10min|2h|1d`** leaves a task for an agent that
+- **`followup ID "text" --in 10min|2h|1d [--for WHO]`** leaves a task for an agent that
   becomes ready after that interval, naming the task it is about. Use it for
   "check the build in ten minutes". It is ordinary ready work, so a later
   session finds it whether or not yours is still running. Nothing wakes a
@@ -966,7 +966,45 @@ options in `set`, the recommended number in `choice`), `answer` (`text`,
 `choice`, and `recipient` for who a relayed answer came from) and `followup`
 (`text`, `when`); and `daymark_view` with `view` `watch` (`id`, `after`,
 `by`). One MCP watch waits up to 30 seconds and returns the cursor to
-continue from.
+continue from. `view` `inbox` and `digest` take the actor in `by`; `inbox`
+also takes `after`. `action` `seen` takes the person in `recipient` and the
+cursor in `expected_version`.
+
+## What needs you, and what can wait
+
+Every check an agent makes costs a turn, and every interruption costs a
+person their attention. Daymark separates what is addressed to someone from
+everything else.
+
+**`daymark inbox --for NAME`** lists what is addressed to that actor by
+exact name (`sam` is not `Sam` and not `sam/build`):
+
+- questions put to them with `ask --to NAME`;
+- answers to questions they asked that nobody has acted on yet;
+- follow-ups for them that are ready (`followup ID "text" --in 2h --for NAME`;
+  without `--for` a follow-up is for whoever left it);
+- with `--after CURSOR`, notes by others that mention `@NAME` outside code.
+
+It prints a cursor and the read that continues from it. `--count` prints
+only the counts, `waking` and the cursor, with no task text: use it from a
+hook or a scheduler to decide whether to start a turn at all, then read the
+inbox in the turn. Start a turn when `waking` is above zero. Do not start one
+for other activity; read it with `activity` when you are already working.
+
+**`daymark digest --for PERSON`** is the read for a person. It shows what is
+waiting on their answer, conditions to reassess, and the changes others made
+since the person last marked the digest read, one line per task: how many
+changes, by whom (up to three names), and the latest words, for up to eight
+tasks. Reading it marks nothing.
+
+**`daymark seen --for PERSON --through CURSOR`** marks the digest read up to
+that cursor. The mark only moves forward and records no event. A person has
+one mark per workspace; agents keep cursors of their own and never move a
+person's mark for them. Seen marks need local database access.
+
+A person's surface (a sidebar, a phone, a Today list) should interrupt only
+for what `inbox` or the digest's waiting list would show, and fold the rest
+into the digest.
 
 ## Choose work by context
 
