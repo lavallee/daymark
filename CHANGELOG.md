@@ -4,6 +4,8 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-20
+
 ### Added
 
 - `daymark inbox --for NAME` lists what is addressed to one actor by exact
