@@ -146,7 +146,7 @@ def test_a_followup_becomes_ready_work_for_an_agent_after_the_interval(store):
     assert item["earliest_start"]["at"] == "2026-03-02T09:10:00Z"
     assert item["next_move"] == "agent"
     assert item["description"] == "Follow-up on pr: Open the sample pull request"
-    assert item["metadata"]["daymark.followup"] == {"of": "pr", "by": "worker-a", "after": "10min"}
+    assert item["metadata"]["daymark.followup"] == {"of": "pr", "by": "worker-a", "for": "worker-a", "after": "10min"}
     assert item["id"] not in [t["id"] for t in worker.ready(move="agent")]
     later = Tasks(store, "w", actor="worker-b", now="2026-03-02T09:11:00+00:00", timezone="UTC")
     assert item["id"] in [t["id"] for t in later.ready(move="agent")]

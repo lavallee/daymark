@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from . import coordination, plans
 from .client import Client
+from .cursors import cursor_number
 from .models import (
     DomainError,
     Recurrence,
@@ -948,7 +949,7 @@ class Tasks:
 
         return self._sequence(id, base, request, build, replay=op is not None)
 
-    def followup(self, id, text, *, after, op=None):
+    def followup(self, id, text, *, after, for_=None, op=None):
         """Leave a task for an agent to pick up after an interval, about ``id``.
 
         It is an ordinary task that becomes ready when the interval has passed,
@@ -956,6 +957,9 @@ class Tasks:
         still running.
         """
         delay = coordination.interval(after)
+        if for_ is not None and (not isinstance(for_, str) or not 1 <= len(for_.strip()) <= 200):
+            raise DomainError("invalid", "Name who the follow-up is for, in 1 to 200 characters")
+        me = self._me() or self.actor
         subject = self.engine.get(*self._ws, id)
         retry = self._retry_context(op, "create")
         start = (retry["result"]["earliest_start"] or {}).get("at") if retry else None
@@ -964,8 +968,115 @@ class Tasks:
         return self.add(
             text, start=start, move="agent", op=op,
             description=f"Follow-up on {subject['id']}: {subject['title']}",
-            metadata={coordination.FOLLOWUP: {"of": subject["id"], "by": self._me() or self.actor, "after": after.strip().lower()}},
+            metadata={coordination.FOLLOWUP: {
+                "of": subject["id"], "by": me, "for": for_.strip() if for_ else me, "after": after.strip().lower(),
+            }},
         )
+
+    def _addressed(self, name):
+        found = getattr(self.engine, "addressed", None)
+        if found:
+            return found(*self._ws, name)
+        from .store import _names  # An HTTP service lists tasks; filter the same way.
+
+        return [x for x in self.engine.list(*self._ws, "task") if x["status"] in {"open", "waiting"} and _names(x, name)]
+
+    def _scan(self, after):
+        """Events after a cursor, at most ``SCAN_LIMIT``. Returns (events, cursor, head, more)."""
+        events, cursor = [], after
+        while len(events) < coordination.SCAN_LIMIT:
+            page = self.activity(after=cursor, limit=100)
+            events.extend(page["events"])
+            cursor, head = page["cursor"], page["head"]
+            if cursor >= head or not page["events"]:
+                return events, cursor, head, False
+        return events, cursor, head, cursor < head
+
+    def inbox(self, name=None, *, after=None):
+        """What is addressed to one actor and needs them now, by exact name.
+
+        Standing items need no cursor: questions put to ``name``, answers to
+        questions ``name`` asked that nobody has acted on, and follow-ups for
+        ``name`` that are ready. Mentions of ``@name`` in notes are read from
+        the event log after ``after``; without it they are not scanned and the
+        returned cursor is the newest event, to save for the next read.
+        """
+        name = name or self._me() or self.actor
+        now = self.now()
+        to_answer, answered, followups = [], [], []
+        for item in self._addressed(name):
+            meta = item.get("metadata") or {}
+            question, follow = meta.get(coordination.QUESTION) or {}, meta.get(coordination.FOLLOWUP) or {}
+            if coordination.open_question(item) and question.get("to") == name:
+                to_answer.append(item)
+            elif coordination.answered_waiting(item, name):
+                answered.append(item)
+            if (follow.get("for") or follow.get("by")) == name and item["status"] == "open" and not item["claimed_by"] \
+                    and start_has_arrived(item["earliest_start"], now):
+                followups.append(item)
+        mentioned, more = [], False
+        if after is None:
+            cursor = self.activity(limit=1)["head"]
+        else:
+            events, cursor, _head, more = self._scan(after)
+            mentioned = [e for e in events if e.get("note") and e.get("actor") != name
+                         and coordination.mentions(e["note"]["text"], name)]
+        lean = lambda items: [{k: x[k] for k in ("id", "title", "status", "version")} for x in items]
+        result = {
+            "for": name,
+            "to_answer": [{**{k: x[k] for k in ("id", "title", "version")},
+                           "question": x["metadata"][coordination.QUESTION]["text"],
+                           "from": x["metadata"][coordination.QUESTION].get("by")} for x in to_answer],
+            "answered": [{**{k: x[k] for k in ("id", "title", "version")},
+                          "answer": x["metadata"][coordination.QUESTION]["answer"]} for x in answered],
+            "followups": lean(followups),
+            "mentions": [{"seq": e["seq"], "id": e["id"], "title": e["title"], "by": e["actor"],
+                          "text": coordination.preview(e["note"]["text"])} for e in mentioned],
+            "cursor": cursor,
+            "more": more,
+        }
+        result["waking"] = sum(len(result[k]) for k in ("to_answer", "answered", "followups", "mentions"))
+        return result
+
+    def seen(self, reader=None):
+        """The cursor ``reader`` last marked as seen here; 0 if never."""
+        if not self._ws:
+            raise DomainError("invalid", "Seen marks need local database access")
+        return self.engine.seen_mark(self.workspace, reader or self._me() or self.actor)
+
+    def mark_seen(self, reader=None, *, through=None):
+        """Move a reader's mark to ``through`` (default: the newest event). It only moves forward."""
+        if not self._ws:
+            raise DomainError("invalid", "Seen marks need local database access")
+        reader = reader or self.actor
+        through = self.activity(limit=1)["head"] if through is None else cursor_number(through)
+        return self.engine.mark_seen(self.workspace, reader, through)
+
+    def digest(self, reader=None):
+        """What a person should know, without marking anything seen.
+
+        Questions waiting on them, conditions to reassess, and changes by
+        others since their mark, one capped line per task.
+        """
+        reader = reader or self.actor
+        mark = self.seen(reader) if self._ws else 0
+        events, cursor, head, more = self._scan(mark)
+        changes, held = coordination.summarise(events, reader)
+        asked = self.inbox(reader)
+        explored = self.explore()
+        return {
+            "for": reader,
+            "since": mark,
+            "through": cursor,
+            "head": head,
+            "more": more,
+            "to_answer": asked["to_answer"],
+            "answered": asked["answered"],
+            "to_reassess": explored.get("to_reassess", []),
+            "changes": changes,
+            "changes_not_shown": held,
+            "unseen": sum(1 for e in events if e.get("actor") != reader),
+        }
 
     def watch(self, ids=(), *, after=None, by=None, include_own=False, timeout=1800.0,
               poll=1.0, sleep=time.sleep, clock=time.monotonic):

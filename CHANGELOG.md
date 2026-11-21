@@ -4,6 +4,26 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+### Added
+
+- `daymark inbox --for NAME` lists what is addressed to one actor by exact
+  name: questions to answer, answers to questions they asked that nobody has
+  acted on, ready follow-ups for them, and with `--after CURSOR` notes that
+  mention `@NAME` outside code. `--count` prints counts and a cursor only, for
+  a hook or a scheduler deciding whether to start a turn.
+- `daymark digest --for PERSON` shows what waits on a person and what others
+  changed since their mark, one capped line per task. Reading it marks nothing.
+  `daymark seen --for PERSON --through CURSOR` moves their mark forward.
+- `followup --for WHO` addresses a follow-up to another actor.
+  [What needs you, and what can wait](docs/agents.md#what-needs-you-and-what-can-wait)
+
+### Upgrade and compatibility
+
+- No schema change. Seen marks are stored beside the decider policy and are
+  not exported. They need local database access; over HTTP `seen` and the
+  digest's mark are refused or read as zero.
+- MCP tool definitions grew to under 6,500 characters.
+
 ## [0.7.0] - 2026-11-18
 
 ### Added

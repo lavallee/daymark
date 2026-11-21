@@ -534,6 +534,52 @@ def watch_text(result: dict, *, ids=(), mcp=False) -> str:
     return "\n".join(out)
 
 
+def inbox_text(view: dict, *, mcp=False) -> str:
+    """What is addressed to one actor, then how to read on."""
+    out = [f"inbox for {view['for']}: {view['waking']} waiting"]
+    for item in view["to_answer"]:
+        out.append(_single_line(f"  answer  {item['id']}  {item['question']}  (from {item['from']})"))
+    for item in view["answered"]:
+        out.append(_single_line(f"  answered  {item['id']}  {item['title']} — {item['answer']['by']}: {item['answer']['text']}"))
+    for item in view["followups"]:
+        out.append(_single_line(f"  follow up  {item['id']}  {item['title']}"))
+    for item in view["mentions"]:
+        out.append(_single_line(f"  mention  {item['id']}  by {item['by']}: {item['text']}"))
+    out.append(f"cursor {view['cursor']}" + ("  (more after it)" if view["more"] else ""))
+    hint = (f"daymark_view view=inbox for={view['for']} after={view['cursor']}" if mcp
+            else f"daymark inbox --for {view['for']} --after {view['cursor']}")
+    out.append("Next read: " + hint)
+    return "\n".join(out)
+
+
+def digest_text(view: dict, *, mcp=False) -> str:
+    """For a person: what needs them, then what changed since they last marked it seen."""
+    who = view["for"]
+    out = [f"digest for {who}: {view['unseen']} changes by others since your mark ({view['since']})"]
+    if view["to_answer"]:
+        out.append(f"Waiting on your answer ({len(view['to_answer'])}):")
+        for item in view["to_answer"]:
+            out.append(_single_line(f"  {item['id']}  {item['question']}  (from {item['from']})"))
+    if view["to_reassess"]:
+        out.append("Conditions to reassess: " + ", ".join(view["to_reassess"][:8]))
+    if view["changes"]:
+        out.append("Changed:")
+        for group in view["changes"]:
+            out.append(_single_line(
+                f"  {group['id']}  {group['title']} · {group['count']} by {', '.join(group['by'])}"
+                + (f" · {group['latest']}" if group["latest"] else "")
+            ))
+        if view["changes_not_shown"]:
+            out.append(f"  and {view['changes_not_shown']} more tasks")
+    if not (view["to_answer"] or view["to_reassess"] or view["changes"]):
+        out.append("Nothing new.")
+    if view["through"] > view["since"]:
+        mark = (f"daymark_act action=seen recipient={who} expected_version={view['through']}" if mcp
+                else f"daymark seen --for {who} --through {view['through']}")
+        out.append(("More changes follow. " if view["more"] else "") + "When read, mark it: " + mark)
+    return "\n".join(out)
+
+
 def note_text(note: dict) -> str:
     who = f" by {note['author']}" if note.get("author") else ""
     end = "…" if note.get("truncated") else ""
@@ -1128,7 +1174,10 @@ Commands (add --json to any for structured output)
                                     The asker may only relay an answer, naming who gave it.
   daymark watch [ID ...] [--after CURSOR] [--timeout 30min]
                                     block until someone else changes it; exit 8 on timeout
-  daymark followup ID "text" --in 10min|2h|1d   a task an agent finds in `ready` after that long
+  daymark followup ID "text" --in 10min|2h|1d [--for WHO]   ready work for an agent after that long
+  daymark inbox [--for WHO] [--after CURSOR] [--count]   what is addressed to one actor, by exact name
+  daymark digest --for PERSON       what needs a person and what changed since they marked it seen
+  daymark seen --for PERSON [--through CURSOR]   mark the digest read; it never moves back
   If a remote write is uncertain, repeat the same command and flags with the returned --op.
   daymark done ID [--note TEXT] [--if-version N]   complete (a repeating task spawns its next)
   daymark skip ID                   pass over one live recurring round (cancel ID for one-off work)
