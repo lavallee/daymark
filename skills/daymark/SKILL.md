@@ -5,7 +5,7 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
-This guide accompanies Daymark `0.8.0`. Check `daymark --version` when
+This guide accompanies Daymark `0.8.1`. Check `daymark --version` when
 an editor uses a different executable. The tagged 0.5.0 release has its
 own [agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 

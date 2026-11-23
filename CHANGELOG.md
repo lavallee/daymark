@@ -4,6 +4,16 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-22
+
+### Added
+
+- Every `inbox` item carries a `key` that names that one thing to act on and
+  stays the same while it waits (`q:WORKSPACE:TASK:QUESTION`, `a:…`,
+  `f:WORKSPACE:TASK`, `m:WORKSPACE:SEQ`). A consumer that records handled keys,
+  such as a message gateway, delivers each item once even after the task's
+  version moves on. Questions and answers also carry the question text and options.
+
 ## [0.8.0] - 2026-11-20
 
 ### Added

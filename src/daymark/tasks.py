@@ -1022,15 +1022,24 @@ class Tasks:
             mentioned = [e for e in events if e.get("note") and e.get("actor") != name
                          and coordination.mentions(e["note"]["text"], name)]
         lean = lambda items: [{k: x[k] for k in ("id", "title", "status", "version")} for x in items]
+        def asked(item):
+            return item["metadata"][coordination.QUESTION]
+
+        # A key names one thing to act on and stays the same while it waits, so a
+        # consumer that records handled keys delivers each item once, even after
+        # the task's version moves on.
         result = {
             "for": name,
             "to_answer": [{**{k: x[k] for k in ("id", "title", "version")},
-                           "question": x["metadata"][coordination.QUESTION]["text"],
-                           "from": x["metadata"][coordination.QUESTION].get("by")} for x in to_answer],
+                           "key": f"q:{self.workspace}:{x['id']}:{asked(x).get('id', '')}",
+                           "question": asked(x)["text"], "options": asked(x).get("options", []),
+                           "from": asked(x).get("by")} for x in to_answer],
             "answered": [{**{k: x[k] for k in ("id", "title", "version")},
-                          "answer": x["metadata"][coordination.QUESTION]["answer"]} for x in answered],
-            "followups": lean(followups),
+                          "key": f"a:{self.workspace}:{x['id']}:{asked(x).get('id', '')}",
+                          "question": asked(x)["text"], "answer": asked(x)["answer"]} for x in answered],
+            "followups": [{**f, "key": f"f:{self.workspace}:{f['id']}"} for f in lean(followups)],
             "mentions": [{"seq": e["seq"], "id": e["id"], "title": e["title"], "by": e["actor"],
+                          "key": f"m:{self.workspace}:{e['seq']}",
                           "text": coordination.preview(e["note"]["text"])} for e in mentioned],
             "cursor": cursor,
             "more": more,
