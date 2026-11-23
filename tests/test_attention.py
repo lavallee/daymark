@@ -143,3 +143,23 @@ def test_mcp_inbox_digest_and_seen(store, board):
     assert "has seen through" in call(pat, "daymark_act", {"action": "seen", "expected_version": through})
     assert call(pat, "daymark_view", {"view": "digest", "json": True}) and pat.digest()["unseen"] == 0
     assert "answer  venue" in call(board, "daymark_view", {"view": "inbox", "by": "pat"})
+
+
+def test_inbox_keys_name_one_item_and_hold_while_it_waits(store, board):
+    pat = at(store, "pat", 5)
+    key = pat.inbox()["to_answer"][0]["key"]
+    assert key.startswith("q:w:venue:") and len(key) > len("q:w:venue:")
+    pat.note("venue", "Looking at both")  # The task changes; the question is the same.
+    assert pat.inbox()["to_answer"][0]["key"] == key
+    assert pat.inbox()["to_answer"][0]["options"] == ["Hall", "Park"]
+    pat.answer("venue", choice=1)
+    answered = at(store, "lead", 6).inbox()["answered"][0]
+    assert answered["key"] == "a" + key[1:] and answered["question"] == "Which venue?"
+    board.ask("venue", "And which date?", to="pat")
+    assert pat.inbox()["to_answer"][0]["key"] != key  # A new question is a new item.
+    cursor = board.activity()["head"]
+    pat.note("cater", "@lead deposit due")
+    mention = at(store, "lead", 7).inbox(after=cursor)["mentions"][0]
+    assert mention["key"] == f"m:w:{mention['seq']}"
+    board.followup("cater", "Check the deposit", after="10min")
+    assert at(store, "lead", 20).inbox()["followups"][0]["key"].startswith("f:w:")

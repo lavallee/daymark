@@ -2,12 +2,12 @@
 
 > Daymark keeps one person's commitments across agent sessions. Plans, deadlines, earliest starts and hoped-for finishes carry different meanings. An agent can recover a handoff, propose work for a person to decide on, and adapt advice to a request. The core uses SQLite and Python 3.11 or newer.
 
-Check `daymark --version`. The tagged source release is 0.8.0. For the guide that matches your installed CLI, run `daymark onboard --skill`.
+Check `daymark --version`. The tagged source release is 0.8.1. For the guide that matches your installed CLI, run `daymark onboard --skill`.
 
 ## Start here
 
 - [Agent guide](agents.md) covers first use, dates, reading, writing, errors and safe retries.
-- [Tagged 0.8.0 agent guide](https://github.com/lavallee/daymark/blob/v0.8.0/docs/agents.md) matches the release install.
+- [Tagged 0.8.1 agent guide](https://github.com/lavallee/daymark/blob/v0.8.1/docs/agents.md) matches the release install.
 - [MCP clients](mcp.md) covers a read-only first connection, scoped pickup, structured results and recovery after a lost reply.
 - [Review a Todoist CSV](todoist-csv.md) covers same-title rows, schedules and confirmed source links.
 - [Working with a person's preferences](working-preferences.md) covers one answer, a standing workspace choice and a personal choice that expires.
