@@ -217,3 +217,24 @@ def test_cli_and_mcp_answers_guard_the_same_inbox_key(tmp_path, capsys):
         receipt = mcp(second, "second")
         assert not receipt.get("isError") and pat.inbox()["to_answer"] == []
         assert mcp(second, "second") == receipt
+
+
+@pytest.mark.parametrize("reply", [["Park approved"], ["--choice", "2"]])
+def test_show_command_answers_the_displayed_question(tmp_path, capsys, reply):
+    from contextlib import closing
+    from shlex import split
+
+    path = str(tmp_path / "tasks.db")
+    with closing(Store(path)) as db:
+        lead, pat = at(db, "lead"), at(db, "pat")
+        lead.add("Select venue", id="venue")
+        lead.ask("venue", "Where?", to="pat", options=["Hall", "Park"])
+        key = pat.inbox()["to_answer"][0]["key"]
+        flags = ["--db", path, "--workspace", "w", "--as", "pat"]
+        assert main([*flags, "show", "venue"]) == 0
+        hint = next(row.split("answer with ", 1)[1] for row in capsys.readouterr().out.splitlines() if "answer with " in row)
+        command = split(hint)
+        assert command[0] == "daymark" and key in command
+        assert f"question_key={key}" in call(pat, "daymark_view", {"view": "show", "id": "venue"})
+        assert main([*flags, *command[1:], *reply]) == 0
+        assert pat.inbox()["to_answer"] == []

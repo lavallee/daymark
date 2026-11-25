@@ -124,7 +124,7 @@ def read_view(tasks, args, *, read_only=False):
         data = _proposal_detail(data, data["entity"]["status"], read_only)
         if structured:
             return StructuredView(render.detail_data(data, attributed_notes=True))
-        return render.show_text(data, now)
+        return render.show_text(data, now, workspace=tasks.workspace, mcp=True)
 
     if view == "profiles":
         from .strategies import validate_profile

@@ -927,7 +927,7 @@ class Tasks:
             question = coordination.open_question(current)
             if not question:
                 raise DomainError("conflict", "This task has no unanswered question")
-            if question_key is not None and question_key != f"q:{self.workspace}:{id}:{question.get('id', '')}":
+            if question_key is not None and question_key != coordination.inbox_question_key(self.workspace, id, question):
                 raise DomainError("conflict", "The open question changed. Read the current question before answering.")
             if me is not None and question.get("by") == me and not heard_from:
                 raise DomainError(
@@ -1037,7 +1037,7 @@ class Tasks:
         result = {
             "for": name,
             "to_answer": [{**{k: x[k] for k in ("id", "title", "version")},
-                           "key": f"q:{self.workspace}:{x['id']}:{asked(x).get('id', '')}",
+                           "key": coordination.inbox_question_key(self.workspace, x["id"], asked(x)),
                            "question": asked(x)["text"], "options": asked(x).get("options", []),
                            "from": asked(x).get("by")} for x in to_answer],
             "answered": [{**{k: x[k] for k in ("id", "title", "version")},

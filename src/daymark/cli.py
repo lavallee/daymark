@@ -830,7 +830,7 @@ def _simple(args, engine) -> int:
         out(note, render.note_text(note))
     elif name == "show":
         ctx = tasks.show(args.id, source=args.source)
-        out(render.detail_data(ctx), render.show_text(ctx, now))
+        out(render.detail_data(ctx), render.show_text(ctx, now, workspace=tasks.workspace))
     elif name in {"add", "propose", "edit"}:
         names = ("due", "plan", "start", "target", "priority", "description", "after", "parent",
                  "project", "goal", "assignee", "labels", "contexts", "waiting_on", "move",

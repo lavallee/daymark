@@ -66,6 +66,10 @@ def open_question(entity):
     return question if isinstance(question, dict) and "answer" not in question else None
 
 
+def inbox_question_key(workspace, task_id, question):
+    return f"q:{workspace}:{task_id}:{question.get('id', '')}"
+
+
 def resolve_answer(question, text, choice):
     """Validate an answer against its question and return (text, choice)."""
     options = question.get("options") or []

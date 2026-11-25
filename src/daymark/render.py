@@ -8,7 +8,7 @@ from shlex import join
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from .coordination import open_question
+from .coordination import inbox_question_key, open_question
 from .models import DomainError, Entity, Temporal, day_offset, normalize_now
 from .outbox import DETAIL_FIELDS
 from .views import LIST_FIELDS, claim_holder, why
@@ -760,7 +760,7 @@ def recurrence_forecast_text(view: dict) -> str:
     return "\n".join(lines)
 
 
-def show_text(ctx: dict, now=None) -> str:
+def show_text(ctx: dict, now=None, *, workspace=None, mcp=False) -> str:
     item = ctx["entity"]
     out = [line(item, now, multiline=True)]
     if item.get("status") == "proposed":
@@ -770,7 +770,12 @@ def show_text(ctx: dict, now=None) -> str:
     if claim_holder(item, normalize_now(now)):
         out.append(f"claim expires: {item['claim_until']}")
     if asked := open_question(item):
-        out.append(f"open question for {asked['to']} from {asked['by']}: answer with daymark answer {item['id']}")
+        key = inbox_question_key(workspace or item["workspace"], item["id"], asked)
+        if mcp:
+            hint = f"daymark_act action=answer id={item['id']} question_key={key}"
+        else:
+            hint = join(["daymark", "answer", "--if-question", key, item["id"]])
+        out.append(_single_line(f"open question for {asked['to']} from {asked['by']}: answer with {hint}"))
     if "readiness" in ctx:
         state = ctx["readiness"]
         reasons = {
