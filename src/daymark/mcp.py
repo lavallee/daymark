@@ -162,7 +162,7 @@ TOOLS = [
         "name": "daymark_act",
         "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
         "take:no id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
-        "remind:when,recipient ID; local recording. ask:text,recipient,options,choice=recommended. answer:text/choice, question_key from inbox guards delayed answers. followup:text,when=10min/2h/1d. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
+        "remind:when,recipient; local log. ask:text,recipient,set,choice=recommended. answer:text/choice,inbox question_key. followup:text,when=2h. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {

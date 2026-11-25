@@ -245,7 +245,7 @@ def test_cli_round_trip_and_timeout_exit_code(tmp_path, capsys):
     id = json.loads(run("find", "sample", "--json")[1].out)[0]["id"]
     code, shown = run("ask", id, "Which format?", "--to", "pat", "--option", "PDF", "--option", "HTML", "--recommend", "2")
     assert code == 0 and "question for pat" in shown.out
-    assert f"daymark answer {id}" in run("show", id, actor="pat")[1].out
+    assert f"daymark answer --if-question q:default:{id}:" in run("show", id, actor="pat")[1].out
     code, refused = run("answer", id, "--choice", "1")
     assert code == 7 and "--heard-from" in refused.err
     assert run("answer", id, "--choice", "2", actor="pat")[0] == 0
