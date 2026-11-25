@@ -163,3 +163,57 @@ def test_inbox_keys_name_one_item_and_hold_while_it_waits(store, board):
     assert mention["key"] == f"m:w:{mention['seq']}"
     board.followup("cater", "Check the deposit", after="10min")
     assert at(store, "lead", 20).inbox()["followups"][0]["key"].startswith("f:w:")
+
+
+def test_delayed_answer_matches_question_across_edits_retries_and_replacement(store, board):
+    pat = at(store, "pat")
+    key = pat.inbox()["to_answer"][0]["key"]
+    board.note("venue", "Ordinary progress")
+    answered = pat.answer("venue", "Park", question_key=key, op="answer-first")
+    board.ask("venue", "Change the time?", to="pat")
+    next_key = pat.inbox()["to_answer"][0]["key"]
+    assert next_key != key
+    assert pat.answer("venue", "Park", question_key=key, op="answer-first") == answered
+    with pytest.raises(DomainError, match="open question changed"):
+        pat.answer("venue", "Delayed", question_key=key, op="answer-late")
+    assert pat.inbox()["to_answer"][0]["key"] == next_key
+    pat.answer("venue", "Yes", question_key=next_key)
+
+
+def test_cli_and_mcp_answers_guard_the_same_inbox_key(tmp_path, capsys):
+    from contextlib import closing
+
+    from daymark.mcp import handle
+
+    path = str(tmp_path / "tasks.db")
+    with closing(Store(path)) as db:
+        lead, pat = at(db, "lead"), at(db, "pat")
+        lead.add("Select venue", id="venue")
+        lead.ask("venue", "First question?", to="pat")
+        first = pat.inbox()["to_answer"][0]["key"]
+        lead.note("venue", "Progress")
+
+        def cli(key, op):
+            code = main(["--db", path, "--workspace", "w", "--as", "pat", "answer", "venue", "Hall",
+                         "--if-question", key, "--op", op, "--json"])
+            return code, capsys.readouterr()
+
+        def mcp(key, op):
+            return handle(pat, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "daymark_act", "arguments": {"action": "answer", "id": "venue",
+                    "text": "Hall", "question_key": key, "op": op}}})["result"]
+
+        code, original = cli(first, "first")
+        assert code == 0
+        lead.ask("venue", "Second question?", to="pat")
+        second = pat.inbox()["to_answer"][0]["key"]
+        head = lead.activity()["head"]
+        code, refused = cli(first, "late-cli")
+        assert code != 0 and "conflict" in refused.err
+        assert mcp(first, "late-mcp")["structuredContent"]["error"]["code"] == "conflict"
+        code, replay = cli(first, "first")
+        assert code == 0 and replay.out == original.out
+        assert lead.activity()["head"] == head and pat.inbox()["to_answer"][0]["key"] == second
+        receipt = mcp(second, "second")
+        assert not receipt.get("isError") and pat.inbox()["to_answer"] == []
+        assert mcp(second, "second") == receipt

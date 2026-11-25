@@ -20,7 +20,7 @@ waits for the draft. An idea for a poster stays a suggestion.
 Install the CLI with Python 3.11 or newer and uv:
 
 ```sh
-uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.8.1"
+uv tool install "daymark-core @ git+https://github.com/lavallee/daymark@v0.8.2"
 ```
 
 Run these commands in a new directory with the default database settings.
@@ -59,7 +59,7 @@ see [the five-minute MCP walkthrough](docs/mcp.md#connect-two-agents-in-five-min
 For an enforced read-only session, `daymark onboard --mcp-config claude` or `daymark onboard --mcp-config codex`
 prints the launcher for the installation and workspace you selected.
 For commands supported by the tagged install above, see the
-[0.8.1 agent guide](https://github.com/lavallee/daymark/blob/v0.8.1/docs/agents.md).
+[0.8.2 agent guide](https://github.com/lavallee/daymark/blob/v0.8.2/docs/agents.md).
 
 | You want | Command |
 | --- | --- |
@@ -223,7 +223,7 @@ each strategy.
 
 ## Install from source
 
-The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.8.1.
+The Python import is `daymark`; the distribution is `daymark-core`. The tagged release is 0.8.2.
 Use `daymark --version` to tell which CLI your agent will run. Both require
 Python 3.11 or newer.
 

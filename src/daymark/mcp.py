@@ -162,7 +162,7 @@ TOOLS = [
         "name": "daymark_act",
         "description": "note/done/release:text. wait:on/until. defer:until. block/unblock:on. "
         "take:no id. move:stage,place=after:ID|before:ID|first|last. assess:state/text. "
-        "remind:when,recipient ID; local recording. ask:text,recipient,options,choice=recommended. answer:text/choice. followup:text,when=10min/2h/1d. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
+        "remind:when,recipient ID; local recording. ask:text,recipient,options,choice=recommended. answer:text/choice, question_key from inbox guards delayed answers. followup:text,when=10min/2h/1d. use_profile:id/set/drop. restore_profile:receipt id+expected_version.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -171,6 +171,7 @@ TOOLS = [
                 "drop": {"type": "array", "items": {"type": "string"}},
                 "id": {"type": "string"},
                 "expected_version": {"type": "integer", "minimum": 0},
+                "question_key": {"type": "string", "minLength": 1},
                 "review_token": {"type": "string"},
                 "text": {"type": "string"},
                 "on": {"type": "string"},
@@ -268,7 +269,7 @@ _ACT_ARGS = {
     "defer": {"until"},
     "remind": {"when", "recipient"},
     "ask": {"text", "recipient", "set", "choice"},
-    "answer": {"text", "choice", "recipient"},
+    "answer": {"text", "choice", "recipient", "question_key"},
     "followup": {"text", "when", "recipient"},
     "seen": {"recipient", "expected_version"},
     "block": {"on"},
@@ -443,7 +444,7 @@ def _invoke(tasks, name, args, *, context=None, read_only=False):
             item = tasks.ask(id, args["text"], to=args["recipient"], options=args.get("set", ()),
                              recommend=args.get("choice"), op=op)
         elif action == "answer":
-            item = tasks.answer(id, args.get("text"), choice=args.get("choice"), heard_from=args.get("recipient"), op=op)
+            item = tasks.answer(id, args.get("text"), choice=args.get("choice"), heard_from=args.get("recipient"), question_key=args.get("question_key"), op=op)
         elif action == "followup":
             item = tasks.followup(id, args["text"], after=args["when"], for_=args.get("recipient"), op=op)
         elif action == "defer":

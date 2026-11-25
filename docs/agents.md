@@ -3,7 +3,7 @@
 Daymark is where an agent keeps a person's tasks, plans and deadlines between
 sessions. This page is the whole everyday surface. All examples are synthetic.
 
-Check `daymark --version`. This guide accompanies `0.8.1`.
+Check `daymark --version`. This guide accompanies `0.8.2`.
 For the previous tagged CLI, use the [0.5.0 agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
 For a first integration, start with the session and reading sections below.
@@ -931,6 +931,9 @@ daymark --as reviewer take                  # any worker can carry on
   somewhere else, such as in conversation, relay it and name them:
   `answer ID --choice 2 --heard-from pat`. The record says it was relayed.
   Like a claim, this is a label, not proof of who decided.
+- When answering from an earlier inbox read, pass its question key with
+  `--if-question KEY` (MCP `question_key`). If it has changed, read the new question.
+
 - **`watch [ID ...]`** blocks until another actor changes one of those tasks
   (any task, without an ID), then prints the change and the command that
   keeps watching. It starts at the newest change. To miss nothing, save the

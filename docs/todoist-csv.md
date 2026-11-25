@@ -1,6 +1,6 @@
 # Bring one task over from a Todoist CSV
 
-These commands use Daymark 0.8.1. Keep the original CSV in its exported order. Decide with the person which app will own future edits to each selected task. Daymark’s `import` command merges **Daymark workspace JSON**. A Todoist project CSV is a worksheet for reviewing selected tasks. You can do the review locally without connecting either account. Keep Todoist as the reference for omitted history, unresolved schedules and anything you leave there.
+These commands use Daymark 0.8.2. Keep the original CSV in its exported order. Decide with the person which app will own future edits to each selected task. Daymark’s `import` command merges **Daymark workspace JSON**. A Todoist project CSV is a worksheet for reviewing selected tasks. You can do the review locally without connecting either account. Keep Todoist as the reference for omitted history, unresolved schedules and anything you leave there.
 
 ## Read the rows together
 

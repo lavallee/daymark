@@ -5,7 +5,7 @@ description: Track a person's tasks, plans, deadlines, recurring chores and wait
 
 # Daymark
 
-This guide accompanies Daymark `0.8.1`. Check `daymark --version` when
+This guide accompanies Daymark `0.8.2`. Check `daymark --version` when
 an editor uses a different executable. The tagged 0.5.0 release has its
 own [agent guide](https://github.com/lavallee/daymark/blob/v0.5.0/docs/agents.md).
 
@@ -203,6 +203,9 @@ In MCP, pass `forecast=skip` or `forecast=done` to `daymark_view` with
 - `daymark answer ID --choice N` (or text) returns it to whoever moves next.
   You cannot answer your own question. If the person answered in
   conversation, relay it: `answer ID --choice N --heard-from NAME`.
+- When answering from an earlier inbox read, pass its question key with
+  `--if-question KEY` (MCP `question_key`). If it has changed, read the new question.
+
 - `daymark watch ID --after CURSOR --timeout 30min` blocks until someone else
   changes the task. Save the cursor from `activity` before asking. Exit 8
   means timeout, which is not an answer.

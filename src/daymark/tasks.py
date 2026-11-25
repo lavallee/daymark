@@ -908,7 +908,7 @@ class Tasks:
 
         return self._sequence(id, base, request, build, replay=op is not None)
 
-    def answer(self, id, text=None, *, choice=None, heard_from=None, op=None):
+    def answer(self, id, text=None, *, choice=None, heard_from=None, question_key=None, op=None):
         """Answer the open question on a task and return it to whoever moves next.
 
         The actor who asked may only relay an answer it was given elsewhere,
@@ -917,12 +917,18 @@ class Tasks:
         if heard_from is not None and (not isinstance(heard_from, str) or not 1 <= len(heard_from.strip()) <= 200):
             raise DomainError("invalid", "Name who gave the answer, in 1 to 200 characters")
         request = {"answer": text, "choice": choice, "id": id, "heard_from": heard_from}
+        if question_key is not None:
+            if not isinstance(question_key, str) or not question_key:
+                raise DomainError("invalid", "Use the question key from the inbox")
+            request["question_key"] = question_key
         base, me = self._op_id(op), self._me()
 
         def build(current):
             question = coordination.open_question(current)
             if not question:
                 raise DomainError("conflict", "This task has no unanswered question")
+            if question_key is not None and question_key != f"q:{self.workspace}:{id}:{question.get('id', '')}":
+                raise DomainError("conflict", "The open question changed. Read the current question before answering.")
             if me is not None and question.get("by") == me and not heard_from:
                 raise DomainError(
                     "forbidden", "The actor who asked cannot answer its own question",

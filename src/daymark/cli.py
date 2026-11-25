@@ -311,6 +311,7 @@ def _simple_commands(sub) -> None:
     answer = add("answer", "Answer the open question on a task", writes=True)
     answer.add_argument("id")
     answer.add_argument("text", nargs="?")
+    answer.add_argument("--if-question", metavar="KEY", help="Match the exact question from the inbox")
     answer.add_argument("--choice", type=int, metavar="N", help="Number of the chosen option")
     answer.add_argument("--heard-from", metavar="WHO", help="Relay an answer this person gave somewhere else")
     followup = add("followup", "Leave a task for an agent to find after an interval", writes=True)
@@ -901,7 +902,7 @@ def _simple(args, engine) -> int:
     elif name == "ask":
         entity(tasks.ask(args.id, args.question, to=args.to, options=args.option, recommend=args.recommend, op=op))
     elif name == "answer":
-        entity(tasks.answer(args.id, args.text, choice=args.choice, heard_from=args.heard_from, op=op))
+        entity(tasks.answer(args.id, args.text, choice=args.choice, heard_from=args.heard_from, question_key=args.if_question, op=op))
     elif name == "followup":
         entity(tasks.followup(args.id, args.text, after=args.after, for_=args.for_, op=op))
     elif name == "inbox":

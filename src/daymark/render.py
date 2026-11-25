@@ -1169,7 +1169,7 @@ Commands (add --json to any for structured output)
   daymark note ID "text"            progress or context for the next session
   daymark ask ID "question" --to WHO [--option TEXT ...] [--recommend N]
                                     hand a decision to someone; it joins their `ready --move answer`
-  daymark answer ID ["text"] [--choice N] [--heard-from WHO]
+  daymark answer ID ["text"] [--choice N] [--heard-from WHO] [--if-question KEY]
                                     answer it; the task returns to whoever moves next.
                                     The asker may only relay an answer, naming who gave it.
   daymark watch [ID ...] [--after CURSOR] [--timeout 30min]

@@ -4,6 +4,13 @@ Changes are recorded here using semantic versions. Until 1.0, review release not
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-25
+
+- An answer can name the inbox question it applies to. Pass its key with
+  `daymark answer --if-question KEY` or the MCP answer action’s `question_key`.
+  An unrelated task edit leaves the key valid. A replacement question causes a
+  conflict, and an identical retry returns the original receipt.
+
 ## [0.8.1] - 2026-11-22
 
 ### Added
